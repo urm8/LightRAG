@@ -43,6 +43,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
+  const activeLegendTypes = useGraphStore.use.activeLegendTypes()
 
   // Track system theme changes when theme is set to 'system'
   const [systemThemeIsDark, setSystemThemeIsDark] = useState(() =>
@@ -243,7 +244,15 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         const newData: NodeType & {
           labelColor?: string
           borderColor?: string
+          hidden?: boolean
         } = { ...data, highlighted: data.highlighted || false, labelColor }
+        const nodeType = typeof data.nodeType === 'string' ? data.nodeType : 'unknown'
+        const legendFilterActive = activeLegendTypes.length > 0
+
+        if (legendFilterActive && !activeLegendTypes.includes(nodeType)) {
+          newData.hidden = true
+          return newData
+        }
 
         if (!disableHoverEffect) {
           newData.highlighted = false
@@ -298,6 +307,25 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         }
 
         const newData = { ...data, hidden: false, labelColor, color: edgeColor }
+        const legendFilterActive = activeLegendTypes.length > 0
+
+        if (legendFilterActive) {
+          try {
+            const [source, target] = graph.extremities(edge)
+            const sourceType = graph.getNodeAttribute(source, 'nodeType')
+            const targetType = graph.getNodeAttribute(target, 'nodeType')
+            if (
+              !activeLegendTypes.includes(sourceType) ||
+              !activeLegendTypes.includes(targetType)
+            ) {
+              newData.hidden = true
+              return newData
+            }
+          } catch (error) {
+            console.error('Error applying legend filter in edgeReducer:', error)
+            return { ...data, hidden: false, labelColor, color: edgeColor }
+          }
+        }
 
         if (!disableHoverEffect) {
           const _focusedNode = focusedNode || selectedNode
@@ -352,7 +380,8 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     hideUnselectedEdges,
     enableEdgeEvents,
     renderEdgeLabels,
-    renderLabels
+    renderLabels,
+    activeLegendTypes
   ])
 
   return null

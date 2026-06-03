@@ -1,0 +1,59 @@
+@startuml
+title LightRAG Extraction Pipeline
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam ArrowColor #3d4a57
+skinparam ActivityBorderColor #4c5b6b
+skinparam ActivityBackgroundColor #f7fbff
+skinparam ActivityDiamondBorderColor #4c5b6b
+skinparam ActivityDiamondBackgroundColor #eef5fb
+skinparam DefaultFontName Menlo
+
+|Entry|
+start
+:Entry + Setup
+- call _process_extract_entities
+- load prompts, tokenizer, config
+- create ordered_chunks
+- init session state + semaphore;
+
+|Chunk Worker|
+:Primary Chunk Attempt
+- select current_doc_chunks
+- run phase=primary
+- Apple bypass if needed
+- weak-model skip gate
+- tool or cache-backed LLM path
+- parse/process result
+- set best_attempt = primary_attempt;
+
+|Finalize|
+if (Retry-worthy structured result?) then (yes)
+  :Handoff to Enrich Pipeline
+- split retry and phase=enrichment
+- output may replace best_attempt;
+endif
+
+:Finalize Chunk
+- use current best_attempt
+- update chunk cache list
+- record extracted session state
+- append chunk result + progress;
+
+|Persist|
+if (Any task failed?) then (yes)
+  :Failure Path
+- cancel pending tasks
+- raise prefixed exception;
+  stop
+else (no)
+  :Join + Persist
+- wait for chunk tasks
+- return chunk_results
+- merge_nodes_and_edges
+- phase 1/2/3 storage updates
+- persist graph, vector, and KV stores;
+  stop
+endif
+@enduml

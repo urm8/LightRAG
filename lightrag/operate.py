@@ -1,12 +1,13 @@
 from __future__ import annotations
 from functools import partial
-from pathlib import Path
 
 import asyncio
 import json
 import json_repair
-from typing import Any, AsyncIterator, overload, Literal
+import re
+from typing import Any, AsyncIterator, Callable, overload, Literal
 from collections import Counter, defaultdict
+from urllib.parse import urlparse
 
 from lightrag.exceptions import (
     PipelineCancelledException,
@@ -41,6 +42,8 @@ from lightrag.utils import (
     make_relation_chunk_key,
     _cooperative_yield,
     performance_timing_log,
+    clean_chatml_markers,
+    contains_chatml_markers,
 )
 from lightrag.base import (
     BaseGraphStorage,
@@ -51,7 +54,8 @@ from lightrag.base import (
     QueryResult,
     QueryContextResult,
 )
-from lightrag.prompt import PROMPTS
+from lightrag.types import ExtractionStructuredOutput
+from lightrag.prompt import ENTITY_CONTINUE_EXTRACTION_USER_PROMPT, KEYWORDS_EXTRACTION_EXAMPLES, PROMPTS
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -60,6 +64,7 @@ from lightrag.constants import (
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_ENTITY_TYPES,
+    DEFAULT_RELATION_LABELS,
     DEFAULT_SUMMARY_LANGUAGE,
     SOURCE_IDS_LIMIT_METHOD_KEEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
@@ -67,14 +72,473 @@ from lightrag.constants import (
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
 )
+from lightrag.config import settings
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 import time
-from dotenv import load_dotenv
 
-# use the .env that is inside the current folder
-# allows to use different .env file for each lightrag instance
-# the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
+_APFEL_ANSWER_DELTA_RE = re.compile(
+    r"###\s*Answer\s+Delta\s*(.*?)(?=###\s*Carry\s+Summary|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+_APFEL_CARRY_SUMMARY_RE = re.compile(
+    r"###\s*Carry\s+Summary\s*(.*)\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+_APFEL_REFERENCES_RE = re.compile(
+    r"(?:\n|^)\s*(?:#{1,6}\s*)?References\b[\s\S]*\Z",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _is_apfel_fast_query(
+    global_config: dict[str, Any], query_param: QueryParam
+) -> bool:
+    """Detect the local Apfel fast query path without adding config flags."""
+
+    if query_param.model_func is not None:
+        return False
+
+    model_name = str(
+        global_config.get("llm_model_name") or settings.llm_model_configured or ""
+    ).lower()
+    binding_host = str(settings.llm_binding_host or "").lower()
+    return (
+        "apple-foundationmodel" in model_name
+        or "apfel" in model_name
+        or "127.0.0.1:11435" in binding_host
+        or "localhost:11435" in binding_host
+    )
+
+
+def _normalize_base_url_host_port(base_url: str) -> tuple[str, int | None]:
+    parsed = urlparse((base_url or "").rstrip("/"))
+    host = (parsed.hostname or "").lower()
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        host = "loopback"
+    return host, parsed.port
+
+
+def _should_use_api_structured_extraction() -> bool:
+    extraction_host = (
+        settings.extraction_llm_binding_host
+        or settings.llm_binding_host
+        or ""
+    ).strip()
+    if not extraction_host:
+        return True
+
+    # Managed MLX OpenAI server (v1.6.1+) supports response_format with
+    # json_schema via JSONLogitsProcessor (Outlines grammar-constrained
+    # decoding in app/models/mlx_lm.py). No need to disable it.
+    return True
+
+
+def _count_tokens(tokenizer: Tokenizer, text: str) -> int:
+    return len(tokenizer.encode(text or ""))
+
+
+def _clip_text_by_tokens(tokenizer: Tokenizer, text: str, max_tokens: int) -> str:
+    if max_tokens <= 0 or not text:
+        return ""
+
+    tokens = tokenizer.encode(text)
+    if len(tokens) <= max_tokens:
+        return text
+
+    clipped = tokenizer.decode(tokens[:max_tokens]).rstrip()
+    return f"{clipped}\n[truncated]"
+
+
+def _format_apfel_reference_id(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _format_apfel_item(kind: str, item: dict[str, Any]) -> tuple[str, set[str]]:
+    reference_ids: set[str] = set()
+
+    if kind == "chunk":
+        ref_id = _format_apfel_reference_id(item.get("reference_id"))
+        if ref_id:
+            reference_ids.add(ref_id)
+        source = str(item.get("file_path") or "unknown_source").strip()
+        chunk_id = str(item.get("chunk_id") or "").strip()
+        content = str(item.get("content") or "").strip()
+        header = f"CHUNK ref=[{ref_id or '?'}] source={source}"
+        if chunk_id:
+            header = f"{header} chunk_id={chunk_id}"
+        return f"{header}\n{content}", reference_ids
+
+    if kind == "relationship":
+        source_ids = str(item.get("source_id") or "").strip()
+        for source_id in source_ids.split(GRAPH_FIELD_SEP):
+            source_id = source_id.strip()
+            if source_id:
+                reference_ids.add(source_id)
+        src = str(item.get("src_id") or "").strip()
+        tgt = str(item.get("tgt_id") or "").strip()
+        keywords = str(item.get("keywords") or "").strip()
+        description = str(item.get("description") or "").strip()
+        file_path = str(item.get("file_path") or "").strip()
+        return (
+            f"RELATION {src} -> {tgt}"
+            f"\nkeywords={keywords}"
+            f"\nsource_ids={source_ids}"
+            f"\nfile_path={file_path}"
+            f"\ndescription={description}"
+        ), reference_ids
+
+    source_ids = str(item.get("source_id") or "").strip()
+    for source_id in source_ids.split(GRAPH_FIELD_SEP):
+        source_id = source_id.strip()
+        if source_id:
+            reference_ids.add(source_id)
+    name = str(item.get("entity_name") or "").strip()
+    entity_type = str(item.get("entity_type") or "").strip()
+    description = str(item.get("description") or "").strip()
+    file_path = str(item.get("file_path") or "").strip()
+    return (
+        f"ENTITY {name}"
+        f"\ntype={entity_type}"
+        f"\nsource_ids={source_ids}"
+        f"\nfile_path={file_path}"
+        f"\ndescription={description}"
+    ), reference_ids
+
+
+def _build_apfel_reference_lines(
+    references: list[dict[str, Any]], reference_ids: set[str]
+) -> list[str]:
+    lines: list[str] = []
+    seen: set[tuple[str, str]] = set()
+
+    for ref in references:
+        ref_id = _format_apfel_reference_id(ref.get("reference_id"))
+        file_path = str(ref.get("file_path") or "").strip()
+        if not ref_id or not file_path:
+            continue
+        if reference_ids and ref_id not in reference_ids:
+            continue
+        key = (ref_id, file_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"[{ref_id}] {file_path}")
+
+    return lines
+
+
+def _new_apfel_portion() -> dict[str, Any]:
+    return {
+        "items": [],
+        "token_estimate": 0,
+        "reference_ids": set(),
+        "counts": {"chunks": 0, "relationships": 0, "entities": 0},
+    }
+
+
+def _finalize_apfel_portion(
+    portion: dict[str, Any], references: list[dict[str, Any]]
+) -> dict[str, Any]:
+    reference_ids = portion["reference_ids"]
+    sections: list[str] = []
+    grouped: dict[str, list[str]] = {
+        "chunks": [],
+        "relationships": [],
+        "entities": [],
+    }
+
+    for item in portion["items"]:
+        grouped[item["group"]].append(item["text"])
+
+    for group, title in (
+        ("chunks", "Document Chunks"),
+        ("relationships", "Knowledge Graph Relationships"),
+        ("entities", "Knowledge Graph Entities"),
+    ):
+        if grouped[group]:
+            sections.append(f"{title}:\n\n" + "\n\n---\n\n".join(grouped[group]))
+
+    reference_lines = _build_apfel_reference_lines(references, reference_ids)
+    if reference_lines:
+        sections.append("Reference Document List:\n" + "\n".join(reference_lines))
+
+    return {
+        "context": "\n\n".join(sections).strip(),
+        "token_estimate": portion["token_estimate"],
+        "counts": portion["counts"],
+        "reference_ids": sorted(reference_ids),
+    }
+
+
+def _build_apfel_iterative_portions(
+    raw_data: dict[str, Any],
+    tokenizer: Tokenizer,
+    max_total_tokens: int,
+) -> list[dict[str, Any]]:
+    """Pack retrieved query data into Apfel-sized source-bearing portions."""
+
+    data = raw_data.get("data", {}) or {}
+    references = data.get("references", []) or []
+    source_items: list[tuple[str, dict[str, Any]]] = []
+
+    for chunk in data.get("chunks", []) or []:
+        source_items.append(("chunk", chunk))
+    for relation in data.get("relationships", []) or []:
+        source_items.append(("relationship", relation))
+    for entity in data.get("entities", []) or []:
+        source_items.append(("entity", entity))
+
+    if not source_items:
+        return []
+
+    item_budget = max(192, int(max_total_tokens * 0.65))
+    portion_budget = max(512, int(max_total_tokens * 0.72))
+    portions: list[dict[str, Any]] = []
+    current = _new_apfel_portion()
+
+    for kind, source_item in source_items:
+        text, reference_ids = _format_apfel_item(kind, source_item)
+        if _count_tokens(tokenizer, text) > item_budget:
+            text = _clip_text_by_tokens(tokenizer, text, item_budget)
+        item_tokens = max(1, _count_tokens(tokenizer, text))
+
+        if current["items"] and current["token_estimate"] + item_tokens > portion_budget:
+            portions.append(_finalize_apfel_portion(current, references))
+            current = _new_apfel_portion()
+
+        group = {
+            "chunk": "chunks",
+            "relationship": "relationships",
+        }.get(kind, "entities")
+        current["items"].append({"group": group, "text": text})
+        current["token_estimate"] += item_tokens
+        current["reference_ids"].update(reference_ids)
+        current["counts"][group] += 1
+
+    if current["items"]:
+        portions.append(_finalize_apfel_portion(current, references))
+
+    return portions
+
+
+def _strip_apfel_section_noise(text: str) -> str:
+    text = remove_think_tags(text or "").strip()
+    text = _APFEL_REFERENCES_RE.sub("", text).strip()
+    return text
+
+
+def _parse_apfel_iterative_response(text: str) -> tuple[str, str]:
+    text = _strip_apfel_section_noise(text)
+    answer_match = _APFEL_ANSWER_DELTA_RE.search(text)
+    carry_match = _APFEL_CARRY_SUMMARY_RE.search(text)
+
+    answer = answer_match.group(1).strip() if answer_match else text.strip()
+    carry = carry_match.group(1).strip() if carry_match else ""
+
+    answer = _strip_apfel_section_noise(answer)
+    carry = _strip_apfel_section_noise(carry)
+
+    normalized_answer = re.sub(r"[\W_]+", " ", answer.lower()).strip()
+    if normalized_answer in {"none", "n a", "empty"} or (
+        len(normalized_answer.split()) <= 8
+        and normalized_answer.startswith(("nothing new", "no new", "no useful"))
+    ):
+        answer = ""
+    return answer, carry
+
+
+async def _response_to_text(response: Any) -> str:
+    if isinstance(response, str):
+        return response
+    if hasattr(response, "__aiter__"):
+        chunks: list[str] = []
+        async for chunk in response:
+            if chunk:
+                chunks.append(str(chunk))
+        return "".join(chunks)
+    return str(response or "")
+
+
+def _apfel_iterative_metadata(portions: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "iterative": True,
+        "portion_count": len(portions),
+        "current_portion": 0,
+        "token_estimates": [
+            portion.get("token_estimate", 0) for portion in portions
+        ],
+        "counts": [portion.get("counts", {}) for portion in portions],
+    }
+
+
+def _make_apfel_iterative_user_prompt(
+    *,
+    query: str,
+    response_type: str,
+    carry_summary: str,
+    portion: dict[str, Any],
+    portion_index: int,
+    portion_count: int,
+) -> str:
+    return PROMPTS["apfel_iterative_rag_user"].format(
+        query=query,
+        response_type=response_type,
+        carry_summary=carry_summary or "None yet.",
+        portion_index=portion_index,
+        portion_count=portion_count,
+        context_data=portion.get("context", ""),
+    )
+
+
+def _make_apfel_iterative_final_prompt(
+    *, query: str, response_type: str, accumulated_answer: str, carry_summary: str
+) -> str:
+    return PROMPTS["apfel_iterative_rag_final_user"].format(
+        query=query,
+        response_type=response_type,
+        accumulated_answer=accumulated_answer or "No answer deltas.",
+        carry_summary=carry_summary or "No carry summary.",
+    )
+
+
+def _fallback_apfel_answer_from_portions(
+    portions: list[dict[str, Any]], tokenizer: Tokenizer, max_tokens: int
+) -> str:
+    for portion in portions:
+        context = portion.get("context", "")
+        chunk_match = re.search(
+            r"CHUNK\s+ref=\[[^\]]+\][^\n]*\n"
+            r"(.*?)(?=\n\n---|\n\nKnowledge Graph|\n\nRELATION|\Z)",
+            context,
+            flags=re.DOTALL,
+        )
+        if chunk_match:
+            content = chunk_match.group(1).strip()
+            if content:
+                return _clip_text_by_tokens(tokenizer, content, max_tokens)
+
+    for portion in portions:
+        context = re.sub(r"\s+", " ", portion.get("context", "")).strip()
+        if context:
+            return _clip_text_by_tokens(tokenizer, context, max_tokens)
+
+    return ""
+
+
+async def _run_apfel_iterative_answer_generator(
+    *,
+    query: str,
+    response_type: str,
+    query_param: QueryParam,
+    use_model_func: Callable[..., Any],
+    tokenizer: Tokenizer,
+    portions: list[dict[str, Any]],
+    raw_data: dict[str, Any],
+) -> AsyncIterator[str]:
+    carry_summary = ""
+    answer_deltas: list[str] = []
+    system_prompt = PROMPTS["apfel_iterative_rag_system"]
+    max_completion_tokens = getattr(query_param, "max_completion_tokens", None)
+    llm_call_kwargs = {"max_completion_tokens": max_completion_tokens}
+    if not max_completion_tokens:
+        llm_call_kwargs = {}
+
+    metadata = raw_data.setdefault("metadata", {}).setdefault(
+        "apfel_iterative", _apfel_iterative_metadata(portions)
+    )
+
+    for index, portion in enumerate(portions, start=1):
+        metadata["current_portion"] = index
+        logger.info(
+            "APFEL_ITERATIVE_PORTION_START index=%s total=%s tokens=%s counts=%s",
+            index,
+            len(portions),
+            portion.get("token_estimate"),
+            portion.get("counts"),
+        )
+        prompt = _make_apfel_iterative_user_prompt(
+            query=query,
+            response_type=response_type,
+            carry_summary=carry_summary,
+            portion=portion,
+            portion_index=index,
+            portion_count=len(portions),
+        )
+        response = await use_model_func(
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=[],
+            enable_cot=False,
+            stream=False,
+            _lightrag_request_kind="query",
+            **llm_call_kwargs,
+        )
+        response_text = await _response_to_text(response)
+        answer_delta, next_carry = _parse_apfel_iterative_response(response_text)
+
+        if answer_delta:
+            answer_deltas.append(answer_delta)
+            yield answer_delta.rstrip() + "\n\n"
+
+        if next_carry:
+            carry_summary = _clip_text_by_tokens(
+                tokenizer,
+                next_carry,
+                max(96, int((max_completion_tokens or 384) * 0.75)),
+            )
+        elif answer_delta:
+            carry_summary = _clip_text_by_tokens(
+                tokenizer,
+                "\n".join(answer_deltas[-3:]),
+                max(96, int((max_completion_tokens or 384) * 0.75)),
+            )
+
+    if not answer_deltas:
+        fallback_answer = _fallback_apfel_answer_from_portions(
+            portions,
+            tokenizer,
+            max(64, int((max_completion_tokens or 384) * 0.5)),
+        )
+        if fallback_answer:
+            logger.warning(
+                "APFEL_ITERATIVE_FALLBACK no usable model delta; using retrieved context excerpt"
+            )
+            answer_deltas.append(fallback_answer)
+            yield fallback_answer.rstrip()
+
+    if len(answer_deltas) > 1:
+        final_prompt = _make_apfel_iterative_final_prompt(
+            query=query,
+            response_type=response_type,
+            accumulated_answer="\n\n".join(answer_deltas),
+            carry_summary=carry_summary,
+        )
+        response = await use_model_func(
+            final_prompt,
+            system_prompt=system_prompt,
+            history_messages=[],
+            enable_cot=False,
+            stream=False,
+            _lightrag_request_kind="query",
+            **llm_call_kwargs,
+        )
+        response_text = await _response_to_text(response)
+        final_answer, _ = _parse_apfel_iterative_response(response_text)
+        if final_answer:
+            yield "### Final\n\n" + final_answer.rstrip()
+
+    metadata["current_portion"] = len(portions)
+    logger.info("APFEL_ITERATIVE_DONE portions=%s", len(portions))
+
+
+async def _run_apfel_iterative_answer(
+    **kwargs: Any,
+) -> str:
+    chunks: list[str] = []
+    async for chunk in _run_apfel_iterative_answer_generator(**kwargs):
+        if chunk:
+            chunks.append(chunk)
+    return "".join(chunks).strip()
 
 
 def _truncate_entity_identifier(
@@ -557,6 +1021,152 @@ def _handle_single_relationship_extraction(
         return None
 
 
+def _default_entity_description(entity_name: str, entity_type: str) -> str:
+    return f"{entity_name} is a {entity_type} mentioned in the text."
+
+
+def _default_relation_description(
+    source_entity: str, target_entity: str, relation_label: str
+) -> str:
+    return f"{source_entity} {relation_label.lower()} {target_entity}."
+
+
+def _parse_structured_extraction_output(
+    result: str | dict[str, Any] | ExtractionStructuredOutput,
+    chunk_key: str,
+) -> ExtractionStructuredOutput | None:
+    if isinstance(result, ExtractionStructuredOutput):
+        return result
+
+    try:
+        if isinstance(result, dict):
+            return ExtractionStructuredOutput.model_validate(result)
+
+        if not isinstance(result, str):
+            return None
+
+        candidate = result.strip()
+        if not candidate:
+            return None
+
+        # Strip ChatML control tokens that may have leaked past the
+        # model's stop sequences (Hermes-4 / ChatML models).
+        if contains_chatml_markers(candidate):
+            before_len = len(candidate)
+            candidate = clean_chatml_markers(candidate)
+            logger.warning(
+                "%s: ChatML control tokens cleaned from extraction output "
+                "(%d chars removed) before JSON parsing",
+                chunk_key,
+                before_len - len(candidate),
+            )
+
+        if "```" in candidate:
+            fenced = re.findall(r"```(?:json)?\s*(.*?)```", candidate, flags=re.DOTALL)
+            if fenced:
+                candidate = fenced[0].strip()
+
+        if "{" in candidate and "}" in candidate:
+            candidate = candidate[candidate.find("{") : candidate.rfind("}") + 1]
+
+        parsed = json_repair.loads(candidate)
+        if not isinstance(parsed, dict):
+            return None
+        return ExtractionStructuredOutput.model_validate(parsed)
+    except Exception as exc:
+        logger.debug("%s: structured extraction parse failed: %s", chunk_key, exc)
+        return None
+
+
+def _structured_output_to_graph_data(
+    structured: ExtractionStructuredOutput,
+    chunk_key: str,
+    timestamp: int,
+    file_path: str,
+) -> tuple[dict, dict]:
+    maybe_nodes = defaultdict(list)
+    maybe_edges = defaultdict(list)
+
+    for entity in structured.entities:
+        entity_name = sanitize_and_normalize_extracted_text(
+            entity.entity_name, remove_inner_quotes=True
+        )
+        entity_type = sanitize_and_normalize_extracted_text(
+            entity.entity_type, remove_inner_quotes=True
+        )
+        if not entity_name or not entity_type:
+            continue
+
+        entity_description = sanitize_and_normalize_extracted_text(
+            entity.entity_description
+            or _default_entity_description(entity_name, entity_type)
+        )
+        truncated_name = _truncate_entity_identifier(
+            entity_name,
+            DEFAULT_ENTITY_NAME_MAX_LENGTH,
+            chunk_key,
+            "Entity name",
+        )
+        maybe_nodes[truncated_name].append(
+            dict(
+                entity_name=truncated_name,
+                entity_type=entity_type.replace(" ", "").lower(),
+                description=entity_description,
+                source_id=chunk_key,
+                file_path=file_path,
+                timestamp=timestamp,
+            )
+        )
+
+    for relation in structured.relations:
+        source_entity = sanitize_and_normalize_extracted_text(
+            relation.source_entity, remove_inner_quotes=True
+        )
+        target_entity = sanitize_and_normalize_extracted_text(
+            relation.target_entity, remove_inner_quotes=True
+        )
+        relation_label = sanitize_and_normalize_extracted_text(
+            relation.relationship_keywords, remove_inner_quotes=True
+        )
+        if not source_entity or not target_entity or not relation_label:
+            continue
+        if source_entity == target_entity:
+            continue
+
+        relation_description = sanitize_and_normalize_extracted_text(
+            relation.relationship_description
+            or _default_relation_description(
+                source_entity, target_entity, relation_label
+            )
+        )
+        truncated_source = _truncate_entity_identifier(
+            source_entity,
+            DEFAULT_ENTITY_NAME_MAX_LENGTH,
+            chunk_key,
+            "Relation entity",
+        )
+        truncated_target = _truncate_entity_identifier(
+            target_entity,
+            DEFAULT_ENTITY_NAME_MAX_LENGTH,
+            chunk_key,
+            "Relation entity",
+        )
+        maybe_edges[(truncated_source, truncated_target)].append(
+            dict(
+                src_id=truncated_source,
+                tgt_id=truncated_target,
+                weight=1.0,
+                description=relation_description,
+                keywords=relation_label,
+                source_id=chunk_key,
+                file_path=file_path,
+                timestamp=timestamp,
+            )
+        )
+
+    return dict(maybe_nodes), dict(maybe_edges)
+
+
 async def rebuild_knowledge_from_chunks(
     entities_to_rebuild: dict[str, list[str]],
     relationships_to_rebuild: dict[tuple[str, str], list[str]],
@@ -935,7 +1545,7 @@ async def _get_cached_extraction_results(
 
 
 async def _process_extraction_result(
-    result: str,
+    result: str | dict[str, Any] | ExtractionStructuredOutput,
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
@@ -955,6 +1565,19 @@ async def _process_extraction_result(
     """
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
+
+    structured_output = _parse_structured_extraction_output(result, chunk_key)
+    if structured_output is not None:
+        return _structured_output_to_graph_data(
+            structured_output,
+            chunk_key,
+            timestamp,
+            file_path,
+        )
+
+    if not isinstance(result, str):
+        logger.warning("%s: extraction result is not a string and not structured JSON", chunk_key)
+        return dict(maybe_nodes), dict(maybe_edges)
 
     if completion_delimiter not in result:
         logger.warning(
@@ -2905,25 +3528,30 @@ async def extract_entities(
     entity_types = global_config["addon_params"].get(
         "entity_types", DEFAULT_ENTITY_TYPES
     )
+    relation_labels = global_config["addon_params"].get(
+        "relation_labels", DEFAULT_RELATION_LABELS
+    )
 
     examples = "\n".join(PROMPTS["entity_extraction_examples"])
-
-    example_context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=", ".join(entity_types),
-        language=language,
-    )
-    # add example's format
-    examples = examples.format(**example_context_base)
 
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=",".join(entity_types),
+        relation_labels=",".join(relation_labels),
         examples=examples,
         language=language,
     )
+    request_structured_output = _should_use_api_structured_extraction()
+    extraction_call_kwargs: dict[str, Any] = {
+        "_lightrag_extraction_request": True
+    }
+    if request_structured_output:
+        extraction_call_kwargs["response_format"] = ExtractionStructuredOutput
+    else:
+        logger.info(
+            "Extraction API response_format disabled for managed local MLX host; relying on prompt-constrained JSON output"
+        )
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
@@ -2955,9 +3583,7 @@ async def extract_entities(
         entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
             **{**context_base, "input_text": content}
         )
-        entity_continue_extraction_user_prompt = PROMPTS[
-            "entity_continue_extraction_user_prompt"
-        ].format(**{**context_base, "input_text": content})
+        entity_continue_extraction_user_prompt = ENTITY_CONTINUE_EXTRACTION_USER_PROMPT.format(**{**context_base, "input_text": content})
 
         final_result, timestamp = await use_llm_func_with_cache(
             entity_extraction_user_prompt,
@@ -2967,6 +3593,7 @@ async def extract_entities(
             cache_type="extract",
             chunk_id=chunk_key,
             cache_keys_collector=cache_keys_collector,
+            **extraction_call_kwargs,
         )
 
         history = pack_user_ass_to_openai_messages(
@@ -3014,6 +3641,7 @@ async def extract_entities(
                     cache_type="extract",
                     chunk_id=chunk_key,
                     cache_keys_collector=cache_keys_collector,
+                    **extraction_call_kwargs,
                 )
 
                 # Process gleaning result separately with file path
@@ -3161,6 +3789,260 @@ async def extract_entities(
     return chunk_results
 
 
+# ---------------------------------------------------------------------------
+# Agent tool execution runtime
+# ---------------------------------------------------------------------------
+
+
+def _parse_tool_calls(text: str) -> list[dict]:
+    """Parse ``<tool_call>JSON</tool_call>`` XML blocks from LLM response text.
+
+    Returns a list of parsed tool-call dicts, each with at least a ``"tool"``
+    key.  Returns an empty list when no (parseable) tool calls are found.
+    """
+    pattern = r"<tool_call>\s*(.*?)\s*</tool_call>"
+    matches = re.findall(pattern, text, re.DOTALL)
+    result: list[dict] = []
+    for match in matches:
+        raw = match.strip()
+        # Try standard JSON first, then json_repair for lenient parsing
+        parsed = None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                parsed = json_repair.loads(raw)
+            except Exception:
+                pass
+        if isinstance(parsed, dict) and "tool" in parsed:
+            result.append(parsed)
+    return result
+
+
+def _remove_tool_call_xml(text: str) -> str:
+    """Strip any remaining ``<tool_call>`` blocks from a final answer."""
+    return re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL).strip()
+
+
+async def _execute_tool_call(
+    tool_call: dict,
+    entities_vdb: BaseVectorStorage | None,
+    relationships_vdb: BaseVectorStorage | None,
+    chunks_vdb: BaseVectorStorage | None,
+    knowledge_graph_inst: BaseGraphStorage | None,
+) -> str:
+    """Execute a single tool call and return a human-readable result string.
+
+    Supported tools (see ``PROMPTS["agent_tool_protocol_query"]``):
+        - ``search_entities``       – semantic search over entity vectors
+        - ``search_relations``      – semantic search over relation/edge vectors
+        - ``search_chunks``         – semantic search over document chunk vectors
+        - ``get_entity_detail``     – full description for one entity from the graph
+        - ``get_relations_for_entity`` – all relations connected to one entity
+    """
+    tool_name = tool_call.get("tool", "")
+    args = tool_call.get("args", {})
+
+    if tool_name == "search_entities":
+        if entities_vdb is None:
+            return "Error: Entity vector database is not available in this query mode."
+        query = args.get("query", "")
+        top_k = int(args.get("top_k", 10))
+        if not query:
+            return "Error: 'query' argument is required for search_entities."
+        results = await entities_vdb.query(query, top_k=top_k)
+        if not results:
+            return "No entities found."
+        lines: list[str] = []
+        for i, r in enumerate(results, 1):
+            name = r.get("entity_name", "unknown")
+            desc = r.get("description", "")
+            etype = r.get("entity_type", "")
+            lines.append(f"{i}. {name}")
+            if etype:
+                lines.append(f"   Type: {etype}")
+            if desc:
+                lines.append(f"   Description: {desc[:300]}")
+        return "\n".join(lines)
+
+    elif tool_name == "search_relations":
+        if relationships_vdb is None:
+            return "Error: Relationship vector database is not available in this query mode."
+        query = args.get("query", "")
+        top_k = int(args.get("top_k", 10))
+        if not query:
+            return "Error: 'query' argument is required for search_relations."
+        results = await relationships_vdb.query(query, top_k=top_k)
+        if not results:
+            return "No relationships found."
+        lines = []
+        for i, r in enumerate(results, 1):
+            src = r.get("source_id", "?")
+            tgt = r.get("target_id", "?")
+            desc = r.get("description", "")
+            kw = r.get("keywords", "")
+            lines.append(f"{i}. {src} → {tgt}")
+            if desc:
+                lines.append(f"   Description: {desc[:300]}")
+            if kw:
+                lines.append(f"   Keywords: {kw}")
+        return "\n".join(lines)
+
+    elif tool_name == "search_chunks":
+        if chunks_vdb is None:
+            return "Error: Chunks vector database is not available in this query mode."
+        query = args.get("query", "")
+        top_k = int(args.get("top_k", 10))
+        if not query:
+            return "Error: 'query' argument is required for search_chunks."
+        results = await chunks_vdb.query(query, top_k=top_k)
+        if not results:
+            return "No chunks found."
+        lines = []
+        for i, r in enumerate(results, 1):
+            content = r.get("content", "")
+            file_path = r.get("file_path", "unknown")
+            lines.append(f"[{i}] {content[:400]}")
+            lines.append(f"    Source: {file_path}")
+        return "\n".join(lines)
+
+    elif tool_name == "get_entity_detail":
+        if knowledge_graph_inst is None:
+            return "Error: Knowledge graph is not available in this query mode."
+        entity_name = args.get("entity_name", "")
+        if not entity_name:
+            return "Error: 'entity_name' argument is required for get_entity_detail."
+        node = await knowledge_graph_inst.get_node(entity_name)
+        if node is None:
+            return f"Entity '{entity_name}' not found in knowledge graph."
+        lines = [f"Entity: {entity_name}"]
+        if "description" in node and node["description"]:
+            lines.append(f"  Description: {node['description']}")
+        if "entity_type" in node and node["entity_type"]:
+            lines.append(f"  Type: {node['entity_type']}")
+        if "source_id" in node and node["source_id"]:
+            lines.append(f"  Source ID: {node['source_id']}")
+        return "\n".join(lines)
+
+    elif tool_name == "get_relations_for_entity":
+        if knowledge_graph_inst is None:
+            return "Error: Knowledge graph is not available in this query mode."
+        entity_name = args.get("entity_name", "")
+        if not entity_name:
+            return (
+                "Error: 'entity_name' argument is required"
+                " for get_relations_for_entity."
+            )
+        edges = await knowledge_graph_inst.get_node_edges(entity_name)
+        if not edges:
+            return f"No relationships found for entity '{entity_name}'."
+        lines = [f"Relationships for '{entity_name}':"]
+        for src, tgt in edges:
+            edge_data = await knowledge_graph_inst.get_edge(src, tgt)
+            desc = (edge_data or {}).get("description", "")
+            kw = (edge_data or {}).get("keywords", "")
+            lines.append(f"  {src} → {tgt}")
+            if desc:
+                lines.append(f"    Description: {desc[:200]}")
+            if kw:
+                lines.append(f"    Keywords: {kw}")
+        return "\n".join(lines)
+
+    else:
+        available = (
+            "search_entities, search_relations, search_chunks, "
+            "get_entity_detail, get_relations_for_entity"
+        )
+        return f"Unknown tool '{tool_name}'. Available tools: {available}"
+
+
+async def _run_tool_loop(
+    query: str,
+    system_prompt: str,
+    use_model_func: Callable[..., Any],
+    query_param: QueryParam,
+    entities_vdb: BaseVectorStorage | None,
+    relationships_vdb: BaseVectorStorage | None,
+    chunks_vdb: BaseVectorStorage | None,
+    knowledge_graph_inst: BaseGraphStorage | None,
+    max_tool_rounds: int = 5,
+) -> str:
+    """Interactive tool loop for agentic retrieval.
+
+    The LLM is called with the ``system_prompt`` (which should include
+    ``AGENT_TOOL_PROTOCOL_QUERY``) and the user ``query``.  If the response
+    contains a ``<tool_call>`` block the tool is executed and the result is
+    fed back as a new user message; otherwise the response is returned as the
+    final answer.
+
+    The loop runs at most ``max_tool_rounds`` iterations.  Streaming is
+    implicitly disabled during the tool loop.
+    """
+    history = list(query_param.conversation_history or [])
+
+    for _round in range(max_tool_rounds):
+        response = await use_model_func(
+            query,
+            system_prompt=system_prompt,
+            history_messages=history,
+            enable_cot=True,
+            stream=False,
+            _lightrag_request_kind="query",
+        )
+
+        if not isinstance(response, str):
+            # Streaming response – shouldn't happen with stream=False but be safe
+            logger.warning(
+                "[_run_tool_loop] unexpected non-string response, "
+                "falling back to direct output"
+            )
+            return str(response)
+
+        tool_calls = _parse_tool_calls(response)
+
+        if not tool_calls:
+            # No tool call – this is the final answer
+            return _remove_tool_call_xml(response)
+
+        # Execute the first tool call (protocol says one tool per turn)
+        tool_call = tool_calls[0]
+        logger.info(
+            "[_run_tool_loop] round %d tool=%s args=%s",
+            _round + 1,
+            tool_call.get("tool"),
+            tool_call.get("args"),
+        )
+
+        try:
+            result = await _execute_tool_call(
+                tool_call,
+                entities_vdb,
+                relationships_vdb,
+                chunks_vdb,
+                knowledge_graph_inst,
+            )
+        except Exception as exc:
+            logger.error("[_run_tool_loop] tool execution error: %s", exc)
+            result = f"Error executing {tool_call.get('tool')}: {exc}"
+
+        # Feed assistant message (containing tool call) and tool result back
+        history.append({"role": "assistant", "content": response})
+        history.append(
+            {
+                "role": "user",
+                "content": (
+                    f"Tool result for {tool_call.get('tool')}:\n"
+                    f"{result}\n\n"
+                    "Continue your analysis or provide a final grounded answer."
+                ),
+            }
+        )
+
+    # Max rounds reached – return last response cleaned of tool call XML
+    logger.warning("[_run_tool_loop] max rounds (%d) reached", max_tool_rounds)
+    return _remove_tool_call_xml(response)
+
+
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -3279,14 +4161,61 @@ async def kg_query(
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
         return QueryResult(content=prompt_content, raw_data=context_result.raw_data)
 
+    # --- Agent tool loop ---------------------------------------------------
+    agent_tools_enabled = getattr(
+        query_param, "enable_agent_tools", global_config.get("agent_tools", False)
+    )
+    if agent_tools_enabled:
+        logger.info(
+            "[kg_query] Agent tools enabled – dispatching to tool loop"
+        )
+        # Prepend tool protocol instructions to the system prompt
+        tool_prompt = PROMPTS["agent_tool_protocol_query"]
+        augmented_sys_prompt = f"{tool_prompt}\n\n{sys_prompt}"
+        response = await _run_tool_loop(
+            query=user_query,
+            system_prompt=augmented_sys_prompt,
+            use_model_func=use_model_func,
+            query_param=query_param,
+            entities_vdb=entities_vdb,
+            relationships_vdb=relationships_vdb,
+            chunks_vdb=chunks_vdb,
+            knowledge_graph_inst=knowledge_graph_inst,
+        )
+        # Tool-loop responses are non-deterministic – skip caching
+        return QueryResult(content=response, raw_data=context_result.raw_data)
+    # -----------------------------------------------------------------------
+
     # Call LLM
     tokenizer: Tokenizer = global_config["tokenizer"]
+    use_apfel_iterative = _is_apfel_fast_query(global_config, query_param)
+    apfel_portions: list[dict[str, Any]] = []
+    if use_apfel_iterative:
+        apfel_portions = _build_apfel_iterative_portions(
+            context_result.raw_data,
+            tokenizer,
+            query_param.max_total_tokens,
+        )
+        context_result.raw_data.setdefault("metadata", {})[
+            "apfel_iterative"
+        ] = _apfel_iterative_metadata(apfel_portions)
+        logger.info(
+            "APFEL_ITERATIVE_PREPARED portions=%s token_estimates=%s",
+            len(apfel_portions),
+            [portion.get("token_estimate", 0) for portion in apfel_portions],
+        )
+
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(
         f"[kg_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
     )
 
     # Handle cache
+    cache_generation_marker = (
+        "apfel_iterative_v1"
+        if use_apfel_iterative and apfel_portions
+        else "standard_v1"
+    )
     args_hash = compute_args_hash(
         query_param.mode,
         query,
@@ -3300,6 +4229,7 @@ async def kg_query(
         ll_keywords_str,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        cache_generation_marker,
     )
 
     cached_result = await handle_cache(
@@ -3313,15 +4243,41 @@ async def kg_query(
         )
         response = cached_response
     else:
-        response = await use_model_func(
-            user_query,
-            system_prompt=sys_prompt,
-            history_messages=query_param.conversation_history,
-            enable_cot=True,
-            stream=query_param.stream,
-        )
+        llm_call_kwargs = {}
+        max_completion_tokens = getattr(query_param, "max_completion_tokens", None)
+        if max_completion_tokens:
+            llm_call_kwargs["max_completion_tokens"] = max_completion_tokens
 
-        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
+        if use_apfel_iterative and apfel_portions:
+            iterative_kwargs = {
+                "query": user_query,
+                "response_type": response_type,
+                "query_param": query_param,
+                "use_model_func": use_model_func,
+                "tokenizer": tokenizer,
+                "portions": apfel_portions,
+                "raw_data": context_result.raw_data,
+            }
+            if query_param.stream:
+                response = _run_apfel_iterative_answer_generator(**iterative_kwargs)
+            else:
+                response = await _run_apfel_iterative_answer(**iterative_kwargs)
+        else:
+            response = await use_model_func(
+                user_query,
+                system_prompt=sys_prompt,
+                history_messages=query_param.conversation_history,
+                enable_cot=True,
+                stream=query_param.stream,
+                _lightrag_request_kind="query",
+                **llm_call_kwargs,
+            )
+
+        if (
+            hashing_kv
+            and hashing_kv.global_config.get("enable_llm_cache")
+            and not (use_apfel_iterative and query_param.stream)
+        ):
             queryparam_dict = {
                 "mode": query_param.mode,
                 "response_type": query_param.response_type,
@@ -3334,6 +4290,7 @@ async def kg_query(
                 "ll_keywords": ll_keywords_str,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
+                "generation": cache_generation_marker,
             }
             await save_to_cache(
                 hashing_kv,
@@ -3350,7 +4307,7 @@ async def kg_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
+        if not use_apfel_iterative and len(response) > len(sys_prompt):
             response = (
                 response.replace(sys_prompt, "")
                 .replace("user", "")
@@ -3416,7 +4373,7 @@ async def extract_keywords_only(
     """
 
     # 1. Build the examples
-    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+    examples = "\n".join(KEYWORDS_EXTRACTION_EXAMPLES)
 
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
@@ -3462,8 +4419,12 @@ async def extract_keywords_only(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    result = await use_model_func(kw_prompt, keyword_extraction=True)
-
+    # TODO: use structured extraction here
+    result = await use_model_func(
+        kw_prompt,
+        keyword_extraction=True,
+        _lightrag_request_kind="query_keywords",
+    )
     # 5. Parse out JSON from the LLM response
     result = remove_think_tags(result)
     try:
@@ -4367,6 +5328,7 @@ async def _get_node_data(
         f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
     )
 
+    _t0 = time.monotonic()
     results = await entities_vdb.query(
         query, top_k=query_param.top_k, query_embedding=query_embedding
     )
@@ -4381,6 +5343,10 @@ async def _get_node_data(
     nodes_dict, degrees_dict = await asyncio.gather(
         knowledge_graph_inst.get_nodes_batch(node_ids),
         knowledge_graph_inst.node_degrees_batch(node_ids),
+    )
+    _t1 = time.monotonic()
+    logger.info(
+        f"Graph backend: get_nodes_batch({len(node_ids)} nodes) + node_degrees_batch took {(_t1 - _t0) * 1000:.0f}ms"
     )
 
     # Now, if you need the node data and degree in order:
@@ -4406,6 +5372,10 @@ async def _get_node_data(
         query_param,
         knowledge_graph_inst,
     )
+    _t2 = time.monotonic()
+    logger.info(
+        f"Graph backend: _find_most_related_edges_from_entities took {(_t2 - _t1) * 1000:.0f}ms"
+    )
 
     logger.info(
         f"Local query: {len(node_datas)} entites, {len(use_relations)} relations"
@@ -4422,6 +5392,7 @@ async def _find_most_related_edges_from_entities(
     knowledge_graph_inst: BaseGraphStorage,
 ):
     node_names = [dp["entity_name"] for dp in node_datas]
+    _te0 = time.monotonic()
     batch_edges_dict = await knowledge_graph_inst.get_nodes_edges_batch(node_names)
 
     all_edges = []
@@ -4445,6 +5416,10 @@ async def _find_most_related_edges_from_entities(
     edge_data_dict, edge_degrees_dict = await asyncio.gather(
         knowledge_graph_inst.get_edges_batch(edge_pairs_dicts),
         knowledge_graph_inst.edge_degrees_batch(edge_pairs_tuples),
+    )
+    _te1 = time.monotonic()
+    logger.info(
+        f"Graph backend: get_nodes_edges_batch({len(node_names)} nodes) + get_edges_batch({len(edge_pairs_dicts)} edges) + edge_degrees_batch took {(_te1 - _te0) * 1000:.0f}ms"
     )
 
     # Reconstruct edge_datas list in the same order as the deduplicated results.
@@ -4652,7 +5627,12 @@ async def _get_edge_data(
     # Prepare edge pairs in two forms:
     # For the batch edge properties function, use dicts.
     edge_pairs_dicts = [{"src": r["src_id"], "tgt": r["tgt_id"]} for r in results]
+    _te0 = time.monotonic()
     edge_data_dict = await knowledge_graph_inst.get_edges_batch(edge_pairs_dicts)
+    _te1 = time.monotonic()
+    logger.info(
+        f"Graph backend: get_edges_batch({len(edge_pairs_dicts)} edges) took {(_te1 - _te0) * 1000:.0f}ms"
+    )
 
     # Reconstruct edge_datas list in the same order as results.
     edge_datas = []
@@ -4707,7 +5687,12 @@ async def _find_most_related_entities_from_relationships(
             seen.add(e["tgt_id"])
 
     # Only get nodes data, no need for node degrees
+    _tn0 = time.monotonic()
     nodes_dict = await knowledge_graph_inst.get_nodes_batch(entity_names)
+    _tn1 = time.monotonic()
+    logger.info(
+        f"Graph backend: get_nodes_batch({len(entity_names)} entities from relations) took {(_tn1 - _tn0) * 1000:.0f}ms"
+    )
 
     # Rebuild the list in the same order as entity_names
     node_datas = []
@@ -4957,6 +5942,9 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    entities_vdb: BaseVectorStorage | None = None,
+    relationships_vdb: BaseVectorStorage | None = None,
+    knowledge_graph_inst: BaseGraphStorage | None = None,
 ) -> QueryResult | None:
     """
     Execute naive query and return unified QueryResult object.
@@ -4968,6 +5956,9 @@ async def naive_query(
         global_config: Global configuration
         hashing_kv: Cache storage
         system_prompt: System prompt
+        entities_vdb: Optional entity vector database (needed for agent tool loop)
+        relationships_vdb: Optional relationship vector database (needed for agent tool loop)
+        knowledge_graph_inst: Optional knowledge graph (needed for agent tool loop)
 
     Returns:
         QueryResult | None: Unified query result object containing:
@@ -5009,7 +6000,7 @@ async def naive_query(
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
-    # Calculate system prompt template tokens (excluding content_data)
+    # Calculate system prompt template tokens (excluding injected context)
     user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
     response_type = (
         query_param.response_type
@@ -5022,11 +6013,13 @@ async def naive_query(
         system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     )
 
-    # Create a preliminary system prompt with empty content_data to calculate overhead
+    # Support both naive-only templates ({content_data}) and shared RAG templates
+    # ({context_data}) so WebUI prompt overrides do not break naive mode.
     pre_sys_prompt = sys_prompt_template.format(
         response_type=response_type,
         user_prompt=user_prompt,
         content_data="",  # Empty for overhead calculation
+        context_data="",
     )
 
     # Calculate available tokens for chunks
@@ -5108,9 +6101,10 @@ async def naive_query(
         return QueryResult(content=context_content, raw_data=raw_data)
 
     sys_prompt = sys_prompt_template.format(
-        response_type=query_param.response_type,
+        response_type=response_type,
         user_prompt=user_prompt,
         content_data=context_content,
+        context_data=context_content,
     )
 
     user_query = query
@@ -5118,6 +6112,30 @@ async def naive_query(
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
         return QueryResult(content=prompt_content, raw_data=raw_data)
+
+    # --- Agent tool loop ---------------------------------------------------
+    agent_tools_enabled = getattr(
+        query_param, "enable_agent_tools", global_config.get("agent_tools", False)
+    )
+    if agent_tools_enabled:
+        logger.info(
+            "[naive_query] Agent tools enabled – dispatching to tool loop"
+        )
+        tool_prompt = PROMPTS["agent_tool_protocol_query"]
+        augmented_sys_prompt = f"{tool_prompt}\n\n{sys_prompt}"
+        response = await _run_tool_loop(
+            query=user_query,
+            system_prompt=augmented_sys_prompt,
+            use_model_func=use_model_func,
+            query_param=query_param,
+            entities_vdb=entities_vdb,
+            relationships_vdb=relationships_vdb,
+            chunks_vdb=chunks_vdb,
+            knowledge_graph_inst=knowledge_graph_inst,
+        )
+        # Tool-loop responses are non-deterministic – skip caching
+        return QueryResult(content=response, raw_data=raw_data)
+    # -----------------------------------------------------------------------
 
     # Handle cache
     args_hash = compute_args_hash(
@@ -5142,12 +6160,19 @@ async def naive_query(
         )
         response = cached_response
     else:
+        llm_call_kwargs = {}
+        max_completion_tokens = getattr(query_param, "max_completion_tokens", None)
+        if max_completion_tokens:
+            llm_call_kwargs["max_completion_tokens"] = max_completion_tokens
+
         response = await use_model_func(
             user_query,
             system_prompt=sys_prompt,
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            _lightrag_request_kind="query",
+            **llm_call_kwargs,
         )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):

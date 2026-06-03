@@ -1,4 +1,3 @@
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -16,6 +15,7 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
+from ..config import settings
 from ..utils import logger, compute_mdhash_id, _cooperative_yield
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
@@ -38,7 +38,33 @@ from pymongo.errors import PyMongoError  # type: ignore
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
-GRAPH_BFS_MODE = os.getenv("MONGO_GRAPH_BFS_MODE", "bidirectional")
+GRAPH_BFS_MODE = settings.mongo_graph_bfs_mode
+
+
+def _resolve_mongodb_workspace(workspace: str, namespace: str) -> str:
+    mongodb_workspace = settings.mongodb_workspace_override
+    if mongodb_workspace:
+        logger.info(
+            f"Using MONGODB_WORKSPACE environment variable: '{mongodb_workspace}' (overriding '{workspace}/{namespace}')"
+        )
+        return mongodb_workspace
+    if workspace:
+        logger.debug(f"Using passed workspace parameter: '{workspace}'")
+    return settings.effective_mongodb_workspace(workspace)
+
+
+def _configure_mongodb_namespace(storage: Any) -> None:
+    effective_workspace = _resolve_mongodb_workspace(storage.workspace, storage.namespace)
+    if effective_workspace:
+        storage.final_namespace = f"{effective_workspace}_{storage.namespace}"
+        storage.workspace = effective_workspace
+        logger.debug(
+            f"Final namespace with workspace prefix: '{storage.final_namespace}'"
+        )
+    else:
+        storage.final_namespace = storage.namespace
+        storage.workspace = ""
+        logger.debug(f"Final namespace (no workspace): '{storage.final_namespace}'")
 
 
 class ClientManager:
@@ -49,17 +75,15 @@ class ClientManager:
     async def get_client(cls) -> AsyncMongoClient:
         async with cls._lock:
             if cls._instances["db"] is None:
-                uri = os.environ.get(
-                    "MONGO_URI",
+                uri = settings.mongodb_uri(
                     config.get(
                         "mongodb",
                         "uri",
                         fallback="mongodb://root:root@localhost:27017/",
-                    ),
+                    )
                 )
-                database_name = os.environ.get(
-                    "MONGO_DATABASE",
-                    config.get("mongodb", "database", fallback="LightRAG"),
+                database_name = settings.mongodb_database(
+                    config.get("mongodb", "database", fallback="LightRAG")
                 )
                 client = AsyncMongoClient(
                     uri,
@@ -97,38 +121,7 @@ class MongoKVStorage(BaseKVStorage):
         self.__post_init__()
 
     def __post_init__(self):
-        # Check for MONGODB_WORKSPACE environment variable first (higher priority)
-        # This allows administrators to force a specific workspace for all MongoDB storage instances
-        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
-        if mongodb_workspace and mongodb_workspace.strip():
-            # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
-            logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
-            )
-        else:
-            # Use the workspace parameter passed during initialization
-            effective_workspace = self.workspace
-            if effective_workspace:
-                logger.debug(
-                    f"Using passed workspace parameter: '{effective_workspace}'"
-                )
-
-        # Build final_namespace with workspace prefix for data isolation
-        # Keep original namespace unchanged for type detection logic
-        if effective_workspace:
-            self.final_namespace = f"{effective_workspace}_{self.namespace}"
-            self.workspace = effective_workspace
-            logger.debug(
-                f"Final namespace with workspace prefix: '{self.final_namespace}'"
-            )
-        else:
-            # When workspace is empty, final_namespace equals original namespace
-            self.final_namespace = self.namespace
-            self.workspace = ""
-            logger.debug(
-                f"[{self.workspace}] Final namespace (no workspace): '{self.namespace}'"
-            )
+        _configure_mongodb_namespace(self)
 
         self._collection_name = self.final_namespace
 
@@ -326,36 +319,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         self.__post_init__()
 
     def __post_init__(self):
-        # Check for MONGODB_WORKSPACE environment variable first (higher priority)
-        # This allows administrators to force a specific workspace for all MongoDB storage instances
-        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
-        if mongodb_workspace and mongodb_workspace.strip():
-            # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
-            logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
-            )
-        else:
-            # Use the workspace parameter passed during initialization
-            effective_workspace = self.workspace
-            if effective_workspace:
-                logger.debug(
-                    f"Using passed workspace parameter: '{effective_workspace}'"
-                )
-
-        # Build final_namespace with workspace prefix for data isolation
-        # Keep original namespace unchanged for type detection logic
-        if effective_workspace:
-            self.final_namespace = f"{effective_workspace}_{self.namespace}"
-            self.workspace = effective_workspace
-            logger.debug(
-                f"Final namespace with workspace prefix: '{self.final_namespace}'"
-            )
-        else:
-            # When workspace is empty, final_namespace equals original namespace
-            self.final_namespace = self.namespace
-            self.workspace = ""
-            logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
+        _configure_mongodb_namespace(self)
 
         self._collection_name = self.final_namespace
 
@@ -763,36 +727,7 @@ class MongoGraphStorage(BaseGraphStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
-        # Check for MONGODB_WORKSPACE environment variable first (higher priority)
-        # This allows administrators to force a specific workspace for all MongoDB storage instances
-        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
-        if mongodb_workspace and mongodb_workspace.strip():
-            # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
-            logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
-            )
-        else:
-            # Use the workspace parameter passed during initialization
-            effective_workspace = self.workspace
-            if effective_workspace:
-                logger.debug(
-                    f"Using passed workspace parameter: '{effective_workspace}'"
-                )
-
-        # Build final_namespace with workspace prefix for data isolation
-        # Keep original namespace unchanged for type detection logic
-        if effective_workspace:
-            self.final_namespace = f"{effective_workspace}_{self.namespace}"
-            self.workspace = effective_workspace
-            logger.debug(
-                f"Final namespace with workspace prefix: '{self.final_namespace}'"
-            )
-        else:
-            # When workspace is empty, final_namespace equals original namespace
-            self.final_namespace = self.namespace
-            self.workspace = ""
-            logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
+        _configure_mongodb_namespace(self)
 
         self._collection_name = self.final_namespace
         self._edge_collection_name = f"{self._collection_name}_edges"
@@ -2182,40 +2117,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
     def __post_init__(self):
         self._validate_embedding_func()
-
-        # Check for MONGODB_WORKSPACE environment variable first (higher priority)
-        # This allows administrators to force a specific workspace for all MongoDB storage instances
-        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
-        if mongodb_workspace and mongodb_workspace.strip():
-            # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = mongodb_workspace.strip()
-            logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
-            )
-        else:
-            # Use the workspace parameter passed during initialization
-            effective_workspace = self.workspace
-            if effective_workspace:
-                logger.debug(
-                    f"Using passed workspace parameter: '{effective_workspace}'"
-                )
-
-        # Build final_namespace with workspace prefix for data isolation
-        # Keep original namespace unchanged for type detection logic
-        if effective_workspace:
-            self.final_namespace = f"{effective_workspace}_{self.namespace}"
-            self.workspace = effective_workspace
-            logger.debug(
-                f"Final namespace with workspace prefix: '{self.final_namespace}'"
-            )
-        else:
-            # When workspace is empty, final_namespace equals original namespace
-            self.final_namespace = self.namespace
-            self.workspace = ""
-            logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
+        _configure_mongodb_namespace(self)
 
         # Set index name based on workspace for backward compatibility
-        if effective_workspace:
+        if self.workspace:
             # Use collection-specific index name for workspaced collections to avoid conflicts
             self._index_name = f"vector_knn_index_{self.final_namespace}"
         else:

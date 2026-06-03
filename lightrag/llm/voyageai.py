@@ -1,6 +1,6 @@
-import os
 import numpy as np
 import pipmaster as pm  # Pipmaster for dynamic library install
+from lightrag.config import settings
 
 # Add Voyage AI import
 if not pm.is_installed("voyageai"):
@@ -95,7 +95,7 @@ async def voyageai_embed(
 
     """
     if not api_key:
-        api_key = os.environ.get("VOYAGE_API_KEY") or os.environ.get("VOYAGEAI_API_KEY")
+        api_key = settings.voyage_api_key
         if not api_key:
             logger.error(
                 "VoyageAI API key not provided and neither VOYAGE_API_KEY nor "

@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
-import { Message } from '@/api/lightrag'
+import { Message, QueryDebugData } from '@/api/lightrag'
 import useTheme from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
 
@@ -32,6 +32,11 @@ export type MessageWithError = Message & {
   id: string // Unique identifier for stable React keys
   isError?: boolean
   isThinking?: boolean // Flag to indicate if the message is in a "thinking" state
+  queryDebug?: QueryDebugData
+  enrichedContent?: string
+  enrichmentModel?: string
+  enrichmentElapsedMs?: number
+  enrichmentError?: string
   /**
    * Indicates if the mermaid diagram in this message has been rendered.
    * Used to persist the rendering state across updates and prevent flickering.
@@ -75,6 +80,8 @@ export const ChatMessage = ({
   const finalDisplayContent = message.role === 'user'
     ? message.content
     : (displayContent !== undefined ? displayContent : (message.content || ''))
+
+  const queryDebug = message.queryDebug
 
   // Load KaTeX rehype plugin dynamically
   // Note: KaTeX extensions (mhchem, copy-tex) are imported statically in main.tsx
@@ -220,6 +227,85 @@ export const ChatMessage = ({
         </div>
       )}
       {/* Main content display */}
+      {message.role === 'assistant' && queryDebug && (
+        <div className="mb-3 rounded-md border border-border/60 bg-background/70 px-3 py-3 text-xs text-foreground">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="font-semibold">Retrieval Debug</div>
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{queryDebug.mode}</div>
+          </div>
+
+          <div className="space-y-2">
+            <div>
+              <div className="mb-1 font-medium text-muted-foreground">Pipeline</div>
+              <div className="space-y-1">
+                {queryDebug.retrieval_steps.map((step) => (
+                  <div key={`${step.label}-${step.detail}`} className="grid grid-cols-[110px_minmax(0,1fr)] gap-2">
+                    <span className="font-medium">{step.label}</span>
+                    <span className="text-muted-foreground">{step.detail}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-1 font-medium text-muted-foreground">Keywords</div>
+              <div className="space-y-1">
+                <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-2">
+                  <span className="font-medium">High-level</span>
+                  <span className="text-muted-foreground">{queryDebug.keywords.high_level.join(', ') || 'None'}</span>
+                </div>
+                <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-2">
+                  <span className="font-medium">Low-level</span>
+                  <span className="text-muted-foreground">{queryDebug.keywords.low_level.join(', ') || 'None'}</span>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-1 font-medium text-muted-foreground">Processing</div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground">
+                {Object.entries(queryDebug.processing_info).map(([key, value]) => (
+                  <div key={key} className="flex items-center justify-between gap-2">
+                    <span className="truncate">{key}</span>
+                    <span className="font-medium text-foreground">{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-1 font-medium text-muted-foreground">Samples</div>
+              <div className="space-y-2 text-muted-foreground">
+                {queryDebug.samples.entities.length > 0 && (
+                  <div>
+                    <div className="font-medium text-foreground">Entities</div>
+                    <div>{queryDebug.samples.entities.map((item) => String(item.entity_name || item.reference_id || 'unknown')).join(', ')}</div>
+                  </div>
+                )}
+                {queryDebug.samples.relationships.length > 0 && (
+                  <div>
+                    <div className="font-medium text-foreground">Relationships</div>
+                    <div>{queryDebug.samples.relationships.map((item) => `${String(item.src_id || '?')} -> ${String(item.tgt_id || '?')}`).join(', ')}</div>
+                  </div>
+                )}
+                {queryDebug.samples.chunks.length > 0 && (
+                  <div>
+                    <div className="font-medium text-foreground">Chunks</div>
+                    <div>{queryDebug.samples.chunks.map((item) => String(item.file_path || item.reference_id || 'unknown')).join(', ')}</div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-1 text-muted-foreground">
+              {queryDebug.notes.map((note) => (
+                <div key={note}>{note}</div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {finalDisplayContent && (
         <div className="relative">
           <div className={`prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:max-w-full [&_.katex-display_>.base]:overflow-x-auto [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500 [&_.footnotes]:mt-8 [&_.footnotes]:pt-4 [&_.footnotes]:border-t [&_.footnotes_ol]:text-sm [&_.footnotes_li]:my-1 ${
@@ -258,6 +344,48 @@ export const ChatMessage = ({
               {finalDisplayContent}
             </ReactMarkdown>
           </div>
+        </div>
+      )}
+
+      {message.role === 'assistant' && (message.enrichedContent || message.enrichmentError) && (
+        <div className="mt-4 border-t border-border/60 pt-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
+            <span>Enriched answer</span>
+            {message.enrichmentModel && <span>{message.enrichmentModel}</span>}
+            {typeof message.enrichmentElapsedMs === 'number' && (
+              <span>{(message.enrichmentElapsedMs / 1000).toFixed(1)}s</span>
+            )}
+          </div>
+
+          {message.enrichmentError ? (
+            <div className="text-sm text-red-600 dark:text-red-400">
+              {message.enrichmentError}
+            </div>
+          ) : (
+            <div className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
+                rehypePlugins={[
+                  rehypeRaw,
+                  ...((katexPlugin && (message.latexRendered ?? true)) ? [[
+                    katexPlugin,
+                    {
+                      errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
+                      throwOnError: false,
+                      displayMode: false,
+                      strict: false,
+                      trust: true
+                    }
+                  ] as any] : []),
+                  rehypeReact
+                ]}
+                skipHtml={false}
+                components={mainMarkdownComponents}
+              >
+                {message.enrichedContent || ''}
+              </ReactMarkdown>
+            </div>
+          )}
         </div>
       )}
       {/* Loading indicator - only show in active tab */}

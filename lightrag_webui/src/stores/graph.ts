@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
 import { DirectedGraph } from 'graphology'
 import MiniSearch from 'minisearch'
-import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
+import { resolveNodeColor, DEFAULT_NODE_COLOR, normalizeNodeTypeKey } from '@/utils/graphColor'
 
 const createErrorWithCause = (message: string, cause: unknown): Error => {
   const error = new Error(message) as Error & { cause?: unknown }
@@ -99,6 +99,7 @@ interface GraphState {
   lastSuccessfulQueryLabel: string
 
   typeColorMap: Map<string, string>
+  activeLegendTypes: string[]
 
   // Global flags to track data fetching attempts
   graphDataFetchAttempted: boolean
@@ -122,6 +123,8 @@ interface GraphState {
 
   // Legend color mapping methods
   setTypeColorMap: (typeColorMap: Map<string, string>) => void
+  toggleLegendType: (nodeType: string) => void
+  clearLegendTypeFilter: () => void
 
   // Search engine methods
   setSearchEngine: (engine: MiniSearch | null) => void
@@ -168,6 +171,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   sigmaInstance: null,
 
   typeColorMap: new Map<string, string>(),
+  activeLegendTypes: [],
 
   searchEngine: null,
 
@@ -198,7 +202,8 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       sigmaGraph: null,  // to avoid other components from acccessing graph objects
       searchEngine: null,
       moveToSelectedNode: false,
-      graphIsEmpty: false
+      graphIsEmpty: false,
+      activeLegendTypes: []
     });
   },
 
@@ -217,6 +222,13 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   setSigmaInstance: (instance: any) => set({ sigmaInstance: instance }),
 
   setTypeColorMap: (typeColorMap: Map<string, string>) => set({ typeColorMap }),
+  toggleLegendType: (nodeType: string) =>
+    set((state) => ({
+      activeLegendTypes: state.activeLegendTypes.includes(nodeType)
+        ? state.activeLegendTypes.filter((type) => type !== nodeType)
+        : [...state.activeLegendTypes, nodeType]
+    })),
+  clearLegendTypeFilter: () => set({ activeLegendTypes: [] }),
 
   setSearchEngine: (engine: MiniSearch | null) => set({ searchEngine: engine }),
   resetSearchEngine: () => set({ searchEngine: null }),
@@ -337,6 +349,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
             const resolvedColor = color || DEFAULT_NODE_COLOR
             nodeRef.color = resolvedColor
             sigmaGraph.setNodeAttribute(String(nodeId), 'color', resolvedColor)
+            sigmaGraph.setNodeAttribute(String(nodeId), 'nodeType', normalizeNodeTypeKey(newValue))
             if (updated) {
               set({ typeColorMap: map })
             }

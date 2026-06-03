@@ -9,176 +9,145 @@ PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
-You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from input text for a local RAG system.
 
 ---Instructions---
-1.  **Entity Extraction & Output:**
-    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
-    *   **Entity Details:** For each identified entity, extract the following information:
-        *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
-        *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
-    *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
-        *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
-
-2.  **Relationship Extraction & Output:**
-    *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
-    *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
-        *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
-    *   **Relationship Details:** For each binary relationship, extract the following fields:
-        *   `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
-        *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
-    *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
-        *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
-
-3.  **Delimiter Usage Protocol:**
-    *   The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
-    *   **Incorrect Example:** `entity{tuple_delimiter}Tokyo<|location|>Tokyo is the capital of Japan.`
-    *   **Correct Example:** `entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the capital of Japan.`
-
-4.  **Relationship Direction & Duplication:**
-    *   Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
-    *   Avoid outputting duplicate relationships.
-
-5.  **Output Order & Prioritization:**
-    *   Output all extracted entities first, followed by all extracted relationships.
-    *   Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
-
-6.  **Context & Objectivity:**
-    *   Ensure all entity names and descriptions are written in the **third person**.
-    *   Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
-
-7.  **Language & Proper Nouns:**
-    *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
-    *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
-
-8.  **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships, following all criteria, have been completely extracted and outputted.
+1. Return exactly one valid JSON object and nothing else. No markdown, no code fences, no commentary.
+2. The JSON object must match this schema:
+   {{
+     "entities": [
+       {{
+         "entity_name": "string",
+         "entity_type": "string",
+         "entity_description": "string"
+       }}
+     ],
+     "relations": [
+       {{
+         "source_entity": "string",
+         "target_entity": "string",
+         "relationship_keywords": "string",
+         "relationship_description": "string"
+       }}
+     ]
+   }}
+3. Use only these entity types: {entity_types}. If no type fits, use `Other`.
+4. Prefer exact uppercase relation labels from this set: {relation_labels}. Use one label whenever possible. If no specific label fits, use `RELATED_TO`.
+5. Extract stable, reusable entities and direct relations that improve graph connectivity and retrieval usefulness. Prefer software, AI, workflow, issue, company, metric, and finance entities when present.
+6. Keep descriptions short and factual. One sentence maximum. If details are sparse, provide a minimal factual description rather than omitting the field.
+7. Avoid duplicates. Do not create self-relations. Treat relationships as undirected unless the text clearly implies direction.
+8. Preserve proper nouns as written in the source text. The output language must be {language}.
+9. **CRITICAL: RELATIONS REQUIREMENT.** Every entity you extract MUST participate in at least one relationship with another entity. If you output one or more entities, you MUST also output relationships between them. Inspect every pair of entities in the text and connect them with a meaningful relationship label from the allowed set. A knowledge graph without relations adds no value.
+10. To identify relationships, look for: verbs connecting two entities (e.g., "uses", "depends on", "runs on", "part of", "causes", "connects to", "stores in", "improves", "replaces", "belongs to"), ownership or possession, causal links, hierarchical or compositional structure, and co-occurrence in the same functional context. When in doubt, prefer to create a relation rather than omit it.
+11. If no entities or relations are present, return `{{"entities":[],"relations":[]}}`. Empty results are acceptable only when the text has no meaningful content whatsoever.
 
 ---Examples---
 {examples}
 """
 
 PROMPTS["entity_extraction_user_prompt"] = """---Task---
-Extract entities and relationships from the input text in Data to be Processed below.
+Extract entities and relationships from the input text below.
 
 ---Instructions---
-1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
-2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
-4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+1. Output only a JSON object matching the system schema.
+2. Use only the provided entity taxonomy and prefer canonical relation labels.
+3. Do not use legacy delimiter lines such as `entity<|#|>` or `relation<|#|>`.
+4. **CRITICAL: If you extract entities, you MUST also extract relationships between them.** Every entity must connect to at least one other entity through a relationship. For each entity, ask: "how does this entity relate to others in the text?" and record the connection.
 
 ---Data to be Processed---
 <Entity_types>
 [{entity_types}]
+
+<Relation_labels>
+[{relation_labels}]
 
 <Input Text>
 ```
 {input_text}
 ```
 
-<Output>
+<Output JSON>
 """
 
 PROMPTS["entity_continue_extraction_user_prompt"] = """---Task---
-Based on the last extraction task, identify and extract any **missed or incorrectly formatted** entities and relationships from the input text.
+Based on the last extraction task, identify and extract any missed or incorrectly formatted entities and relationships from the input text.
 
 ---Instructions---
-1.  **Strict Adherence to System Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system instructions.
-2.  **Focus on Corrections/Additions:**
-    *   **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
-    *   If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
-    *   If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
-3.  **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
-4.  **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
-5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
-7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+1. Return only a JSON object matching the same schema from the system prompt.
+2. Return only missed or corrected entities and relations. Do not repeat items that were already correctly extracted.
+3. Do not use legacy delimiter lines such as `entity<|#|>` or `relation<|#|>`.
+4. If nothing is missing, return `{{"entities":[],"relations":[]}}`.
 
-<Output>
+<Output JSON>
 """
 
 PROMPTS["entity_extraction_examples"] = [
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+    """Example 1
+Input text:
+The LightRAG service uses FastAPI and PostgreSQL. The query pipeline depends on bge-m3 embeddings. A deployment issue occurred after mlx-openai-server was restarted.
 
-<Input Text>
-```
-while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
-
-Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. "If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us."
-
-The underlying dismissal earlier seemed to falter, replaced by a glimpse of reluctant respect for the gravity of what lay in their hands. Jordan looked up, and for a fleeting heartbeat, their eyes locked with Taylor's, a wordless clash of wills softening into an uneasy truce.
-
-It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
-```
-
-<Output>
-entity{tuple_delimiter}Alex{tuple_delimiter}person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
-entity{tuple_delimiter}Taylor{tuple_delimiter}person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
-entity{tuple_delimiter}Jordan{tuple_delimiter}person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
-entity{tuple_delimiter}Cruz{tuple_delimiter}person{tuple_delimiter}Cruz is associated with a vision of control and order, influencing the dynamics among other characters.
-entity{tuple_delimiter}The Device{tuple_delimiter}equipment{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
-relation{tuple_delimiter}Alex{tuple_delimiter}Taylor{tuple_delimiter}power dynamics, observation{tuple_delimiter}Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device.
-relation{tuple_delimiter}Alex{tuple_delimiter}Jordan{tuple_delimiter}shared goals, rebellion{tuple_delimiter}Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision.)
-relation{tuple_delimiter}Taylor{tuple_delimiter}Jordan{tuple_delimiter}conflict resolution, mutual respect{tuple_delimiter}Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce.
-relation{tuple_delimiter}Jordan{tuple_delimiter}Cruz{tuple_delimiter}ideological conflict, rebellion{tuple_delimiter}Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order.
-relation{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}reverence, technological significance{tuple_delimiter}Taylor shows reverence towards the device, indicating its importance and potential impact.
-{completion_delimiter}
-
+Output JSON:
+{
+  "entities": [
+    {"entity_name": "LightRAG", "entity_type": "Project", "entity_description": "LightRAG is a service with a query pipeline and deployment workflow."},
+    {"entity_name": "FastAPI", "entity_type": "Framework", "entity_description": "FastAPI is used by the LightRAG service."},
+    {"entity_name": "PostgreSQL", "entity_type": "Database", "entity_description": "PostgreSQL is used by the LightRAG service."},
+    {"entity_name": "query pipeline", "entity_type": "Workflow", "entity_description": "query pipeline is the retrieval workflow for LightRAG."},
+    {"entity_name": "bge-m3", "entity_type": "Model", "entity_description": "bge-m3 is the embedding model used by the query pipeline."},
+    {"entity_name": "mlx-openai-server", "entity_type": "Service", "entity_description": "mlx-openai-server is a service involved in the deployment workflow."},
+    {"entity_name": "deployment issue", "entity_type": "Issue", "entity_description": "deployment issue occurred after mlx-openai-server was restarted."}
+  ],
+  "relations": [
+    {"source_entity": "LightRAG", "target_entity": "FastAPI", "relationship_keywords": "USES", "relationship_description": "LightRAG uses FastAPI in the service stack."},
+    {"source_entity": "LightRAG", "target_entity": "PostgreSQL", "relationship_keywords": "STORES_IN", "relationship_description": "LightRAG stores data in PostgreSQL."},
+    {"source_entity": "query pipeline", "target_entity": "bge-m3", "relationship_keywords": "DEPENDS_ON", "relationship_description": "The query pipeline depends on the bge-m3 embedding model."},
+    {"source_entity": "deployment issue", "target_entity": "mlx-openai-server", "relationship_keywords": "FAILS_WITH", "relationship_description": "The deployment issue is associated with mlx-openai-server being restarted."}
+  ]
+}
 """,
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+    """Example 2
+Input text:
+NVIDIA rose after its earnings report. BTC volatility increased after the CPI release. Analysts are tracking market sentiment and inflation risk.
 
-<Input Text>
-```
-Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
-
-Among the hardest hit, nexon technologies saw its stock plummet by 7.8% after reporting lower-than-expected quarterly earnings. In contrast, Omega Energy posted a modest 2.1% gain, driven by rising oil prices.
-
-Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1.5%, reaching $2,080 per ounce, as investors sought safe-haven assets. Crude oil prices continued their rally, climbing to $87.60 per barrel, supported by supply constraints and strong demand.
-
-Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
-```
-
-<Output>
-entity{tuple_delimiter}Global Tech Index{tuple_delimiter}category{tuple_delimiter}The Global Tech Index tracks the performance of major technology stocks and experienced a 3.4% decline today.
-entity{tuple_delimiter}Nexon Technologies{tuple_delimiter}organization{tuple_delimiter}Nexon Technologies is a tech company that saw its stock decline by 7.8% after disappointing earnings.
-entity{tuple_delimiter}Omega Energy{tuple_delimiter}organization{tuple_delimiter}Omega Energy is an energy company that gained 2.1% in stock value due to rising oil prices.
-entity{tuple_delimiter}Gold Futures{tuple_delimiter}product{tuple_delimiter}Gold futures rose by 1.5%, indicating increased investor interest in safe-haven assets.
-entity{tuple_delimiter}Crude Oil{tuple_delimiter}product{tuple_delimiter}Crude oil prices rose to $87.60 per barrel due to supply constraints and strong demand.
-entity{tuple_delimiter}Market Selloff{tuple_delimiter}category{tuple_delimiter}Market selloff refers to the significant decline in stock values due to investor concerns over interest rates and regulations.
-entity{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}category{tuple_delimiter}The Federal Reserve's upcoming policy announcement is expected to impact investor confidence and market stability.
-entity{tuple_delimiter}3.4% Decline{tuple_delimiter}category{tuple_delimiter}The Global Tech Index experienced a 3.4% decline in midday trading.
-relation{tuple_delimiter}Global Tech Index{tuple_delimiter}Market Selloff{tuple_delimiter}market performance, investor sentiment{tuple_delimiter}The decline in the Global Tech Index is part of the broader market selloff driven by investor concerns.
-relation{tuple_delimiter}Nexon Technologies{tuple_delimiter}Global Tech Index{tuple_delimiter}company impact, index movement{tuple_delimiter}Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index.
-relation{tuple_delimiter}Gold Futures{tuple_delimiter}Market Selloff{tuple_delimiter}market reaction, safe-haven investment{tuple_delimiter}Gold prices rose as investors sought safe-haven assets during the market selloff.
-relation{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}Market Selloff{tuple_delimiter}interest rate impact, financial regulation{tuple_delimiter}Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff.
-{completion_delimiter}
-
+Output JSON:
+{
+  "entities": [
+    {"entity_name": "NVIDIA", "entity_type": "Company", "entity_description": "NVIDIA is a company mentioned in connection with an earnings report."},
+    {"entity_name": "analysts", "entity_type": "Organization", "entity_description": "analysts are tracking market sentiment and inflation risk."},
+    {"entity_name": "earnings report", "entity_type": "Event", "entity_description": "earnings report is the event associated with NVIDIA rising."},
+    {"entity_name": "CPI release", "entity_type": "Event", "entity_description": "CPI release is the event associated with increased BTC volatility."},
+    {"entity_name": "market sentiment", "entity_type": "Concept", "entity_description": "market sentiment is being tracked by analysts."},
+    {"entity_name": "inflation risk", "entity_type": "Concept", "entity_description": "inflation risk is being tracked by analysts."}
+  ],
+  "relations": [
+    {"source_entity": "NVIDIA", "target_entity": "earnings report", "relationship_keywords": "RELATED_TO", "relationship_description": "NVIDIA rose after the earnings report."},
+    {"source_entity": "BTC", "target_entity": "CPI release", "relationship_keywords": "RELATED_TO", "relationship_description": "BTC volatility increased after the CPI release."},
+    {"source_entity": "analysts", "target_entity": "market sentiment", "relationship_keywords": "TRACKS", "relationship_description": "Analysts are tracking market sentiment."},
+    {"source_entity": "analysts", "target_entity": "inflation risk", "relationship_keywords": "TRACKS", "relationship_description": "Analysts are tracking inflation risk."}
+  ]
+}
 """,
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+    """Example 3
+Input text:
+Alice authored the deployment runbook for Project Atlas. The runbook is stored in docs/deploy.md. Project Atlas uses Docker and deploys to Fly.io.
 
-<Input Text>
-```
-At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
-```
-
-<Output>
-entity{tuple_delimiter}World Athletics Championship{tuple_delimiter}event{tuple_delimiter}The World Athletics Championship is a global sports competition featuring top athletes in track and field.
-entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the host city of the World Athletics Championship.
-entity{tuple_delimiter}Noah Carter{tuple_delimiter}person{tuple_delimiter}Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship.
-entity{tuple_delimiter}100m Sprint Record{tuple_delimiter}category{tuple_delimiter}The 100m sprint record is a benchmark in athletics, recently broken by Noah Carter.
-entity{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}equipment{tuple_delimiter}Carbon-fiber spikes are advanced sprinting shoes that provide enhanced speed and traction.
-entity{tuple_delimiter}World Athletics Federation{tuple_delimiter}organization{tuple_delimiter}The World Athletics Federation is the governing body overseeing the World Athletics Championship and record validations.
-relation{tuple_delimiter}World Athletics Championship{tuple_delimiter}Tokyo{tuple_delimiter}event location, international competition{tuple_delimiter}The World Athletics Championship is being hosted in Tokyo.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}100m Sprint Record{tuple_delimiter}athlete achievement, record-breaking{tuple_delimiter}Noah Carter set a new 100m sprint record at the championship.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}athletic equipment, performance boost{tuple_delimiter}Noah Carter used carbon-fiber spikes to enhance performance during the race.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championship{tuple_delimiter}athlete participation, competition{tuple_delimiter}Noah Carter is competing at the World Athletics Championship.
-{completion_delimiter}
-
+Output JSON:
+{
+  "entities": [
+    {"entity_name": "Alice", "entity_type": "Person", "entity_description": "Alice authored the deployment runbook for Project Atlas."},
+    {"entity_name": "Project Atlas", "entity_type": "Project", "entity_description": "Project Atlas uses Docker and deploys to Fly.io."},
+    {"entity_name": "deployment runbook", "entity_type": "Document", "entity_description": "deployment runbook is stored in docs/deploy.md."},
+    {"entity_name": "docs/deploy.md", "entity_type": "File", "entity_description": "docs/deploy.md stores the deployment runbook."},
+    {"entity_name": "Docker", "entity_type": "Tool", "entity_description": "Docker is used by Project Atlas."},
+    {"entity_name": "Fly.io", "entity_type": "Service", "entity_description": "Fly.io is the deployment target for Project Atlas."}
+  ],
+  "relations": [
+    {"source_entity": "deployment runbook", "target_entity": "Alice", "relationship_keywords": "AUTHORED_BY", "relationship_description": "The deployment runbook was authored by Alice."},
+    {"source_entity": "deployment runbook", "target_entity": "docs/deploy.md", "relationship_keywords": "STORES_IN", "relationship_description": "The deployment runbook is stored in docs/deploy.md."},
+    {"source_entity": "Project Atlas", "target_entity": "Docker", "relationship_keywords": "USES", "relationship_description": "Project Atlas uses Docker."},
+    {"source_entity": "Project Atlas", "target_entity": "Fly.io", "relationship_keywords": "DEPLOYS_TO", "relationship_description": "Project Atlas deploys to Fly.io."}
+  ]
+}
 """,
 ]
 
@@ -239,6 +208,8 @@ Consider the conversation history if provided to maintain conversational flow an
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
   - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
   - Generate a references section at the end of the response. Each reference document must directly support the facts presented in the response.
+  - Every grounded answer MUST include at least one reference entry. If no supporting reference can be cited from the provided context, say you do not have enough information to answer.
+  - Never answer by summarizing, paraphrasing, or enumerating the `Reference Document List` itself unless the user explicitly asks about sources or references.
   - Do not generate anything after the reference section.
 
 2. Content & Grounding:
@@ -252,9 +223,12 @@ Consider the conversation history if provided to maintain conversational flow an
 
 4. References Section Format:
   - The References section should be under heading: `### References`
-  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
-  - The Document Title in the citation must retain its original language.
-  - Output each citation on an individual line
+  - Reference list entries should adhere to the format: `- [n] Source`.
+  - `Source` MUST be copied from the matching entry in the `Reference Document List` exactly as written.
+  - If `Source` is an `http://` or `https://` URL, render it as a Markdown link using the same URL for both label and destination: `- [n] [https://example.com](https://example.com)`.
+  - If `Source` is not a URL, output it verbatim after the reference number without inventing a title, alias, or summary.
+  - Never replace a URL with prose like "Document Title" or "Source Article".
+  - Output each citation on an individual line.
   - Provide maximum of 5 most relevant citations.
   - Do not generate footnotes section or any comment, summary, or explanation after the references.
 
@@ -262,9 +236,9 @@ Consider the conversation history if provided to maintain conversational flow an
 ```
 ### References
 
-- [1] Document Title One
-- [2] Document Title Two
-- [3] Document Title Three
+- [1] https://example.com/doc1
+- [2] Workspace Documentation v2.3
+- [3] https://docs.example.com/api
 ```
 
 6. Additional Instructions: {user_prompt}
@@ -274,6 +248,67 @@ Consider the conversation history if provided to maintain conversational flow an
 
 {context_data}
 """
+
+PROMPTS["apfel_rag_response"] = """Answer only from Context.
+
+Rules:
+- `### Answer`: 1-3 bullets, max 90 words total.
+- Same language as user.
+- If evidence is weak, say what is uncertain.
+- Never output references only.
+- End with `### References`.
+- Use only real sources from `Reference Document List`; never invent URLs.
+- No text after references.
+
+Format: {response_type}
+User instructions: {user_prompt}
+
+Context:
+{context_data}
+"""
+
+PROMPTS["apfel_iterative_rag_system"] = """You are the fast local answer synthesizer for LightRAG.
+Use only the supplied retrieved portion and carry summary.
+Do not invent facts, URLs, filenames, or source ids.
+Do not output a references section; the server appends canonical references.
+Return exactly two sections:
+### Answer Delta
+### Carry Summary
+Keep both sections concise."""
+
+PROMPTS["apfel_iterative_rag_user"] = """User query:
+{query}
+
+Response style:
+{response_type}
+
+Carry summary from earlier portions:
+{carry_summary}
+
+Retrieved portion {portion_index}/{portion_count}:
+{context_data}
+
+Write new useful facts from this portion only. If this portion adds nothing useful, leave Answer Delta empty.
+Carry Summary must be a compact summary that preserves facts needed by later portions."""
+
+PROMPTS["apfel_iterative_rag_final_user"] = """User query:
+{query}
+
+Response style:
+{response_type}
+
+Answer deltas produced from all retrieved portions:
+{accumulated_answer}
+
+Carry summary:
+{carry_summary}
+
+Write the final concise answer. Do not include references.
+Return exactly:
+### Answer Delta
+<final answer>
+### Carry Summary
+done"""
 
 PROMPTS["naive_rag_response"] = """---Role---
 
@@ -293,6 +328,8 @@ Consider the conversation history if provided to maintain conversational flow an
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
   - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
   - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.
+  - Every grounded answer MUST include at least one reference entry. If no supporting reference can be cited from the provided context, say you do not have enough information to answer.
+  - Never answer by summarizing, paraphrasing, or enumerating the `Reference Document List` itself unless the user explicitly asks about sources or references.
   - Do not generate anything after the reference section.
 
 2. Content & Grounding:
@@ -306,9 +343,12 @@ Consider the conversation history if provided to maintain conversational flow an
 
 4. References Section Format:
   - The References section should be under heading: `### References`
-  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
-  - The Document Title in the citation must retain its original language.
-  - Output each citation on an individual line
+  - Reference list entries should adhere to the format: `- [n] Source`.
+  - `Source` MUST be copied from the matching entry in the `Reference Document List` exactly as written.
+  - If `Source` is an `http://` or `https://` URL, render it as a Markdown link using the same URL for both label and destination: `- [n] [https://example.com](https://example.com)`.
+  - If `Source` is not a URL, output it verbatim after the reference number without inventing a title, alias, or summary.
+  - Never replace a URL with prose like "Document Title" or "Source Article".
+  - Output each citation on an individual line.
   - Provide maximum of 5 most relevant citations.
   - Do not generate footnotes section or any comment, summary, or explanation after the references.
 
@@ -316,9 +356,9 @@ Consider the conversation history if provided to maintain conversational flow an
 ```
 ### References
 
-- [1] Document Title One
-- [2] Document Title Two
-- [3] Document Title Three
+- [1] https://example.com/doc1
+- [2] Workspace Documentation v2.3
+- [3] https://docs.example.com/api
 ```
 
 6. Additional Instructions: {user_prompt}
@@ -430,3 +470,48 @@ Output:
 
 """,
 ]
+
+PROMPTS["agent_tool_protocol_query"] = """Tool use is available.
+If more evidence is needed before answering, you may call exactly one tool by replying with exactly one XML block and nothing else:
+
+<tool_call>
+{"tool":"tool_name","args":{"key":"value"}}
+</tool_call>
+
+Available tools:
+- search_entities: semantic search over entity embeddings to find relevant entities for a query. Args: query (str), top_k (int, default 10).
+- search_relations: semantic search over relation/edge embeddings to find relevant relationships. Args: query (str), top_k (int, default 10).
+- search_chunks: semantic search over document chunk embeddings to find relevant text passages. Args: query (str), top_k (int, default 10).
+- get_entity_detail: get the full description and metadata for a specific entity. Args: entity_name (str).
+- get_relations_for_entity: get all relationships connected to a given entity, including relation keywords and descriptions. Args: entity_name (str).
+
+Rules:
+- Use tools only when the provided context seems incomplete or you need more specific evidence.
+- search_entities, search_relations, and search_chunks use semantic similarity — try different phrasings if the first search returns nothing useful.
+- One tool call per turn.
+- After a tool result is returned, either call one more tool or produce the final grounded answer.
+- If you produce a grounded final answer from retrieved context, always end with a `### References` section that cites the exact source entries provided in the context.
+- For URL sources, render the citation as a Markdown link: `[source_url](source_url)`.
+- Final answers must not include tool_call XML."""
+
+
+# ---------------------------------------------------------------------------
+# Top-level convenience aliases — kept in sync with the PROMPTS dict above
+# Importing these directly (from lightrag.prompt import RAG_RESPONSE) is
+# equivalent to PROMPTS["rag_response"].
+# ---------------------------------------------------------------------------
+
+DEFAULT_TUPLE_DELIMITER: str = PROMPTS["DEFAULT_TUPLE_DELIMITER"]
+DEFAULT_COMPLETION_DELIMITER: str = PROMPTS["DEFAULT_COMPLETION_DELIMITER"]
+ENTITY_EXTRACTION_SYSTEM_PROMPT: str = PROMPTS["entity_extraction_system_prompt"]
+ENTITY_EXTRACTION_USER_PROMPT: str = PROMPTS["entity_extraction_user_prompt"]
+ENTITY_CONTINUE_EXTRACTION_USER_PROMPT: str = PROMPTS["entity_continue_extraction_user_prompt"]
+SUMMARIZE_ENTITY_DESCRIPTIONS: str = PROMPTS["summarize_entity_descriptions"]
+FAIL_RESPONSE: str = PROMPTS["fail_response"]
+RAG_RESPONSE: str = PROMPTS["rag_response"]
+NAIVE_RAG_RESPONSE: str = PROMPTS["naive_rag_response"]
+KG_QUERY_CONTEXT: str = PROMPTS["kg_query_context"]
+NAIVE_QUERY_CONTEXT: str = PROMPTS["naive_query_context"]
+KEYWORDS_EXTRACTION: str = PROMPTS["keywords_extraction"]
+KEYWORDS_EXTRACTION_EXAMPLES: list = PROMPTS["keywords_extraction_examples"]
+AGENT_TOOL_PROTOCOL_QUERY: str = PROMPTS["agent_tool_protocol_query"]

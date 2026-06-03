@@ -16,6 +16,7 @@ import numpy as np
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lightrag.kg.shared_storage import initialize_share_data
+from lightrag.config import settings
 
 
 # Mock embedding function that returns random vectors
@@ -30,7 +31,7 @@ async def neo4j_storage():
     Requires Neo4j to be running and configured via environment variables.
     """
     # Check if Neo4j is configured
-    if not os.getenv("NEO4J_URI"):
+    if not settings.neo4j_uri():
         pytest.skip("Neo4j not configured (NEO4J_URI not set)")
 
     from lightrag.kg.neo4j_impl import Neo4JStorage
@@ -41,7 +42,7 @@ async def neo4j_storage():
     global_config = {
         "embedding_batch_num": 10,
         "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.5},
-        "working_dir": os.environ.get("WORKING_DIR", "./rag_storage"),
+        "working_dir": settings.working_dir,
     }
 
     storage = Neo4JStorage(
@@ -258,7 +259,7 @@ async def test_multiple_workspaces_have_separate_indexes(neo4j_storage):
     global_config = {
         "embedding_batch_num": 10,
         "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.5},
-        "working_dir": os.environ.get("WORKING_DIR", "./rag_storage"),
+        "working_dir": settings.working_dir,
     }
 
     storage2 = Neo4JStorage(

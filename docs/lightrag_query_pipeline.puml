@@ -1,0 +1,65 @@
+@startuml
+title LightRAG Query Pipeline
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam ArrowColor #3d4a57
+skinparam ActivityBorderColor #4c5b6b
+skinparam ActivityBackgroundColor #f7fbff
+skinparam ActivityDiamondBorderColor #4c5b6b
+skinparam ActivityDiamondBackgroundColor #eef5fb
+skinparam DefaultFontName Menlo
+
+|Entry|
+start
+:Entry + Validation
+- aquery_llm / aquery_data
+- validate query
+- empty query returns FAIL_RESPONSE
+- route mode to naive or kg_query;
+
+|Context Build|
+if (mode == naive?) then (yes)
+  :Naive Context Path
+- _get_vector_context
+- compute chunk token budget
+- process_chunks_unified
+- optional rerank via
+  apply_rerank_if_enabled
+- generate references
+- build NAIVE_QUERY_CONTEXT + raw_data;
+else (no)
+  :KG Context Path
+- resolve model_func + extract keywords
+- Stage 1 _perform_kg_search
+- Stage 2 _apply_token_truncation
+- Stage 3 _merge_all_chunks
+- Stage 4 _build_context_str
+- process_chunks_unified
+- final chunk rerank bridge
+- generate references + user format;
+endif
+
+:Return Gates
+- no result if context is missing
+- return context/prompt when only_need_*
+- otherwise continue to answer generation;
+
+|Answer|
+if (Need final answer generation?) then (yes)
+  :Answer Generation
+- build final system prompt
+- Apple bypass if needed
+- tools path or cache/use_model_func
+- restore bypassed words
+- strip prompt echoes
+- return QueryResult
+- query tools: lightrag_query,
+  lightrag_answer, grep,
+  duckduckgo_search, web_fetch;
+  stop
+else (no)
+  :Return early;
+  stop
+endif
+@enduml

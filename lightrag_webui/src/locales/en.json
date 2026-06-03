@@ -207,6 +207,7 @@
       "data": "Data",
       "artifact": "Artifact",
       "concept": "Concept",
+      "project": "Project",
       "naturalobject": "Natural Object",
       "method": "Method",
       "creature": "Creature",
@@ -214,7 +215,15 @@
       "disease": "Disease",
       "drug": "Drug",
       "food": "Food",
-      "other": "Other"
+      "other": "Other",
+      "repository": "Repository",
+      "framework": "Framework",
+      "agent": "Agent",
+      "api": "API",
+      "workflow": "Workflow",
+      "license": "License",
+      "tool": "Tool",
+      "programminglanguage": "Programming Language"
     },
     "sideBar": {
       "settings": {

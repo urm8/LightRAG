@@ -102,6 +102,10 @@ export type Message = {
   content: string
   thinkingContent?: string
   displayContent?: string
+  enrichedContent?: string
+  enrichmentModel?: string
+  enrichmentElapsedMs?: number
+  enrichmentError?: string
   thinkingTime?: number | null
 }
 
@@ -138,10 +142,52 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** If True, the stream endpoint emits structured retrieval debug chunks for frontend progress panels. */
+  include_debug?: boolean
+  /** If True, WebUI receives a slower Granite enrichment result after the fast primary answer. */
+  include_enrichment?: boolean
+}
+
+export type QueryDebugData = {
+  query: string
+  mode: QueryMode
+  keywords: {
+    high_level: string[]
+    low_level: string[]
+  }
+  processing_info: Record<string, number>
+  capabilities: {
+    rerank_enabled: boolean
+    tool_calls_visible: boolean
+    cosine_scores_visible: boolean
+  }
+  notes: string[]
+  retrieval_steps: Array<{
+    label: string
+    detail: string
+  }>
+  samples: {
+    entities: Array<Record<string, unknown>>
+    relationships: Array<Record<string, unknown>>
+    chunks: Array<Record<string, unknown>>
+    references: Array<Record<string, unknown>>
+  }
 }
 
 export type QueryResponse = {
   response: string
+  debug?: QueryDebugData
+  enrichment_response?: string
+  enrichment_model?: string
+  enrichment_elapsed_ms?: number
+  enrichment_error?: string
+}
+
+export type QueryEnrichmentData = {
+  response: string
+  elapsed_ms?: number
+  model?: string
+  references?: Array<Record<string, unknown>>
 }
 
 export type EntityUpdateResponse = {
@@ -516,7 +562,10 @@ export const queryText = async (request: QueryRequest): Promise<QueryResponse> =
 export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
-  onError?: (error: string) => void
+  onError?: (error: string) => void,
+  onDebug?: (debug: QueryDebugData) => void,
+  onEnrichment?: (enrichment: QueryEnrichmentData) => void,
+  onEnrichmentError?: (error: string) => void
 ) => {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
@@ -589,6 +638,12 @@ export const queryTextStream = async (
                     const parsed = JSON.parse(line);
                     if (parsed.response) {
                       onChunk(parsed.response);
+                    } else if (parsed.debug) {
+                      onDebug?.(parsed.debug);
+                    } else if (parsed.enrichment) {
+                      onEnrichment?.(parsed.enrichment);
+                    } else if (parsed.enrichment_error) {
+                      onEnrichmentError?.(parsed.enrichment_error);
                     } else if (parsed.error) {
                       onError?.(parsed.error);
                     }
@@ -606,6 +661,12 @@ export const queryTextStream = async (
                 const parsed = JSON.parse(buffer);
                 if (parsed.response) {
                   onChunk(parsed.response);
+                } else if (parsed.debug) {
+                  onDebug?.(parsed.debug);
+                } else if (parsed.enrichment) {
+                  onEnrichment?.(parsed.enrichment);
+                } else if (parsed.enrichment_error) {
+                  onEnrichmentError?.(parsed.enrichment_error);
                 } else if (parsed.error) {
                   onError?.(parsed.error);
                 }
@@ -672,6 +733,12 @@ export const queryTextStream = async (
             const parsed = JSON.parse(line);
             if (parsed.response) {
               onChunk(parsed.response);
+            } else if (parsed.debug) {
+              onDebug?.(parsed.debug);
+            } else if (parsed.enrichment) {
+              onEnrichment?.(parsed.enrichment);
+            } else if (parsed.enrichment_error) {
+              onEnrichmentError?.(parsed.enrichment_error);
             } else if (parsed.error && onError) {
               onError(parsed.error);
             }
@@ -689,6 +756,12 @@ export const queryTextStream = async (
         const parsed = JSON.parse(buffer);
         if (parsed.response) {
           onChunk(parsed.response);
+        } else if (parsed.debug) {
+          onDebug?.(parsed.debug);
+        } else if (parsed.enrichment) {
+          onEnrichment?.(parsed.enrichment);
+        } else if (parsed.enrichment_error) {
+          onEnrichmentError?.(parsed.enrichment_error);
         } else if (parsed.error && onError) {
           onError(parsed.error);
         }

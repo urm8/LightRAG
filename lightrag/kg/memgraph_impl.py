@@ -1,4 +1,3 @@
-import os
 import asyncio
 import random
 from dataclasses import dataclass
@@ -7,6 +6,7 @@ import configparser
 
 from ..utils import logger
 from ..base import BaseGraphStorage
+from ..config import settings
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock
 import pipmaster as pm
@@ -19,12 +19,7 @@ from neo4j import (
 )
 from neo4j.exceptions import TransientError, ResultFailedError
 
-from dotenv import load_dotenv
-
-# use the .env that is inside the current folder
-load_dotenv(dotenv_path=".env", override=False)
-
-MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
+MAX_GRAPH_NODES = settings.max_graph_nodes
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -34,14 +29,9 @@ config.read("config.ini", "utf-8")
 @dataclass
 class MemgraphStorage(BaseGraphStorage):
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
-        # Priority: 1) MEMGRAPH_WORKSPACE env 2) user arg 3) default 'base'
-        memgraph_workspace = os.environ.get("MEMGRAPH_WORKSPACE")
+        memgraph_workspace = settings.memgraph_workspace_override
         original_workspace = workspace  # Save original value for logging
-        if memgraph_workspace and memgraph_workspace.strip():
-            workspace = memgraph_workspace
-
-        if not workspace or not str(workspace).strip():
-            workspace = "base"
+        workspace = settings.effective_memgraph_workspace(workspace)
 
         super().__init__(
             namespace=namespace,
@@ -51,7 +41,7 @@ class MemgraphStorage(BaseGraphStorage):
         )
 
         # Log after super().__init__() to ensure self.workspace is initialized
-        if memgraph_workspace and memgraph_workspace.strip():
+        if memgraph_workspace:
             logger.info(
                 f"Using MEMGRAPH_WORKSPACE environment variable: '{memgraph_workspace}' (overriding '{original_workspace}/{namespace}')"
             )
@@ -74,19 +64,17 @@ class MemgraphStorage(BaseGraphStorage):
 
     async def initialize(self):
         async with get_data_init_lock():
-            URI = os.environ.get(
-                "MEMGRAPH_URI",
-                config.get("memgraph", "uri", fallback="bolt://localhost:7687"),
+            URI = settings.memgraph_uri(
+                config.get("memgraph", "uri", fallback="bolt://localhost:7687")
             )
-            USERNAME = os.environ.get(
-                "MEMGRAPH_USERNAME", config.get("memgraph", "username", fallback="")
+            USERNAME = settings.memgraph_username(
+                config.get("memgraph", "username", fallback="")
             )
-            PASSWORD = os.environ.get(
-                "MEMGRAPH_PASSWORD", config.get("memgraph", "password", fallback="")
+            PASSWORD = settings.memgraph_password(
+                config.get("memgraph", "password", fallback="")
             )
-            DATABASE = os.environ.get(
-                "MEMGRAPH_DATABASE",
-                config.get("memgraph", "database", fallback="memgraph"),
+            DATABASE = settings.memgraph_database(
+                config.get("memgraph", "database", fallback="memgraph")
             )
 
             self._driver = AsyncGraphDatabase.driver(

@@ -124,16 +124,16 @@ const useSettingsStoreBase = create<SettingsState>()(
       querySettings: {
         mode: 'global',
         top_k: 40,
-        chunk_top_k: 20,
-        max_entity_tokens: 6000,
-        max_relation_tokens: 8000,
-        max_total_tokens: 30000,
+        chunk_top_k: 8,
+        max_entity_tokens: 1600,
+        max_relation_tokens: 2200,
+        max_total_tokens: 6500,
         only_need_context: false,
         only_need_prompt: false,
         stream: true,
         history_turns: 0,
         user_prompt: '',
-        enable_rerank: true
+        enable_rerank: false
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -238,7 +238,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 21,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -317,7 +317,7 @@ const useSettingsStoreBase = create<SettingsState>()(
             max_entity_tokens: 10000,
             max_relation_tokens: 10000,
             max_total_tokens: 32000,
-            enable_rerank: true,
+            enable_rerank: false,
             history_turns: 0,
           }
         }
@@ -340,6 +340,31 @@ const useSettingsStoreBase = create<SettingsState>()(
           if (state.querySettings) {
             delete state.querySettings.response_type
           }
+        }
+        if (version < 20) {
+          // Keep local MLX query prompts inside the managed retrieval context.
+          // Older browser settings may still contain 30k+ budgets.
+          if (state.querySettings) {
+            state.querySettings.chunk_top_k = Math.min(
+              state.querySettings.chunk_top_k ?? 8,
+              8
+            )
+            state.querySettings.max_entity_tokens = Math.min(
+              state.querySettings.max_entity_tokens ?? 1600,
+              1600
+            )
+            state.querySettings.max_relation_tokens = Math.min(
+              state.querySettings.max_relation_tokens ?? 2200,
+              2200
+            )
+            state.querySettings.max_total_tokens = Math.min(
+              state.querySettings.max_total_tokens ?? 6500,
+              6500
+            )
+          }
+        }
+        if (version < 21 && state.querySettings) {
+          state.querySettings.enable_rerank = false
         }
         return state
       }

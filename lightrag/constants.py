@@ -28,16 +28,51 @@ DEFAULT_MAX_EXTRACT_INPUT_TOKENS = 20480
 # Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
     "Person",
-    "Creature",
     "Organization",
-    "Location",
-    "Event",
-    "Concept",
+    "Project",
+    "Repository",
+    "Library",
+    "Framework",
+    "Model",
+    "Agent",
+    "Tool",
+    "API",
+    "Service",
+    "Database",
+    "File",
+    "Document",
+    "ProgrammingLanguage",
+    "Technology",
     "Method",
-    "Content",
-    "Data",
-    "Artifact",
-    "NaturalObject",
+    "Workflow",
+    "Task",
+    "Concept",
+    "Issue",
+    "Event",
+    "Metric",
+    "Company",
+    "Location",
+]
+
+DEFAULT_RELATION_LABELS = [
+    "USES",
+    "DEPENDS_ON",
+    "IMPLEMENTS",
+    "CALLS",
+    "CONNECTS_TO",
+    "RUNS_ON",
+    "STORES_IN",
+    "DEPLOYS_TO",
+    "AUTHORED_BY",
+    "PART_OF",
+    "RELATED_TO",
+    "CAUSES",
+    "MEASURES",
+    "TRACKS",
+    "FAILS_WITH",
+    "IMPROVES",
+    "REPLACES",
+    "COMPETES_WITH",
 ]
 
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
@@ -45,10 +80,10 @@ GRAPH_FIELD_SEP = "<SEP>"
 
 # Query and retrieval configuration defaults
 DEFAULT_TOP_K = 40
-DEFAULT_CHUNK_TOP_K = 20
-DEFAULT_MAX_ENTITY_TOKENS = 6000
-DEFAULT_MAX_RELATION_TOKENS = 8000
-DEFAULT_MAX_TOTAL_TOKENS = 30000
+DEFAULT_CHUNK_TOP_K = 8
+DEFAULT_MAX_ENTITY_TOKENS = 1600
+DEFAULT_MAX_RELATION_TOKENS = 2200
+DEFAULT_MAX_TOTAL_TOKENS = 6500
 DEFAULT_COSINE_THRESHOLD = 0.2
 DEFAULT_RELATED_CHUNK_NUMBER = 5
 DEFAULT_KG_CHUNK_PICK_METHOD = "VECTOR"
@@ -91,7 +126,7 @@ DEFAULT_MAX_PARALLEL_INSERT = 2  # Default maximum parallel insert operations
 
 # Embedding configuration defaults
 DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
-DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations
+DEFAULT_EMBEDDING_BATCH_NUM = 32  # Default batch size for embedding computations
 
 # Gunicorn worker timeout
 DEFAULT_TIMEOUT = 300

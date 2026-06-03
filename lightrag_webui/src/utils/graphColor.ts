@@ -12,7 +12,6 @@ const TYPE_SYNONYMS: Record<string, string> = {
   type: 'concept',
   category: 'concept',
   model: 'concept',
-  project: 'concept',
   condition: 'concept',
   rule: 'concept',
   regulation: 'concept',
@@ -149,6 +148,7 @@ const NODE_TYPE_COLORS: Record<string, string> = {
   location: '#cf6d17',
   event: '#00bfa0',
   concept: '#e3493b',
+  project: '#d81b60',
   method: '#b71c1c',
   content: '#0f558a',
   data: '#0000ff',
@@ -180,6 +180,11 @@ interface ResolveNodeColorResult {
   updated: boolean
 }
 
+export const normalizeNodeTypeKey = (nodeType: string | undefined): string => {
+  const normalizedType = nodeType ? nodeType.toLowerCase() : 'unknown'
+  return TYPE_SYNONYMS[normalizedType] || normalizedType
+}
+
 export const resolveNodeColor = (
   nodeType: string | undefined,
   currentMap: Map<string, string> | undefined
@@ -187,7 +192,7 @@ export const resolveNodeColor = (
   const typeColorMap = currentMap ?? new Map<string, string>()
   const normalizedType = nodeType ? nodeType.toLowerCase() : 'unknown'
   const standardType = TYPE_SYNONYMS[normalizedType]
-  const cacheKey = standardType || normalizedType
+  const cacheKey = normalizeNodeTypeKey(nodeType)
 
   if (typeColorMap.has(cacheKey)) {
     return {

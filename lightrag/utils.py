@@ -30,11 +30,10 @@ from typing import (
     Collection,
 )
 import numpy as np
-from dotenv import load_dotenv
+
+from lightrag.config import settings
 
 from lightrag.constants import (
-    DEFAULT_LOG_MAX_BYTES,
-    DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_TOTAL_TOKENS,
@@ -174,71 +173,12 @@ async def safe_vdb_operation_with_exception(
                     await asyncio.sleep(retry_delay)
 
 
-def get_env_value(
-    env_key: str, default: any, value_type: type = str, special_none: bool = False
-) -> any:
-    """
-    Get value from environment variable with type conversion
-
-    Args:
-        env_key (str): Environment variable key
-        default (any): Default value if env variable is not set
-        value_type (type): Type to convert the value to
-        special_none (bool): If True, return None when value is "None"
-
-    Returns:
-        any: Converted value from environment or default
-    """
-    value = os.getenv(env_key)
-    if value is None:
-        return default
-
-    # Handle special case for "None" string
-    if special_none and value == "None":
-        return None
-
-    if value_type is bool:
-        return value.lower() in ("true", "1", "yes", "t", "on")
-
-    # Handle list type with JSON parsing
-    if value_type is list:
-        try:
-            import json
-
-            parsed_value = json.loads(value)
-            # Ensure the parsed value is actually a list
-            if isinstance(parsed_value, list):
-                return parsed_value
-            else:
-                logger.warning(
-                    f"Environment variable {env_key} is not a valid JSON list, using default"
-                )
-                return default
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.warning(
-                f"Failed to parse {env_key} as JSON list: {e}, using default"
-            )
-            return default
-
-    try:
-        return value_type(value)
-    except (ValueError, TypeError):
-        return default
-
-
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
     from lightrag.base import BaseKVStorage, BaseVectorStorage, QueryParam
 
-# use the .env that is inside the current folder
-# allows to use different .env file for each lightrag instance
-# the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
-
-VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
-PERFORMANCE_TIMING_LOGS = (
-    os.getenv("LIGHTRAG_PERFORMANCE_TIMING_LOGS", "false").lower() == "true"
-)
+VERBOSE_DEBUG = settings.verbose
+PERFORMANCE_TIMING_LOGS = settings.lightrag_performance_timing_logs
 
 
 def verbose_debug(msg: str, *args, **kwargs):
@@ -362,17 +302,15 @@ def setup_logger(
     if enable_file_logging:
         # Get log file path
         if log_file_path is None:
-            log_dir = os.getenv("LOG_DIR", os.getcwd())
+            log_dir = settings.log_dir
             log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
         # Ensure log directory exists
         os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
         # Get log file max size and backup count from environment variables
-        log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
-        log_backup_count = get_env_value(
-            "LOG_BACKUP_COUNT", DEFAULT_LOG_BACKUP_COUNT, int
-        )
+        log_max_bytes = settings.log_max_bytes
+        log_backup_count = settings.log_backup_count
 
         try:
             # Add file handler
@@ -2045,6 +1983,7 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
+    **llm_kwargs: Any,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -2096,6 +2035,20 @@ async def use_llm_func_with_cache(
             prompt_parts.append(safe_system_prompt)
         if history:
             prompt_parts.append(history)
+        if llm_kwargs:
+            kwargs_signature = json.dumps(
+                {
+                    key: (
+                        value.__name__
+                        if isinstance(value, type)
+                        else str(value)
+                    )
+                    for key, value in sorted(llm_kwargs.items())
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            prompt_parts.append(f"LLM_KWARGS:{kwargs_signature}")
         _prompt = "\n".join(prompt_parts)
 
         arg_hash = compute_args_hash(_prompt)
@@ -2129,7 +2082,10 @@ async def use_llm_func_with_cache(
             kwargs["max_tokens"] = max_tokens
 
         res: str = await use_llm_func(
-            safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+            safe_user_prompt,
+            system_prompt=safe_system_prompt,
+            **kwargs,
+            **llm_kwargs,
         )
 
         res = remove_think_tags(res)
@@ -2164,7 +2120,10 @@ async def use_llm_func_with_cache(
 
     try:
         res = await use_llm_func(
-            safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+            safe_user_prompt,
+            system_prompt=safe_system_prompt,
+            **kwargs,
+            **llm_kwargs,
         )
     except Exception as e:
         # Add [LLM func] prefix to error message
@@ -3402,3 +3361,39 @@ def generate_reference_list_from_chunks(
         reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
 
     return reference_list, updated_chunks
+
+
+# ---------------------------------------------------------------------------
+# ChatML / Hermes-4 stop-marker helpers
+# ---------------------------------------------------------------------------
+
+# Regex matching any ChatML control token.  Used for both detection and
+# truncation so callers never expose raw markers to any downstream consumer.
+_CHATML_STOP_RE = re.compile(r"<\|im_start\||<\|im_end\|>")
+
+
+def clean_chatml_markers(text: str) -> str:
+    """Strip ChatML control tokens from model output by truncating at the
+    first occurrence of ``<|im_start|>`` or ``<|im_end|>``.
+
+    These tokens are not meaningful response content — they are control-plane
+    delimiters that mark message boundaries in the ChatML protocol.  When a
+    local model (e.g. Hermes-4 served through mlx-openai-server) leaks them
+    past the stop-sequence mechanism, this function provides a safety net.
+
+    The function is safe to call on any text — if no ChatML marker is present
+    it returns the input unchanged.
+    """
+    if not text:
+        return text
+    match = _CHATML_STOP_RE.search(text)
+    if match:
+        return text[: match.start()].rstrip()
+    return text
+
+
+def contains_chatml_markers(text: str) -> bool:
+    """Return True when *text* contains any ChatML control token."""
+    if not text:
+        return False
+    return _CHATML_STOP_RE.search(text) is not None

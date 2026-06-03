@@ -1,6 +1,7 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
-import os
 import logging
+import json
+import time
 
 from collections.abc import AsyncIterator
 
@@ -26,6 +27,8 @@ from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
     logger,
+    clean_chatml_markers,
+    contains_chatml_markers,
 )
 
 from lightrag.types import GPTKeywordExtractionFormat
@@ -34,8 +37,11 @@ from lightrag.api import __api_version__
 import numpy as np
 import base64
 from typing import Any, Union
+from urllib.parse import urlparse
 
-from dotenv import load_dotenv
+import httpx
+from pydantic import BaseModel
+from lightrag.config import settings
 
 # Try to import Langfuse for LLM observability (optional)
 # Falls back to standard OpenAI client if not available
@@ -43,8 +49,8 @@ from dotenv import load_dotenv
 LANGFUSE_ENABLED = False
 try:
     # Check if required Langfuse environment variables are set
-    langfuse_public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-    langfuse_secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+    langfuse_public_key = settings.langfuse_public_key
+    langfuse_secret_key = settings.langfuse_secret_key
 
     # Only enable Langfuse if both keys are configured
     if langfuse_public_key and langfuse_secret_key:
@@ -63,11 +69,6 @@ except ImportError:
 
     logger.debug("Langfuse not available, using standard OpenAI client")
 
-# use the .env that is inside the current folder
-# allows to use different .env file for each lightrag instance
-# the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
-
 
 class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism"""
@@ -78,14 +79,129 @@ class InvalidResponseError(Exception):
 # Module-level cache for tiktoken encodings
 _TIKTOKEN_ENCODING_CACHE: dict[str, Any] = {}
 
+
+def _should_use_openai_parse(
+    *,
+    base_url: str | None,
+    use_azure: bool,
+) -> bool:
+    if use_azure:
+        return True
+    if not base_url:
+        return True
+    host = (urlparse(base_url).hostname or "").lower()
+    return host.endswith("openai.com")
+
+
+def _response_format_to_schema(
+    response_format: Any, *, json_object_only: bool = False
+) -> Any:
+    if isinstance(response_format, type) and issubclass(response_format, BaseModel):
+        if json_object_only:
+            return {"type": "json_object"}
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": response_format.__name__,
+                "schema": response_format.model_json_schema(),
+            },
+        }
+    return response_format
+
+
+def _build_http_client_for_base_url(base_url: str | None) -> httpx.AsyncClient | None:
+    if not base_url:
+        return None
+    parsed = urlparse(base_url)
+    if parsed.scheme != "http":
+        return None
+    return httpx.AsyncClient(verify=False)
+
 # Whether to request base64-encoded embeddings from the API.
 # Base64 is more efficient over the wire; set EMBEDDING_USE_BASE64=false for
 # providers that don't support it (e.g. Yandex Cloud).
-EMBEDDING_USE_BASE64: bool = os.getenv("EMBEDDING_USE_BASE64", "true").lower() in (
-    "true",
-    "1",
-    "yes",
-)
+EMBEDDING_USE_BASE64: bool = settings.embedding_use_base64
+
+
+def _normalize_base_url(base_url: str | None) -> str:
+    if not base_url:
+        return ""
+    return base_url.rstrip("/")
+
+
+def _is_managed_swift_lm_base_url(base_url: str | None) -> bool:
+    return settings.lightrag_manage_swift_lm and _normalize_base_url(
+        base_url
+    ) == _normalize_base_url(settings.managed_swift_lm_base_url)
+
+
+def _managed_mlx_openai_server_base_url() -> str:
+    return settings.managed_mlx_openai_server_base_url
+
+
+def _managed_mlx_embeddings_base_url() -> str:
+    return settings.managed_mlx_embeddings_base_url
+
+
+def _get_local_mlx_request_kind(base_url: str | None, model: str | None) -> str | None:
+    if settings.lightrag_manage_swift_lm:
+        expected_base_url = settings.managed_swift_lm_base_url
+    elif settings.lightrag_manage_mlx_openai_server:
+        expected_base_url = _managed_mlx_openai_server_base_url()
+    else:
+        return None
+    if _normalize_base_url(base_url) != _normalize_base_url(expected_base_url):
+        return None
+    extraction_model = settings.mlx_extraction_model or settings.extraction_llm_model or ""
+    if model == extraction_model:
+        return "extraction"
+    return "chat"
+
+
+def _is_local_mlx_embeddings_base_url(base_url: str | None) -> bool:
+    normalized = _normalize_base_url(base_url)
+    if not normalized:
+        return False
+    if settings.lightrag_manage_mlx_openai_server and normalized == _normalize_base_url(
+        _managed_mlx_openai_server_base_url()
+    ):
+        return True
+    if settings.lightrag_manage_swift_embeddings and normalized == _normalize_base_url(
+        settings.managed_swift_embeddings_base_url
+    ):
+        return True
+    return normalized == _normalize_base_url(_managed_mlx_embeddings_base_url())
+
+
+def _get_local_mlx_recycle_limit(kind: str) -> int:
+    if kind not in {"chat", "extraction", "embedding"}:
+        return 0
+    return settings.mlx_managed_request_recycle_limit(kind)
+
+
+# ---------------------------------------------------------------------------
+# Hermes / ChatML model support
+# ---------------------------------------------------------------------------
+
+# The exact HuggingFace model ID for Hermes-4-abliterated served through
+# mlx-openai-server.  When this model is in use, stop sequences and response
+# cleanup are activated in the request/response layer to prevent ChatML
+# control tokens leaking into downstream consumers.
+HERMES_4_CHATML_MODEL_ID = "divinetribe/Hermes-4-14B-abliterated-4bit-mlx"
+
+# Substring check — any model ID containing "Hermes-4" triggers ChatML
+# handling.  This covers both the exact ID above and any derivative names.
+_CHATML_MODEL_PATTERN = "Hermes-4"
+
+
+def _is_chatml_model(model: str) -> bool:
+    """Return True when *model* is known to produce ChatML control tokens."""
+    if not model:
+        return False
+    return _CHATML_MODEL_PATTERN in model
+
+
+_CHATML_STOP_SEQUENCES: list[str] = ["<|im_end|>", "<|im_start|>"]
 
 
 def _get_tiktoken_encoding_for_model(model: str) -> Any:
@@ -106,6 +222,196 @@ def _get_tiktoken_encoding_for_model(model: str) -> Any:
             )
             _TIKTOKEN_ENCODING_CACHE[model] = tiktoken.get_encoding("cl100k_base")
     return _TIKTOKEN_ENCODING_CACHE[model]
+
+
+def _llm_metrics_logging_enabled() -> bool:
+    return settings.lightrag_llm_request_metrics_enabled
+
+
+def _stringify_message_content(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(content)
+
+
+def _estimate_message_tokens(model: str, messages: list[dict[str, Any]]) -> int:
+    encoding = _get_tiktoken_encoding_for_model(model)
+    token_count = 0
+    for message in messages:
+        token_count += 4
+        token_count += len(encoding.encode(str(message.get("role", ""))))
+        if "name" in message:
+            token_count += len(encoding.encode(str(message["name"]))) - 1
+        token_count += len(
+            encoding.encode(_stringify_message_content(message.get("content", "")))
+        )
+    return token_count + 2
+
+
+def _estimate_text_tokens(model: str, text: str) -> int:
+    encoding = _get_tiktoken_encoding_for_model(model)
+    return len(encoding.encode(text or ""))
+
+
+def _usage_to_token_counts(usage: Any) -> dict[str, int] | None:
+    if usage is None:
+        return None
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+    if total_tokens <= 0:
+        total_tokens = prompt_tokens + completion_tokens
+    if prompt_tokens <= 0 and completion_tokens <= 0 and total_tokens <= 0:
+        return None
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _timings_value(timings: Any, key: str) -> float | None:
+    if timings is None:
+        return None
+
+    value = None
+    if isinstance(timings, dict):
+        value = timings.get(key)
+    else:
+        value = getattr(timings, key, None)
+
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_non_stream_ttft_s(response: Any, total_duration_s: float) -> float | None:
+    timings = getattr(response, "timings", None)
+    if timings is None:
+        return None
+
+    prompt_ms = _timings_value(timings, "prompt_ms")
+    if prompt_ms is not None and prompt_ms >= 0:
+        return prompt_ms / 1000
+
+    prompt_n = _timings_value(timings, "prompt_n")
+    prompt_per_second = _timings_value(timings, "prompt_per_second")
+    if (
+        prompt_n is not None
+        and prompt_per_second is not None
+        and prompt_n >= 0
+        and prompt_per_second > 0
+    ):
+        return prompt_n / prompt_per_second
+
+    predicted_ms = _timings_value(timings, "predicted_ms")
+    if predicted_ms is None or predicted_ms < 0:
+        return None
+
+    decode_duration_s = predicted_ms / 1000
+    if decode_duration_s > total_duration_s:
+        return None
+    return max(total_duration_s - decode_duration_s, 0.0)
+
+
+def _resolve_llm_token_counts(
+    model: str,
+    messages: list[dict[str, Any]],
+    output_text: str,
+    usage: Any,
+) -> tuple[dict[str, int], str]:
+    usage_counts = _usage_to_token_counts(usage)
+    if usage_counts is not None:
+        return usage_counts, "api"
+
+    prompt_tokens = _estimate_message_tokens(model, messages)
+    completion_tokens = _estimate_text_tokens(model, output_text)
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }, "estimated"
+
+
+def _message_char_count(messages: list[dict[str, Any]]) -> int:
+    return sum(
+        len(_stringify_message_content(message.get("content", "")))
+        for message in messages
+    )
+
+
+def _infer_llm_request_kind(
+    explicit_kind: str | None,
+    base_url: str | None,
+    model: str | None,
+    *,
+    keyword_extraction: bool,
+) -> str:
+    if explicit_kind:
+        return explicit_kind
+    managed_kind = _get_local_mlx_request_kind(base_url, model)
+    if managed_kind == "extraction":
+        return "extraction"
+    if keyword_extraction:
+        return "keyword_extraction"
+    return managed_kind or "chat"
+
+
+def _log_llm_request_metrics(
+    *,
+    request_kind: str,
+    model: str,
+    base_url: str | None,
+    stream: bool,
+    token_counts: dict[str, int],
+    usage_source: str,
+    total_duration_s: float,
+    ttft_s: float | None,
+    input_chars: int,
+    output_chars: int,
+) -> None:
+    if not _llm_metrics_logging_enabled():
+        return
+
+    completion_tokens = token_counts.get("completion_tokens", 0)
+    prompt_tokens = token_counts.get("prompt_tokens", 0)
+    total_tokens = token_counts.get("total_tokens", 0)
+    generation_duration_s = None
+    if ttft_s is not None:
+        generation_duration_s = max(total_duration_s - ttft_s, 0.0)
+    elif not stream:
+        generation_duration_s = total_duration_s
+
+    completion_tps = None
+    if generation_duration_s and generation_duration_s > 0 and completion_tokens > 0:
+        completion_tps = completion_tokens / generation_duration_s
+
+    latency_ms = total_duration_s * 1000
+    ttft_ms = ttft_s * 1000 if ttft_s is not None else None
+    logger.info(
+        "LLM metrics kind=%s stream=%s model=%s base_url=%s latency_ms=%.1f ttft_ms=%s completion_tps=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s usage_source=%s input_chars=%s output_chars=%s",
+        request_kind,
+        stream,
+        model,
+        _normalize_base_url(base_url) or "default",
+        latency_ms,
+        f"{ttft_ms:.1f}" if ttft_ms is not None else "n/a",
+        f"{completion_tps:.2f}" if completion_tps is not None else "n/a",
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        usage_source,
+        input_chars,
+        output_chars,
+    )
 
 
 def create_openai_async_client(
@@ -137,9 +443,7 @@ def create_openai_async_client(
         from openai import AsyncAzureOpenAI
 
         if not api_key:
-            api_key = os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get(
-                "LLM_BINDING_API_KEY"
-            )
+            api_key = settings.azure_openai_api_key or settings.llm_binding_api_key
 
         if client_configs is None:
             client_configs = {}
@@ -163,7 +467,9 @@ def create_openai_async_client(
         return AsyncAzureOpenAI(**merged_configs)
     else:
         if not api_key:
-            api_key = os.environ["OPENAI_API_KEY"]
+            api_key = settings.openai_api_key
+            if api_key is None:
+                raise KeyError("OPENAI_API_KEY")
 
         default_headers = {
             "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
@@ -183,12 +489,15 @@ def create_openai_async_client(
         if base_url is not None:
             merged_configs["base_url"] = base_url
         else:
-            merged_configs["base_url"] = os.environ.get(
-                "OPENAI_API_BASE", "https://api.openai.com/v1"
-            )
+            merged_configs["base_url"] = settings.openai_api_base
 
         if timeout is not None:
             merged_configs["timeout"] = timeout
+
+        if "http_client" not in merged_configs:
+            http_client = _build_http_client_for_base_url(base_url)
+            if http_client is not None:
+                merged_configs["http_client"] = http_client
 
         return AsyncOpenAI(**merged_configs)
 
@@ -286,6 +595,7 @@ async def openai_complete_if_cache(
 
     # Remove special kwargs that shouldn't be passed to OpenAI
     kwargs.pop("hashing_kv", None)
+    request_kind = kwargs.pop("_lightrag_request_kind", None)
 
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
@@ -322,6 +632,14 @@ async def openai_complete_if_cache(
     logger.debug("===== Sending Query to LLM =====")
 
     messages = kwargs.pop("messages", messages)
+    request_kind = _infer_llm_request_kind(
+        request_kind,
+        base_url,
+        model,
+        keyword_extraction=keyword_extraction,
+    )
+    request_started = time.perf_counter()
+    input_chars = _message_char_count(messages)
 
     # Add explicit parameters back to kwargs so they're passed to OpenAI API
     if stream is not None:
@@ -333,17 +651,46 @@ async def openai_complete_if_cache(
     # For Azure OpenAI, we must use the deployment name instead of the model name
     api_model = azure_deployment if use_azure and azure_deployment else model
 
+    # ------------------------------------------------------------------
+    # ChatML stop handling — inject stop sequences for Hermes / ChatML
+    # models so the server halts generation at message boundaries.
+    # ------------------------------------------------------------------
+    _chatml_active = _is_chatml_model(model) and not use_azure
+    if _chatml_active:
+        existing_stop = kwargs.get("stop")
+        if existing_stop is None:
+            kwargs["stop"] = _CHATML_STOP_SEQUENCES
+        elif isinstance(existing_stop, list):
+            # Merge without duplicates, preserving caller-provided order
+            seen = set(existing_stop)
+            merged = list(existing_stop)
+            for s in _CHATML_STOP_SEQUENCES:
+                if s not in seen:
+                    merged.append(s)
+                    seen.add(s)
+            kwargs["stop"] = merged
+
     try:
         # Don't use async with context manager, use client directly
         if "response_format" in kwargs:
-            # beta.chat.completions.parse() provides structured output and is inherently
-            # non-streaming; passing `stream=True` would raise a TypeError at runtime.
-            # Strip `stream` from kwargs before forwarding to avoid this error when
-            # OpenAI-compatible providers (e.g. DeepSeek) set stream in their kwargs.
-            parse_kwargs = {k: v for k, v in kwargs.items() if k != "stream"}
-            response = await openai_async_client.chat.completions.parse(
-                model=api_model, messages=messages, **parse_kwargs
-            )
+            if _should_use_openai_parse(base_url=base_url, use_azure=use_azure):
+                # beta.chat.completions.parse() provides structured output and is
+                # inherently non-streaming; passing `stream=True` would raise a
+                # TypeError at runtime.
+                parse_kwargs = {k: v for k, v in kwargs.items() if k != "stream"}
+                response = await openai_async_client.chat.completions.parse(
+                    model=api_model, messages=messages, **parse_kwargs
+                )
+            else:
+                create_kwargs = dict(kwargs)
+                create_kwargs.pop("stream", None)
+                create_kwargs["response_format"] = _response_format_to_schema(
+                    create_kwargs["response_format"],
+                    json_object_only=_is_managed_swift_lm_base_url(base_url),
+                )
+                response = await openai_async_client.chat.completions.create(
+                    model=api_model, messages=messages, **create_kwargs
+                )
         else:
             response = await openai_async_client.chat.completions.create(
                 model=api_model, messages=messages, **kwargs
@@ -384,11 +731,37 @@ async def openai_complete_if_cache(
             # Track if we've started iterating
             iteration_started = False
             final_chunk_usage = None
+            first_token_at = None
+            output_parts: list[str] = []
 
             # COT (Chain of Thought) state tracking
             cot_active = False
             cot_started = False
             initial_content_seen = False
+
+            # ChatML streaming buffer — accumulates content tokens so we
+            # can detect and truncate at leaked control-token boundaries
+            # without exposing partial markers to the caller.
+            _chatml_accumulated = ""
+
+            def _chatml_yield(content: str) -> str | None:
+                """Check content against ChatML markers, yield clean prefix
+                or None if the caller should stop iteration."""
+                nonlocal _chatml_accumulated
+                if not _chatml_active:
+                    return content
+                _chatml_accumulated += content
+                cleaned = clean_chatml_markers(_chatml_accumulated)
+                if len(cleaned) < len(_chatml_accumulated):
+                    # Marker found somewhere in the accumulated stream.
+                    # Emit only the clean prefix portion of this chunk.
+                    prefix_len = len(cleaned) - (
+                        len(_chatml_accumulated) - len(content)
+                    )
+                    if prefix_len > 0:
+                        return cleaned[-prefix_len:] if prefix_len < len(cleaned) else cleaned
+                    return None  # caller should stop
+                return content
 
             try:
                 iteration_started = True
@@ -436,6 +809,14 @@ async def openai_complete_if_cache(
                             # Process regular content
                             if r"\u" in content:
                                 content = safe_unicode_decode(content.encode("utf-8"))
+                            # ChatML safety net on content
+                            y = _chatml_yield(content)
+                            if y is None:
+                                return
+                            content = y
+                            if first_token_at is None:
+                                first_token_at = time.perf_counter()
+                            output_parts.append(content)
                             yield content
 
                         elif reasoning_content:
@@ -453,17 +834,41 @@ async def openai_complete_if_cache(
                                     reasoning_content = safe_unicode_decode(
                                         reasoning_content.encode("utf-8")
                                     )
+                                # ChatML safety net on reasoning content
+                                y = _chatml_yield(reasoning_content)
+                                if y is None:
+                                    return
+                                reasoning_content = y
+                                if first_token_at is None:
+                                    first_token_at = time.perf_counter()
+                                output_parts.append(reasoning_content)
                                 yield reasoning_content
                     else:
                         # COT disabled, only process regular content
                         if content:
                             if r"\u" in content:
                                 content = safe_unicode_decode(content.encode("utf-8"))
+                            # ChatML safety net on content
+                            y = _chatml_yield(content)
+                            if y is None:
+                                return
+                            content = y
+                            if first_token_at is None:
+                                first_token_at = time.perf_counter()
+                            output_parts.append(content)
                             yield content
 
                     # If neither content nor reasoning_content, continue to next chunk
                     if content is None and reasoning_content is None:
                         continue
+
+                # Log warning if ChatML markers were detected mid-stream
+                if _chatml_active and contains_chatml_markers(_chatml_accumulated):
+                    logger.warning(
+                        "ChatML control tokens intercepted in streaming response; "
+                        "stop sequences should have prevented this. "
+                        "Stream was truncated."
+                    )
 
                 # Ensure COT is properly closed if still active after stream ends
                 if enable_cot and cot_active:
@@ -471,19 +876,35 @@ async def openai_complete_if_cache(
                     cot_active = False
 
                 # After streaming is complete, track token usage
-                if token_tracker and final_chunk_usage:
-                    # Use actual usage from the API
-                    token_counts = {
-                        "prompt_tokens": getattr(final_chunk_usage, "prompt_tokens", 0),
-                        "completion_tokens": getattr(
-                            final_chunk_usage, "completion_tokens", 0
-                        ),
-                        "total_tokens": getattr(final_chunk_usage, "total_tokens", 0),
-                    }
+                output_text = "".join(output_parts)
+                token_counts, usage_source = _resolve_llm_token_counts(
+                    model,
+                    messages,
+                    output_text,
+                    final_chunk_usage,
+                )
+                if token_tracker:
                     token_tracker.add_usage(token_counts)
-                    logger.debug(f"Streaming token usage (from API): {token_counts}")
-                elif token_tracker:
-                    logger.debug("No usage information available in streaming response")
+                    logger.debug(
+                        "Streaming token usage (%s): %s",
+                        usage_source,
+                        token_counts,
+                    )
+
+                _log_llm_request_metrics(
+                    request_kind=request_kind,
+                    model=model,
+                    base_url=base_url,
+                    stream=True,
+                    token_counts=token_counts,
+                    usage_source=usage_source,
+                    total_duration_s=time.perf_counter() - request_started,
+                    ttft_s=(first_token_at - request_started)
+                    if first_token_at is not None
+                    else None,
+                    input_chars=input_chars,
+                    output_chars=len(output_text),
+                )
             except Exception as e:
                 # Ensure COT is properly closed before handling exception
                 if enable_cot and cot_active:
@@ -623,15 +1044,39 @@ async def openai_complete_if_cache(
             if r"\u" in final_content:
                 final_content = safe_unicode_decode(final_content.encode("utf-8"))
 
-            if token_tracker and hasattr(response, "usage"):
-                token_counts = {
-                    "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
-                    "completion_tokens": getattr(
-                        response.usage, "completion_tokens", 0
-                    ),
-                    "total_tokens": getattr(response.usage, "total_tokens", 0),
-                }
+            # ChatML safety net — truncate at any leaked control tokens
+            if _chatml_active:
+                cleaned = clean_chatml_markers(final_content)
+                if len(cleaned) < len(final_content):
+                    logger.warning(
+                        "ChatML control tokens found in non-streaming response; "
+                        "stop sequences should have prevented this. "
+                        "Truncated %d chars.", len(final_content) - len(cleaned)
+                    )
+                    final_content = cleaned
+
+            token_counts, usage_source = _resolve_llm_token_counts(
+                model,
+                messages,
+                final_content,
+                getattr(response, "usage", None),
+            )
+            if token_tracker:
                 token_tracker.add_usage(token_counts)
+
+            total_duration_s = time.perf_counter() - request_started
+            _log_llm_request_metrics(
+                request_kind=request_kind,
+                model=model,
+                base_url=base_url,
+                stream=False,
+                token_counts=token_counts,
+                usage_source=usage_source,
+                total_duration_s=total_duration_s,
+                ttft_s=_resolve_non_stream_ttft_s(response, total_duration_s),
+                input_chars=input_chars,
+                output_chars=len(final_content),
+            )
 
             logger.debug(f"Response content len: {len(final_content)}")
             verbose_debug(f"Response: {response}")
@@ -916,17 +1361,21 @@ async def azure_openai_complete_if_cache(
     full feature parity and API consistency.
     """
     # Handle Azure-specific environment variables and parameters
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT") or model or os.getenv("LLM_MODEL")
+    deployment = settings.azure_openai_deployment or model or settings.llm_model_configured
     base_url = (
-        base_url or os.getenv("AZURE_OPENAI_ENDPOINT") or os.getenv("LLM_BINDING_HOST")
+        base_url
+        or settings.azure_openai_endpoint
+        or settings.llm_binding_host
     )
     api_key = (
-        api_key or os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("LLM_BINDING_API_KEY")
+        api_key
+        or settings.azure_openai_api_key
+        or settings.llm_binding_api_key
     )
     api_version = (
         api_version
-        or os.getenv("AZURE_OPENAI_API_VERSION")
-        or os.getenv("OPENAI_API_VERSION")
+        or settings.azure_openai_api_version
+        or settings.openai_api_version
         or "2024-08-01-preview"
     )
 
@@ -964,7 +1413,7 @@ async def azure_openai_complete(
     if history_messages is None:
         history_messages = []
     result = await azure_openai_complete_if_cache(
-        os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        settings.llm_model_configured or "gpt-4o-mini",
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
@@ -1032,25 +1481,26 @@ async def azure_openai_embed(
     """
     # Handle Azure-specific environment variables and parameters
     deployment = (
-        os.getenv("AZURE_EMBEDDING_DEPLOYMENT")
+        settings.azure_embedding_deployment
         or model
-        or os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+        or settings.embedding_model
+        or "text-embedding-3-small"
     )
     base_url = (
         base_url
-        or os.getenv("AZURE_EMBEDDING_ENDPOINT")
-        or os.getenv("EMBEDDING_BINDING_HOST")
+        or settings.azure_embedding_endpoint
+        or settings.embedding_binding_host
     )
     api_key = (
         api_key
-        or os.getenv("AZURE_EMBEDDING_API_KEY")
-        or os.getenv("EMBEDDING_BINDING_API_KEY")
+        or settings.azure_embedding_api_key
+        or settings.embedding_binding_api_key
     )
     api_version = (
         api_version
-        or os.getenv("AZURE_EMBEDDING_API_VERSION")
-        or os.getenv("AZURE_OPENAI_API_VERSION")
-        or os.getenv("OPENAI_API_VERSION")
+        or settings.azure_embedding_api_version
+        or settings.azure_openai_api_version
+        or settings.openai_api_version
         or "2024-08-01-preview"
     )
 

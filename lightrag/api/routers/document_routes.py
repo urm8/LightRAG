@@ -3348,7 +3348,9 @@ def create_document_routes(
         try:
             # Start the reprocessing in the background
             # Note: Reprocessed documents retain their original track_id from initial upload
-            background_tasks.add_task(rag.apipeline_process_enqueue_documents)
+            # Use asyncio.create_task instead of background_tasks.add_task because
+            # the pipeline method is async and BackgroundTasks doesn't await coroutines.
+            asyncio.create_task(rag.apipeline_process_enqueue_documents())
             logger.info("Reprocessing of failed documents initiated")
 
             return ReprocessResponse(

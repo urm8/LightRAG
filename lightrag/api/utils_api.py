@@ -11,15 +11,13 @@ import logging
 from ascii_colors import ASCIIColors
 from .._version import __api_version__ as api_version
 from .._version import __version__ as core_version
-from lightrag.constants import (
-    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
-)
+from lightrag.config import settings
 from lightrag.api.runtime_validation import validate_runtime_target_from_env_file
 from fastapi import HTTPException, Security, Request, Response, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from .auth import auth_handler
-from .config import ollama_server_infos, global_args, get_env_value
+from .config import ollama_server_infos, global_args
 
 logger = logging.getLogger("lightrag")
 
@@ -385,7 +383,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.top_k}")
     ASCIIColors.white("    └─ Force LLM Summary on Merge: ", end="")
     ASCIIColors.yellow(
-        f"{get_env_value('FORCE_LLM_SUMMARY_ON_MERGE', DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int)}"
+        f"{settings.force_llm_summary_on_merge}"
     )
 
     # System Configuration

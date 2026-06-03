@@ -49,13 +49,7 @@ if not pm.is_installed("pgvector"):
 import asyncpg  # type: ignore
 from asyncpg import Pool  # type: ignore
 from pgvector.asyncpg import register_vector  # type: ignore
-
-from dotenv import load_dotenv
-
-# use the .env that is inside the current folder
-# allows to use different .env file for each lightrag instance
-# the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
+from ..config import settings
 
 T = TypeVar("T")
 
@@ -1970,145 +1964,98 @@ class ClientManager:
         config.read("config.ini", "utf-8")
 
         return {
-            "host": os.environ.get(
-                "POSTGRES_HOST",
-                config.get("postgres", "host", fallback="localhost"),
+            "host": settings.postgres_host(
+                config.get("postgres", "host", fallback="localhost")
             ),
-            "port": os.environ.get(
-                "POSTGRES_PORT", config.get("postgres", "port", fallback=5432)
+            "port": settings.postgres_port(
+                int(config.get("postgres", "port", fallback=5432))
             ),
-            "user": os.environ.get(
-                "POSTGRES_USER", config.get("postgres", "user", fallback="postgres")
+            "user": settings.postgres_user(
+                config.get("postgres", "user", fallback="postgres")
             ),
-            "password": os.environ.get(
-                "POSTGRES_PASSWORD",
-                config.get("postgres", "password", fallback=None),
+            "password": settings.postgres_password(
+                config.get("postgres", "password", fallback=None)
             ),
-            "database": os.environ.get(
-                "POSTGRES_DATABASE",
-                config.get("postgres", "database", fallback="postgres"),
+            "database": settings.postgres_database(
+                config.get("postgres", "database", fallback="postgres")
             ),
-            "workspace": os.environ.get(
-                "POSTGRES_WORKSPACE",
-                config.get("postgres", "workspace", fallback=None),
+            "workspace": settings.postgres_workspace_name(
+                config.get("postgres", "workspace", fallback=None)
             ),
-            "max_connections": os.environ.get(
-                "POSTGRES_MAX_CONNECTIONS",
-                config.get("postgres", "max_connections", fallback=50),
+            "max_connections": settings.postgres_max_connections(
+                int(config.get("postgres", "max_connections", fallback=50))
             ),
             # SSL configuration
-            "ssl_mode": os.environ.get(
-                "POSTGRES_SSL_MODE",
-                config.get("postgres", "ssl_mode", fallback=None),
+            "ssl_mode": settings.postgres_ssl_mode(
+                config.get("postgres", "ssl_mode", fallback=None)
             ),
-            "ssl_cert": os.environ.get(
-                "POSTGRES_SSL_CERT",
-                config.get("postgres", "ssl_cert", fallback=None),
+            "ssl_cert": settings.postgres_ssl_cert(
+                config.get("postgres", "ssl_cert", fallback=None)
             ),
-            "ssl_key": os.environ.get(
-                "POSTGRES_SSL_KEY",
-                config.get("postgres", "ssl_key", fallback=None),
+            "ssl_key": settings.postgres_ssl_key(
+                config.get("postgres", "ssl_key", fallback=None)
             ),
-            "ssl_root_cert": os.environ.get(
-                "POSTGRES_SSL_ROOT_CERT",
-                config.get("postgres", "ssl_root_cert", fallback=None),
+            "ssl_root_cert": settings.postgres_ssl_root_cert(
+                config.get("postgres", "ssl_root_cert", fallback=None)
             ),
-            "ssl_crl": os.environ.get(
-                "POSTGRES_SSL_CRL",
-                config.get("postgres", "ssl_crl", fallback=None),
+            "ssl_crl": settings.postgres_ssl_crl(
+                config.get("postgres", "ssl_crl", fallback=None)
             ),
             # Vector configuration: derived from the vector storage backend in use.
             # PGVectorStorage requires pgvector; all other backends do not.
             "enable_vector": vector_storage == "PGVectorStorage"
             if vector_storage is not None
             else True,
-            "vector_index_type": os.environ.get(
-                "POSTGRES_VECTOR_INDEX_TYPE",
-                config.get("postgres", "vector_index_type", fallback="HNSW"),
+            "vector_index_type": settings.postgres_vector_index_type(
+                config.get("postgres", "vector_index_type", fallback="HNSW")
             ),
-            "hnsw_m": int(
-                os.environ.get(
-                    "POSTGRES_HNSW_M",
-                    config.get("postgres", "hnsw_m", fallback="16"),
-                )
+            "hnsw_m": settings.postgres_hnsw_m(
+                int(config.get("postgres", "hnsw_m", fallback="16"))
             ),
-            "hnsw_ef": int(
-                os.environ.get(
-                    "POSTGRES_HNSW_EF",
-                    config.get("postgres", "hnsw_ef", fallback="64"),
-                )
+            "hnsw_ef": settings.postgres_hnsw_ef(
+                int(config.get("postgres", "hnsw_ef", fallback="64"))
             ),
-            "ivfflat_lists": int(
-                os.environ.get(
-                    "POSTGRES_IVFFLAT_LISTS",
-                    config.get("postgres", "ivfflat_lists", fallback="100"),
-                )
+            "ivfflat_lists": settings.postgres_ivfflat_lists(
+                int(config.get("postgres", "ivfflat_lists", fallback="100"))
             ),
-            "vchordrq_build_options": os.environ.get(
-                "POSTGRES_VCHORDRQ_BUILD_OPTIONS",
-                config.get("postgres", "vchordrq_build_options", fallback=""),
+            "vchordrq_build_options": settings.postgres_vchordrq_build_options(
+                config.get("postgres", "vchordrq_build_options", fallback="")
             ),
-            "vchordrq_probes": os.environ.get(
-                "POSTGRES_VCHORDRQ_PROBES",
-                config.get("postgres", "vchordrq_probes", fallback=""),
+            "vchordrq_probes": settings.postgres_vchordrq_probes(
+                config.get("postgres", "vchordrq_probes", fallback="")
             ),
-            "vchordrq_epsilon": float(
-                os.environ.get(
-                    "POSTGRES_VCHORDRQ_EPSILON",
-                    config.get("postgres", "vchordrq_epsilon", fallback="1.9"),
-                )
+            "vchordrq_epsilon": settings.postgres_vchordrq_epsilon(
+                float(config.get("postgres", "vchordrq_epsilon", fallback="1.9"))
             ),
             # Server settings for Supabase
-            "server_settings": os.environ.get(
-                "POSTGRES_SERVER_SETTINGS",
-                config.get("postgres", "server_options", fallback=None),
+            "server_settings": settings.postgres_server_settings(
+                config.get("postgres", "server_options", fallback=None)
             ),
-            "statement_cache_size": os.environ.get(
-                "POSTGRES_STATEMENT_CACHE_SIZE",
-                config.get("postgres", "statement_cache_size", fallback=None),
+            "statement_cache_size": settings.postgres_statement_cache_size(
+                config.get("postgres", "statement_cache_size", fallback=None)
             ),
             # Connection retry configuration
-            "connection_retry_attempts": min(
-                100,  # Increased from 10 to 100 for long-running operations
-                int(
-                    os.environ.get(
-                        "POSTGRES_CONNECTION_RETRIES",
-                        config.get("postgres", "connection_retries", fallback=10),
-                    )
-                ),
+            "connection_retry_attempts": settings.postgres_connection_retries(
+                int(config.get("postgres", "connection_retries", fallback=10))
             ),
-            "connection_retry_backoff": min(
-                300.0,  # Increased from 5.0 to 300.0 (5 minutes) for PG switchover scenarios
+            "connection_retry_backoff": settings.postgres_connection_retry_backoff(
                 float(
-                    os.environ.get(
-                        "POSTGRES_CONNECTION_RETRY_BACKOFF",
-                        config.get(
-                            "postgres", "connection_retry_backoff", fallback=3.0
-                        ),
-                    )
-                ),
+                    config.get("postgres", "connection_retry_backoff", fallback=3.0)
+                )
             ),
-            "connection_retry_backoff_max": min(
-                600.0,  # Increased from 60.0 to 600.0 (10 minutes) for PG switchover scenarios
-                float(
-                    os.environ.get(
-                        "POSTGRES_CONNECTION_RETRY_BACKOFF_MAX",
+            "connection_retry_backoff_max": (
+                settings.postgres_connection_retry_backoff_max(
+                    float(
                         config.get(
                             "postgres",
                             "connection_retry_backoff_max",
                             fallback=30.0,
-                        ),
+                        )
                     )
-                ),
+                )
             ),
-            "pool_close_timeout": min(
-                30.0,
-                float(
-                    os.environ.get(
-                        "POSTGRES_POOL_CLOSE_TIMEOUT",
-                        config.get("postgres", "pool_close_timeout", fallback=5.0),
-                    )
-                ),
+            "pool_close_timeout": settings.postgres_pool_close_timeout(
+                float(config.get("postgres", "pool_close_timeout", fallback=5.0))
             ),
         }
 

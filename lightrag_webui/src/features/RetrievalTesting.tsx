@@ -3,7 +3,7 @@ import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { throttle } from '@/lib/utils'
-import { queryText, queryTextStream } from '@/api/lightrag'
+import { queryText, queryTextStream, QueryDebugData } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useDebounce } from '@/hooks/useDebounce'
@@ -228,7 +228,35 @@ export default function RetrievalTesting() {
         thinkingTime: null,        // Explicitly initialize to null
         thinkingContent: undefined, // Explicitly initialize to undefined
         displayContent: undefined,  // Explicitly initialize to undefined
-        isThinking: false          // Explicitly initialize to false
+        enrichedContent: undefined,
+        enrichmentModel: undefined,
+        enrichmentElapsedMs: undefined,
+        enrichmentError: undefined,
+        isThinking: false,         // Explicitly initialize to false
+        queryDebug: {
+          query: actualQuery,
+          mode: (modeOverride || useSettingsStore.getState().querySettings.mode),
+          keywords: { high_level: [], low_level: [] },
+          processing_info: {},
+          capabilities: {
+            rerank_enabled: useSettingsStore.getState().querySettings.enable_rerank !== false,
+            tool_calls_visible: false,
+            cosine_scores_visible: false
+          },
+          notes: ['Preparing retrieval pipeline...'],
+          retrieval_steps: [
+            {
+              label: 'Queued',
+              detail: 'Waiting for LightRAG retrieval results...'
+            }
+          ],
+          samples: {
+            entities: [],
+            relationships: [],
+            chunks: [],
+            references: []
+          }
+        }
       }
 
       const prevMessages = [...messages]
@@ -337,6 +365,64 @@ export default function RetrievalTesting() {
         }
       }
 
+      const updateAssistantDebug = (debug: QueryDebugData) => {
+        assistantMessage.queryDebug = debug
+
+        setMessages((prev) => {
+          const newMessages = [...prev]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage && lastMessage.id === assistantMessage.id) {
+            Object.assign(lastMessage, {
+              queryDebug: debug
+            })
+          }
+          return newMessages
+        })
+
+        if (shouldFollowScrollRef.current) {
+          setTimeout(() => {
+            scrollToBottom()
+          }, 30)
+        }
+      }
+
+      const updateAssistantEnrichment = (enrichment: {
+        response: string
+        model?: string
+        elapsed_ms?: number
+      }) => {
+        assistantMessage.enrichedContent = enrichment.response
+        assistantMessage.enrichmentModel = enrichment.model
+        assistantMessage.enrichmentElapsedMs = enrichment.elapsed_ms
+
+        setMessages((prev) => {
+          const newMessages = [...prev]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage && lastMessage.id === assistantMessage.id) {
+            Object.assign(lastMessage, {
+              enrichedContent: assistantMessage.enrichedContent,
+              enrichmentModel: assistantMessage.enrichmentModel,
+              enrichmentElapsedMs: assistantMessage.enrichmentElapsedMs
+            })
+          }
+          return newMessages
+        })
+      }
+
+      const updateAssistantEnrichmentError = (error: string) => {
+        assistantMessage.enrichmentError = error
+        setMessages((prev) => {
+          const newMessages = [...prev]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage && lastMessage.id === assistantMessage.id) {
+            Object.assign(lastMessage, {
+              enrichmentError: assistantMessage.enrichmentError
+            })
+          }
+          return newMessages
+        })
+      }
+
       // Prepare query parameters
       const state = useSettingsStore.getState()
 
@@ -357,6 +443,8 @@ export default function RetrievalTesting() {
       const queryParams = {
         ...state.querySettings,
         query: actualQuery,
+        include_debug: true,
+        include_enrichment: true,
         response_type: 'Multiple Paragraphs',
         conversation_history: effectiveHistoryTurns > 0
           ? prevMessages
@@ -371,9 +459,16 @@ export default function RetrievalTesting() {
         // Run query
         if (state.querySettings.stream) {
           let errorMessage = ''
-          await queryTextStream(queryParams, updateAssistantMessage, (error) => {
-            errorMessage += error
-          })
+          await queryTextStream(
+            queryParams,
+            updateAssistantMessage,
+            (error) => {
+              errorMessage += error
+            },
+            updateAssistantDebug,
+            updateAssistantEnrichment,
+            updateAssistantEnrichmentError
+          )
           if (errorMessage) {
             if (assistantMessage.content) {
               errorMessage = assistantMessage.content + '\n' + errorMessage
@@ -383,6 +478,15 @@ export default function RetrievalTesting() {
         } else {
           const response = await queryText(queryParams)
           updateAssistantMessage(response.response)
+          if (response.enrichment_response) {
+            updateAssistantEnrichment({
+              response: response.enrichment_response,
+              model: response.enrichment_model,
+              elapsed_ms: response.enrichment_elapsed_ms
+            })
+          } else if (response.enrichment_error) {
+            updateAssistantEnrichmentError(response.enrichment_error)
+          }
         }
       } catch (err) {
         // Handle error

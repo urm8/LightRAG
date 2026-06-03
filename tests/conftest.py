@@ -6,6 +6,8 @@ This file provides command-line options and fixtures for test configuration.
 
 import pytest
 
+from lightrag.config import settings
+
 
 def pytest_configure(config):
     """Register custom markers for LightRAG tests."""
@@ -81,14 +83,12 @@ def keep_test_artifacts(request):
 
     Priority: CLI option > Environment variable > Default (False)
     """
-    import os
-
     # Check CLI option first
     if request.config.getoption("--keep-artifacts"):
         return True
 
     # Fall back to environment variable
-    return os.getenv("LIGHTRAG_KEEP_ARTIFACTS", "false").lower() == "true"
+    return settings.lightrag_keep_artifacts
 
 
 @pytest.fixture(scope="session")
@@ -98,14 +98,12 @@ def stress_test_mode(request):
 
     Priority: CLI option > Environment variable > Default (False)
     """
-    import os
-
     # Check CLI option first
     if request.config.getoption("--stress-test"):
         return True
 
     # Fall back to environment variable
-    return os.getenv("LIGHTRAG_STRESS_TEST", "false").lower() == "true"
+    return settings.lightrag_stress_test
 
 
 @pytest.fixture(scope="session")
@@ -115,15 +113,13 @@ def parallel_workers(request):
 
     Priority: CLI option > Environment variable > Default (3)
     """
-    import os
-
     # Check CLI option first
     cli_workers = request.config.getoption("--test-workers")
     if cli_workers != 3:  # Non-default value provided
         return cli_workers
 
     # Fall back to environment variable
-    return int(os.getenv("LIGHTRAG_TEST_WORKERS", "3"))
+    return settings.lightrag_test_workers
 
 
 @pytest.fixture(scope="session")
@@ -133,11 +129,9 @@ def run_integration_tests(request):
 
     Priority: CLI option > Environment variable > Default (False)
     """
-    import os
-
     # Check CLI option first
     if request.config.getoption("--run-integration"):
         return True
 
     # Fall back to environment variable
-    return os.getenv("LIGHTRAG_RUN_INTEGRATION", "false").lower() == "true"
+    return settings.lightrag_run_integration

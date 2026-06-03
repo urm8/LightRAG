@@ -24,22 +24,16 @@ import sys
 import time
 from typing import Any, Dict, List
 from dataclasses import dataclass, field
-from dotenv import load_dotenv
 
 # Add project root to path for imports
 sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 
+from lightrag.config import settings
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
 from lightrag.namespace import NameSpace
 from lightrag.utils import setup_logger
-
-# Load environment variables
-# use the .env that is inside the current folder
-# allows to use different .env file for each lightrag instance
-# the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
 
 # Setup logger
 setup_logger("lightrag", level="INFO")
@@ -51,14 +45,6 @@ STORAGE_TYPES = {
     "3": "PGKVStorage",
     "4": "MongoKVStorage",
     "5": "OpenSearchKVStorage",
-}
-
-# Workspace environment variable mapping
-WORKSPACE_ENV_MAP = {
-    "PGKVStorage": "POSTGRES_WORKSPACE",
-    "MongoKVStorage": "MONGODB_WORKSPACE",
-    "RedisKVStorage": "REDIS_WORKSPACE",
-    "OpenSearchKVStorage": "OPENSEARCH_WORKSPACE",
 }
 
 # Default batch size for migration
@@ -121,15 +107,7 @@ class MigrationTool:
         Returns:
             Workspace name
         """
-        # Check storage-specific workspace
-        if storage_name in WORKSPACE_ENV_MAP:
-            specific_workspace = os.getenv(WORKSPACE_ENV_MAP[storage_name])
-            if specific_workspace:
-                return specific_workspace
-
-        # Check generic WORKSPACE
-        workspace = os.getenv("WORKSPACE", "")
-        return workspace
+        return settings.workspace_for_kv_storage(storage_name)
 
     def check_config_ini_for_storage(self, storage_name: str) -> bool:
         """Check if config.ini has configuration for the storage type
@@ -180,7 +158,7 @@ class MigrationTool:
             print("✓ No environment variables required")
             return True
 
-        missing_vars = [var for var in required_vars if var not in os.environ]
+        missing_vars = settings.missing_env_names(required_vars)
 
         if missing_vars:
             print(
@@ -216,7 +194,7 @@ class MigrationTool:
                 available_count += 1
             else:
                 # Check if has environment variables
-                has_env = all(var in os.environ for var in required_vars)
+                has_env = not settings.missing_env_names(required_vars)
                 if has_env:
                     available_count += 1
                 else:
@@ -276,7 +254,7 @@ class MigrationTool:
 
         # Create global config
         global_config = {
-            "working_dir": os.getenv("WORKING_DIR", "./rag_storage"),
+            "working_dir": settings.working_dir,
             "embedding_batch_num": 10,
         }
 
@@ -1087,16 +1065,15 @@ class MigrationTool:
             if storage_name == "RedisKVStorage":
                 config_source = (
                     "environment variable"
-                    if "REDIS_URI" in os.environ
+                    if not settings.missing_env_names(["REDIS_URI"])
                     else "config.ini or default"
                 )
                 print(f"- Configuration Source: {config_source}")
             elif storage_name == "PGKVStorage":
                 config_source = (
                     "environment variables"
-                    if all(
-                        var in os.environ
-                        for var in STORAGE_ENV_REQUIREMENTS[storage_name]
+                    if not settings.missing_env_names(
+                        STORAGE_ENV_REQUIREMENTS[storage_name]
                     )
                     else "config.ini or defaults"
                 )
@@ -1104,9 +1081,8 @@ class MigrationTool:
             elif storage_name == "MongoKVStorage":
                 config_source = (
                     "environment variables"
-                    if all(
-                        var in os.environ
-                        for var in STORAGE_ENV_REQUIREMENTS[storage_name]
+                    if not settings.missing_env_names(
+                        STORAGE_ENV_REQUIREMENTS[storage_name]
                     )
                     else "config.ini or defaults"
                 )
@@ -1114,9 +1090,8 @@ class MigrationTool:
             elif storage_name == "OpenSearchKVStorage":
                 config_source = (
                     "environment variables"
-                    if all(
-                        var in os.environ
-                        for var in STORAGE_ENV_REQUIREMENTS[storage_name]
+                    if not settings.missing_env_names(
+                        STORAGE_ENV_REQUIREMENTS[storage_name]
                     )
                     else "config.ini or defaults"
                 )

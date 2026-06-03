@@ -10,7 +10,7 @@ import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 
 import seedrandom from 'seedrandom'
-import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
+import { resolveNodeColor, DEFAULT_NODE_COLOR, normalizeNodeTypeKey } from '@/utils/graphColor'
 
 // Select color based on node type
 const getNodeColorByType = (nodeType: string | undefined): string => {
@@ -80,6 +80,7 @@ export type NodeType = {
   label: string
   size: number
   color: string
+  nodeType?: string
   highlighted?: boolean
 }
 export type EdgeType = {
@@ -205,6 +206,7 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
 
     graph.addNode(rawNode.id, {
       label: rawNode.labels.join(', '),
+      nodeType: normalizeNodeTypeKey(rawNode.properties?.entity_type as string | undefined),
       color: rawNode.color,
       x: x,
       y: y,

@@ -1,8 +1,8 @@
 from collections.abc import AsyncIterator
-import os
 import re
 
 import pipmaster as pm
+from lightrag.config import settings
 
 # install specific modules
 if not pm.is_installed("ollama"):
@@ -80,7 +80,7 @@ async def _ollama_model_if_cache(
     api_key = kwargs.pop("api_key", None)
     # fallback to environment variable when not provided explicitly
     if not api_key:
-        api_key = os.getenv("OLLAMA_API_KEY")
+        api_key = settings.ollama_api_key
     headers = {
         "Content-Type": "application/json",
         "User-Agent": f"LightRAG/{__api_version__}",
@@ -222,7 +222,7 @@ async def ollama_embed(
     _ = max_token_size  # Acknowledge parameter to avoid unused variable warning
     api_key = kwargs.pop("api_key", None)
     if not api_key:
-        api_key = os.getenv("OLLAMA_API_KEY")
+        api_key = settings.ollama_api_key
     headers = {
         "Content-Type": "application/json",
         "User-Agent": f"LightRAG/{__api_version__}",

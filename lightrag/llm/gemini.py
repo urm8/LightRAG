@@ -9,7 +9,6 @@ implementation mirrors the OpenAI helpers while relying on the official
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Any
@@ -40,6 +39,7 @@ if not pm.is_installed("google-api-core"):
 from google import genai  # type: ignore
 from google.genai import types  # type: ignore
 from google.api_core import exceptions as google_api_exceptions  # type: ignore
+from lightrag.config import settings
 
 
 class InvalidResponseError(Exception):
@@ -66,13 +66,13 @@ def _get_gemini_client(
     client_kwargs: dict[str, Any] = {}
 
     # Add Vertex AI support
-    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+    use_vertexai = settings.google_genai_use_vertexai
     if use_vertexai:
         # Vertex AI mode: use project/location, NOT api_key
         client_kwargs["vertexai"] = True
-        project = os.getenv("GOOGLE_CLOUD_PROJECT")
+        project = settings.google_cloud_project
         if project:
-            location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+            location = settings.google_cloud_location
             client_kwargs["project"] = project
             if location:
                 client_kwargs["location"] = location
@@ -102,12 +102,12 @@ def _get_gemini_client(
 
 def _ensure_api_key(api_key: str | None) -> str:
     # In Vertex AI mode, API key is not required
-    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+    use_vertexai = settings.google_genai_use_vertexai
     if use_vertexai:
         # Return empty string for Vertex AI mode (not used)
         return ""
 
-    key = api_key or os.getenv("LLM_BINDING_API_KEY") or os.getenv("GEMINI_API_KEY")
+    key = api_key or settings.llm_binding_api_key or settings.gemini_api_key
     if not key:
         raise ValueError(
             "Gemini API key not provided. "

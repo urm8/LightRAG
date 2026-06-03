@@ -1,25 +1,24 @@
 # gunicorn_config.py
 import os
 import logging
+from lightrag.config import settings
 from lightrag.kg.shared_storage import finalize_share_data
-from lightrag.utils import setup_logger, get_env_value
+from lightrag.utils import setup_logger
 from lightrag.constants import (
-    DEFAULT_LOG_MAX_BYTES,
-    DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
 )
 
 
 # Get log directory path from environment variable
-log_dir = os.getenv("LOG_DIR", os.getcwd())
+log_dir = settings.log_dir
 log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
 # Ensure log directory exists
 os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
 # Get log file max size and backup count from environment variables
-log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
-log_backup_count = get_env_value("LOG_BACKUP_COUNT", DEFAULT_LOG_BACKUP_COUNT, int)
+log_max_bytes = settings.log_max_bytes
+log_backup_count = settings.log_backup_count
 
 # These variables will be set by run_with_gunicorn.py
 workers = None
@@ -37,8 +36,8 @@ worker_class = "uvicorn.workers.UvicornWorker"
 # Other Gunicorn configurations
 
 # Logging configuration
-errorlog = os.getenv("ERROR_LOG", log_file_path)  # Default write to lightrag.log
-accesslog = os.getenv("ACCESS_LOG", log_file_path)  # Default write to lightrag.log
+errorlog = settings.error_log or log_file_path  # Default write to lightrag.log
+accesslog = settings.access_log or log_file_path  # Default write to lightrag.log
 
 logconfig_dict = {
     "version": 1,

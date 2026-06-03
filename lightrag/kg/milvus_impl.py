@@ -3,6 +3,7 @@ import os
 from typing import Any, final, Optional, Dict
 from dataclasses import dataclass, fields
 import numpy as np
+from lightrag.config import settings
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
 from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH
@@ -47,30 +48,6 @@ INDEX_VERSION_REQUIREMENTS = {
     "HNSW_SQ": "2.6.8",  # HNSW_SQ requires Milvus 2.6.8+ (supports sq_types such as SQ4U, SQ6, SQ8, BF16, FP16)
 }
 
-
-def _get_env_bool(key: str, default: bool = False) -> bool:
-    """Parse environment variable as boolean"""
-    val = os.environ.get(key, "").lower()
-    if val in ("true", "1", "yes", "on"):
-        return True
-    elif val in ("false", "0", "no", "off"):
-        return False
-    return default
-
-
-def _get_env_int(key: str, default: int) -> int:
-    """Parse environment variable as integer"""
-    val = os.environ.get(key, "")
-    if val:
-        try:
-            return int(val)
-        except ValueError:
-            logger.warning(
-                f"Invalid integer value for {key}: {val}, using default {default}"
-            )
-    return default
-
-
 @dataclass
 class MilvusIndexConfig:
     """
@@ -102,41 +79,35 @@ class MilvusIndexConfig:
     def __post_init__(self):
         """Load configuration from environment variables (init parameters take precedence)"""
         # Index type
-        self.index_type = (
-            self.index_type or os.environ.get("MILVUS_INDEX_TYPE", "AUTOINDEX")
-        ).upper()
+        self.index_type = (self.index_type or settings.milvus_index_type).upper()
 
         # Metric type
-        self.metric_type = (
-            self.metric_type or os.environ.get("MILVUS_METRIC_TYPE", "COSINE")
-        ).upper()
+        self.metric_type = (self.metric_type or settings.milvus_metric_type).upper()
 
         # HNSW parameters
         # Defaults aligned with Milvus 2.4+ official documentation
         if self.hnsw_m is None:
-            self.hnsw_m = _get_env_int("MILVUS_HNSW_M", 16)
+            self.hnsw_m = settings.milvus_hnsw_m
         if self.hnsw_ef_construction is None:
-            self.hnsw_ef_construction = _get_env_int("MILVUS_HNSW_EF_CONSTRUCTION", 360)
+            self.hnsw_ef_construction = settings.milvus_hnsw_ef_construction
         if self.hnsw_ef is None:
-            self.hnsw_ef = _get_env_int("MILVUS_HNSW_EF", 200)
+            self.hnsw_ef = settings.milvus_hnsw_ef
 
         # HNSW_SQ parameters
         if self.sq_type is None:
-            self.sq_type = os.environ.get("MILVUS_HNSW_SQ_TYPE", "SQ8").upper()
+            self.sq_type = settings.milvus_hnsw_sq_type.upper()
         if self.sq_refine is None:
-            self.sq_refine = _get_env_bool("MILVUS_HNSW_SQ_REFINE", False)
+            self.sq_refine = settings.milvus_hnsw_sq_refine
         if self.sq_refine_type is None:
-            self.sq_refine_type = os.environ.get(
-                "MILVUS_HNSW_SQ_REFINE_TYPE", "FP32"
-            ).upper()
+            self.sq_refine_type = settings.milvus_hnsw_sq_refine_type.upper()
         if self.sq_refine_k is None:
-            self.sq_refine_k = _get_env_int("MILVUS_HNSW_SQ_REFINE_K", 10)
+            self.sq_refine_k = settings.milvus_hnsw_sq_refine_k
 
         # IVF parameters
         if self.ivf_nlist is None:
-            self.ivf_nlist = _get_env_int("MILVUS_IVF_NLIST", 1024)
+            self.ivf_nlist = settings.milvus_ivf_nlist
         if self.ivf_nprobe is None:
-            self.ivf_nprobe = _get_env_int("MILVUS_IVF_NPROBE", 16)
+            self.ivf_nprobe = settings.milvus_ivf_nprobe
 
         # Validate configuration
         self._validate()
@@ -332,32 +303,22 @@ class MilvusIndexConfig:
 class MilvusVectorDBStorage(BaseVectorStorage):
     def _get_milvus_connection_kwargs(self, include_db_name: bool = True) -> dict:
         """Build Milvus connection kwargs from env/config."""
+        default_uri = config.get(
+            "milvus",
+            "uri",
+            fallback=os.path.join(self.global_config["working_dir"], "milvus_lite.db"),
+        )
         connection_kwargs = {
-            "uri": os.environ.get(
-                "MILVUS_URI",
-                config.get(
-                    "milvus",
-                    "uri",
-                    fallback=os.path.join(
-                        self.global_config["working_dir"], "milvus_lite.db"
-                    ),
-                ),
+            "uri": settings.milvus_uri(default_uri),
+            "user": settings.milvus_user(config.get("milvus", "user", fallback=None)),
+            "password": settings.milvus_password(
+                config.get("milvus", "password", fallback=None)
             ),
-            "user": os.environ.get(
-                "MILVUS_USER", config.get("milvus", "user", fallback=None)
-            ),
-            "password": os.environ.get(
-                "MILVUS_PASSWORD",
-                config.get("milvus", "password", fallback=None),
-            ),
-            "token": os.environ.get(
-                "MILVUS_TOKEN", config.get("milvus", "token", fallback=None)
-            ),
+            "token": settings.milvus_token(config.get("milvus", "token", fallback=None)),
         }
 
-        db_name = os.environ.get(
-            "MILVUS_DB_NAME",
-            config.get("milvus", "db_name", fallback=None),
+        db_name = settings.milvus_db_name(
+            config.get("milvus", "db_name", fallback=None)
         )
         if include_db_name and db_name:
             connection_kwargs["db_name"] = db_name
@@ -1374,20 +1335,17 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         # Check for MILVUS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Milvus storage instances
-        milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
-        if milvus_workspace and milvus_workspace.strip():
-            # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = milvus_workspace.strip()
+        milvus_workspace = settings.milvus_workspace_override
+        if milvus_workspace:
             logger.info(
-                f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                f"Using MILVUS_WORKSPACE environment variable: '{milvus_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
-            # Use the workspace parameter passed during initialization
-            effective_workspace = self.workspace
-            if effective_workspace:
+            if self.workspace:
                 logger.debug(
-                    f"Using passed workspace parameter: '{effective_workspace}'"
+                    f"Using passed workspace parameter: '{self.workspace}'"
                 )
+        effective_workspace = settings.effective_milvus_workspace(self.workspace)
 
         # Build final_namespace with workspace prefix for data isolation
         # Keep original namespace unchanged for type detection logic

@@ -7,15 +7,11 @@ import os
 import sys
 import platform
 import pipmaster as pm
+from lightrag.config import settings
 from lightrag.api.utils_api import display_splash_screen, check_env_file
 from lightrag.api.config import global_args
-from lightrag.utils import get_env_value
 from lightrag.kg.shared_storage import initialize_share_data
 
-from lightrag.constants import (
-    DEFAULT_WOKERS,
-    DEFAULT_TIMEOUT,
-)
 
 
 def check_and_install_dependencies():
@@ -80,7 +76,7 @@ def main():
     if (
         platform.system() == "Darwin"
         and global_args.workers > 1
-        and os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY") != "YES"
+        and settings.objc_disable_initialize_fork_safety != "YES"
     ):
         print("\n" + "=" * 80)
         print("❌ ERROR: Missing required environment variable on macOS!")
@@ -95,7 +91,7 @@ def main():
         print("  - Operating System: macOS (Darwin)")
         print(f"  - Workers: {global_args.workers}")
         print(
-            f"  - Environment Variable: {os.environ.get('OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'NOT SET')}"
+            f"  - Environment Variable: {settings.objc_disable_initialize_fork_safety or 'NOT SET'}"
         )
         print("\nHow to fix:")
         print("  Option 1 - Set environment variable before starting (recommended):")
@@ -183,19 +179,19 @@ def main():
             gunicorn_config.workers = (
                 global_args.workers
                 if global_args.workers
-                else get_env_value("WORKERS", DEFAULT_WOKERS, int)
+                else settings.workers
             )
 
             # Bind configuration prioritizes command line arguments
             host = (
                 global_args.host
                 if global_args.host != "0.0.0.0"
-                else os.getenv("HOST", "0.0.0.0")
+                else settings.host
             )
             port = (
                 global_args.port
                 if global_args.port != 9621
-                else get_env_value("PORT", 9621, int)
+                else settings.port
             )
             gunicorn_config.bind = f"{host}:{port}"
 
@@ -203,38 +199,30 @@ def main():
             gunicorn_config.loglevel = (
                 global_args.log_level.lower()
                 if global_args.log_level
-                else os.getenv("LOG_LEVEL", "info")
+                else settings.log_level.lower()
             )
 
             # Timeout configuration prioritizes command line arguments
             gunicorn_config.timeout = (
                 global_args.timeout + 30
                 if global_args.timeout is not None
-                else get_env_value(
-                    "TIMEOUT", DEFAULT_TIMEOUT + 30, int, special_none=True
-                )
+                else None if settings.timeout is None else settings.timeout + 30
             )
 
             # Keepalive configuration
-            gunicorn_config.keepalive = get_env_value("KEEPALIVE", 5, int)
+            gunicorn_config.keepalive = settings.keepalive
 
             # SSL configuration prioritizes command line arguments
-            if global_args.ssl or os.getenv("SSL", "").lower() in (
-                "true",
-                "1",
-                "yes",
-                "t",
-                "on",
-            ):
+            if global_args.ssl or settings.ssl:
                 gunicorn_config.certfile = (
                     global_args.ssl_certfile
                     if global_args.ssl_certfile
-                    else os.getenv("SSL_CERTFILE")
+                    else settings.ssl_certfile
                 )
                 gunicorn_config.keyfile = (
                     global_args.ssl_keyfile
                     if global_args.ssl_keyfile
-                    else os.getenv("SSL_KEYFILE")
+                    else settings.ssl_keyfile
                 )
 
             # Set configuration options from the module

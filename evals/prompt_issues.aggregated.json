@@ -1,0 +1,371 @@
+{
+  "aggregated_at": "2026-05-29T05:55:36.324000",
+  "source_files": {
+    "lightrag_prompt_warnings.jsonl": 416,
+    "extraction_attempts.jsonl": 187,
+    "query_attempts.jsonl": 17,
+    "recent_log_chunks.jsonl": 40
+  },
+  "warning_classes": {
+    "completion_missing": {
+      "count": 3,
+      "trend": "stable",
+      "top_prompt_suggestions": [
+        {
+          "prompt_key": "ENTITY_EXTRACTION_SYSTEM_PROMPT",
+          "suggestion": "Reinforce that the final output must end with exactly one completion delimiter line and no trailing text.",
+          "count": 3
+        },
+        {
+          "prompt_key": "ENTITY_EXTRACTION_SYSTEM_PROMPT",
+          "suggestion": "Tighten the relation schema to exactly five fields and skip relations when source, target, keywords, and description cannot all be filled.",
+          "count": 3
+        },
+        {
+          "prompt_key": "ENTITY_EXTRACTION_SYSTEM_PROMPT",
+          "suggestion": "Make relation field 4 mandatory keywords, not an optional description; four-field relation records must be skipped.",
+          "count": 2
+        }
+      ],
+      "example_inputs": [
+        "# Reporting Security Issues\n\nThe LightRAG team and community take security bugs seriously. We appreciate your efforts to responsibly disclose your findings, and will make every effort to acknowledge y",
+        "text | Describes how FPF uses a discipline of \"thinking through writing\" with conceptual forms (Cards, Tables, Records) to make thought tangible, shareable, and auditable, while remaining tool-agnosti"
+      ],
+      "top_file_paths": [
+        {
+          "path": "FPF-Spec.md",
+          "count": 2
+        },
+        {
+          "path": "SECURITY.md",
+          "count": 1
+        }
+      ]
+    },
+    "entity_invalid_type": {
+      "count": 396,
+      "trend": "stable",
+      "top_prompt_suggestions": [
+        {
+          "prompt_key": "ENTITY_EXTRACTION_SYSTEM_PROMPT",
+          "suggestion": "Constrain entity type to one plain label without quotes, brackets, pipes, slashes, or angle brackets.",
+          "count": 396
+        }
+      ],
+      "example_inputs": [
+        "ную\nадминистрацию в окрестных городках. Вначале община Фло-\nренции состояла из автономных приходских групп ремеслен-\nников и торговцев, но затем они объединились, став собствен-\nно Флорентийской комму",
+        "ист и философ, друг Галилея, Кампанелла (1568—\n1639), которому, правда, пришлось испытать немалые пресле-\nдования. Зато реформатом был гениальнейший и, может\nбыть, самый человечный из художников — Рем",
+        "-\nлинное имя которого неизвестно.\n13 Одной из таких каст, по-видимому, были цыгане (рбмани), выселив-\nшиеся из Индии в XIV—XV вв.\n14 Манихейство — догматическая религия с собственным Писани-\nем, основ",
+        "-\nмунистической партии был уничтожен в СССР в период репрессий\n30-х годов, а корейское население, проживавшее ранее на Дальнем Во-\nстоке СССР, было тогда же выселено в Казахстан и другие глубинные\nобл",
+        ".\n.\nThe function first initializes two variables, `household1_max` and\n`household2_max`, with values 1800 and 800, respectively. These\nrepresent the maximum electricity usage for each household.\nThe f"
+      ],
+      "top_file_paths": [
+        {
+          "path": "FPF-Spec.md",
+          "count": 387
+        },
+        {
+          "path": "diakonov.pdf",
+          "count": 8
+        },
+        {
+          "path": "2403.03792v2.pdf",
+          "count": 1
+        }
+      ]
+    },
+    "relation_field_count": {
+      "count": 8,
+      "trend": "stable",
+      "top_prompt_suggestions": [
+        {
+          "prompt_key": "ENTITY_EXTRACTION_SYSTEM_PROMPT",
+          "suggestion": "Tighten the relation schema to exactly five fields and skip relations when source, target, keywords, and description cannot all be filled.",
+          "count": 8
+        },
+        {
+          "prompt_key": "ENTITY_EXTRACTION_SYSTEM_PROMPT",
+          "suggestion": "Make relation field 4 mandatory keywords, not an optional description; four-field relation records must be skipped.",
+          "count": 7
+        },
+        {
+          "prompt_key": "ENTITY_EXTRACTION_SYSTEM_PROMPT",
+          "suggestion": "Reinforce that the final output must end with exactly one completion delimiter line and no trailing text.",
+          "count": 3
+        }
+      ],
+      "example_inputs": [
+        "# Reporting Security Issues\n\nThe LightRAG team and community take security bugs seriously. We appreciate your efforts to responsibly disclose your findings, and will make every effort to acknowledge y",
+        "`tests/` and root-level `test_*.py`. Working datasets stay in `inputs/`, `rag_storage/`, `temp/`; deployment collateral lives in `docs/`, `k8s-deploy/`, and `docker-compose.yml`.\n- `Makefile`: Canonic",
+        "text | Describes how FPF uses a discipline of \"thinking through writing\" with conceptual forms (Cards, Tables, Records) to make thought tangible, shareable, and auditable, while remaining tool-agnosti",
+        "dashboards admissibly tethered to work and evidence. |\n| Boundary Statements: Where Language Becomes a System Boundary                                                                          | full t"
+      ],
+      "top_file_paths": [
+        {
+          "path": "FPF-Spec.md",
+          "count": 4
+        },
+        {
+          "path": "AGENTS.md",
+          "count": 3
+        },
+        {
+          "path": "SECURITY.md",
+          "count": 1
+        }
+      ]
+    },
+    "relation_missing_keyword": {
+      "count": 7,
+      "trend": "stable",
+      "top_prompt_suggestions": [
+        {
+          "prompt_key": "ENTITY_EXTRACTION_SYSTEM_PROMPT",
+          "suggestion": "Tighten the relation schema to exactly five fields and skip relations when source, target, keywords, and description cannot all be filled.",
+          "count": 7
+        },
+        {
+          "prompt_key": "ENTITY_EXTRACTION_SYSTEM_PROMPT",
+          "suggestion": "Make relation field 4 mandatory keywords, not an optional description; four-field relation records must be skipped.",
+          "count": 7
+        },
+        {
+          "prompt_key": "ENTITY_EXTRACTION_SYSTEM_PROMPT",
+          "suggestion": "Reinforce that the final output must end with exactly one completion delimiter line and no trailing text.",
+          "count": 2
+        }
+      ],
+      "example_inputs": [
+        "`tests/` and root-level `test_*.py`. Working datasets stay in `inputs/`, `rag_storage/`, `temp/`; deployment collateral lives in `docs/`, `k8s-deploy/`, and `docker-compose.yml`.\n- `Makefile`: Canonic",
+        "text | Describes how FPF uses a discipline of \"thinking through writing\" with conceptual forms (Cards, Tables, Records) to make thought tangible, shareable, and auditable, while remaining tool-agnosti",
+        "dashboards admissibly tethered to work and evidence. |\n| Boundary Statements: Where Language Becomes a System Boundary                                                                          | full t"
+      ],
+      "top_file_paths": [
+        {
+          "path": "FPF-Spec.md",
+          "count": 4
+        },
+        {
+          "path": "AGENTS.md",
+          "count": 3
+        }
+      ]
+    }
+  },
+  "extraction_tags": {
+    "tag_counts": {
+      "sparse_entities": 56,
+      "sparse_relations": 46,
+      "legacy_fallback": 16,
+      "parse_failed": 16,
+      "legacy_output_detected": 7
+    },
+    "phase_counts": {
+      "primary": 109,
+      "retry_split": 66,
+      "enrichment": 12
+    },
+    "by_tag": {
+      "sparse_entities": [
+        {
+          "input_text": "Test content.",
+          "entity_count": 1,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "test.txt"
+        },
+        {
+          "input_text": "Test content.",
+          "entity_count": 1,
+          "relation_count": 0,
+          "phase": "enrichment",
+          "file_path": "test.txt"
+        },
+        {
+          "input_text": "Test content.",
+          "entity_count": 1,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "test.txt"
+        },
+        {
+          "input_text": "Test content.",
+          "entity_count": 1,
+          "relation_count": 0,
+          "phase": "enrichment",
+          "file_path": "test.txt"
+        },
+        {
+          "input_text": "1 is equivalent to \ngreedy decoding.\nPrompt Engineering\nFebruary 2025\n11\n• Top-P sampling selects the top tokens whose cumulative probability does not exceed \na certain value (P). Values for P range f",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "Google.pdf"
+        }
+      ],
+      "sparse_relations": [
+        {
+          "input_text": "Test content.",
+          "entity_count": 1,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "test.txt"
+        },
+        {
+          "input_text": "Test content.",
+          "entity_count": 1,
+          "relation_count": 0,
+          "phase": "enrichment",
+          "file_path": "test.txt"
+        },
+        {
+          "input_text": "1 is equivalent to \ngreedy decoding.\nPrompt Engineering\nFebruary 2025\n11\n• Top-P sampling selects the top tokens whose cumulative probability does not exceed \na certain value (P). Values for P range f",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "Google.pdf"
+        },
+        {
+          "input_text": ". However, you may need to use more \nexamples for more complex tasks, or you may need to use fewer due to the input length \nlimitation of your model.\nTable 2 shows a few-shot prompt example, let’s use",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "retry_split",
+          "file_path": "Google.pdf"
+        },
+        {
+          "input_text": ". However, you may need to use more \nexamples for more complex tasks, or you may need to use fewer due to the input length \nlimitation of your model.\nTable 2 shows a few-shot prompt example, let’s use",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "Google.pdf"
+        }
+      ],
+      "legacy_fallback": [
+        {
+          "input_text": "Title: Time to talk about my writerdeckveronicaexplains.net\n\nHacker News Rank: 3\n\nHacker News Item ID: 48250144\n\nArticle URL: https://news.ycombinator.com/from?site=veronicaexplains.net\n\nDiscussion UR",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "retry_split",
+          "file_path": "https://news.ycombinator.com/item?id=48250144"
+        },
+        {
+          "input_text": "Title: My two-part desk setup (2025)arslan.io\n\nHacker News Rank: 7\n\nHacker News Item ID: 48214311\n\nArticle URL: https://news.ycombinator.com/from?site=arslan.io\n\nDiscussion URL: https://news.ycombinat",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "https://news.ycombinator.com/item?id=48214311"
+        },
+        {
+          "input_text": "tax money.\n>How and why did they come here?\nSee above.\n>as an inherent problem rather than a person making an active decision to move to somewhere they think they will have a better life.\nIt's not an ",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "https://news.ycombinator.com/item?id=48241890"
+        },
+        {
+          "input_text": "Title: Judson's Last Riderealclearpolitics.com\n\nHacker News Rank: 12\n\nHacker News Item ID: 48246993\n\nArticle URL: https://news.ycombinator.com/from?site=realclearpolitics.com\n\nDiscussion URL: https://",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "https://news.ycombinator.com/item?id=48246993"
+        },
+        {
+          "input_text": "Sean Trende\nSusan Crabtree\nPhilip Wegmann\nColumnists\nLanny J. Davis\nJ. Peder Zane\nPeter Berkowitz\nFrank Miele\nContributors\nBill King\nCharles Lipson\nMargot Cleveland\nJared D. Carl\nL. Sandy Maisel\nVicto",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "retry_split",
+          "file_path": "https://news.ycombinator.com/item?id=48246993"
+        }
+      ],
+      "parse_failed": [
+        {
+          "input_text": "Title: Time to talk about my writerdeckveronicaexplains.net\n\nHacker News Rank: 3\n\nHacker News Item ID: 48250144\n\nArticle URL: https://news.ycombinator.com/from?site=veronicaexplains.net\n\nDiscussion UR",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "retry_split",
+          "file_path": "https://news.ycombinator.com/item?id=48250144"
+        },
+        {
+          "input_text": "Title: My two-part desk setup (2025)arslan.io\n\nHacker News Rank: 7\n\nHacker News Item ID: 48214311\n\nArticle URL: https://news.ycombinator.com/from?site=arslan.io\n\nDiscussion URL: https://news.ycombinat",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "https://news.ycombinator.com/item?id=48214311"
+        },
+        {
+          "input_text": "tax money.\n>How and why did they come here?\nSee above.\n>as an inherent problem rather than a person making an active decision to move to somewhere they think they will have a better life.\nIt's not an ",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "https://news.ycombinator.com/item?id=48241890"
+        },
+        {
+          "input_text": "Title: Judson's Last Riderealclearpolitics.com\n\nHacker News Rank: 12\n\nHacker News Item ID: 48246993\n\nArticle URL: https://news.ycombinator.com/from?site=realclearpolitics.com\n\nDiscussion URL: https://",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "https://news.ycombinator.com/item?id=48246993"
+        },
+        {
+          "input_text": "Sean Trende\nSusan Crabtree\nPhilip Wegmann\nColumnists\nLanny J. Davis\nJ. Peder Zane\nPeter Berkowitz\nFrank Miele\nContributors\nBill King\nCharles Lipson\nMargot Cleveland\nJared D. Carl\nL. Sandy Maisel\nVicto",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "retry_split",
+          "file_path": "https://news.ycombinator.com/item?id=48246993"
+        }
+      ],
+      "legacy_output_detected": [
+        {
+          "input_text": "Title: My two-part desk setup (2025)arslan.io\n\nHacker News Rank: 7\n\nHacker News Item ID: 48214311\n\nArticle URL: https://news.ycombinator.com/from?site=arslan.io\n\nDiscussion URL: https://news.ycombinat",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "https://news.ycombinator.com/item?id=48214311"
+        },
+        {
+          "input_text": "tax money.\n>How and why did they come here?\nSee above.\n>as an inherent problem rather than a person making an active decision to move to somewhere they think they will have a better life.\nIt's not an ",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "https://news.ycombinator.com/item?id=48241890"
+        },
+        {
+          "input_text": "Title: Judson's Last Riderealclearpolitics.com\n\nHacker News Rank: 12\n\nHacker News Item ID: 48246993\n\nArticle URL: https://news.ycombinator.com/from?site=realclearpolitics.com\n\nDiscussion URL: https://",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "https://news.ycombinator.com/item?id=48246993"
+        },
+        {
+          "input_text": "Sean Trende\nSusan Crabtree\nPhilip Wegmann\nColumnists\nLanny J. Davis\nJ. Peder Zane\nPeter Berkowitz\nFrank Miele\nContributors\nBill King\nCharles Lipson\nMargot Cleveland\nJared D. Carl\nL. Sandy Maisel\nVicto",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "retry_split",
+          "file_path": "https://news.ycombinator.com/item?id=48246993"
+        },
+        {
+          "input_text": ": https://kk.org/cooltools/book-freak-210-the-art-of-money-getting/\n\nLinked Source 1 Content:\nTips\nBook Freak #210: The Art of Money Getting\nP.T. Barnum's Golden Rules for Making Money\nGet The Art of ",
+          "entity_count": 0,
+          "relation_count": 0,
+          "phase": "primary",
+          "file_path": "https://news.ycombinator.com/item?id=48247208"
+        }
+      ]
+    }
+  },
+  "query_issues": {
+    "total_query_attempts": 17,
+    "phase_distribution": {
+      "keywords": 10,
+      "answer": 7
+    },
+    "mode_distribution": {
+      "global": 13,
+      "mix": 4
+    }
+  },
+  "log_chunks": {
+    "total_chunk_cases": 40,
+    "warning_distribution": {}
+  }
+}

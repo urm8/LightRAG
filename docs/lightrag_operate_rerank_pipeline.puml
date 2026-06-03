@@ -1,0 +1,271 @@
+
+@startuml
+title LightRAG Current Pipeline Flow - Extraction and Indexing
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam ArrowColor #3d4a57
+skinparam ActivityBorderColor #4c5b6b
+skinparam ActivityBackgroundColor #f7fbff
+skinparam NoteBackgroundColor #fff9e6
+skinparam NoteBorderColor #c6a84f
+skinparam DefaultFontName Menlo
+
+legend right
+Diagram 1: operate.py extraction/indexing flow
+Diagram 2: operate.py query/context flow
+Diagram 3: rerank.py provider flow
+endlegend
+
+start
+:Upstream insert path calls\nLightRAG._process_extract_entities(...);
+
+partition "operate.py: extract_entities setup" {
+  :Load prompt templates, context_base,\ntokenizer, semaphore, and session state;
+  :Create one async task per chunk;
+  note right
+  Chunk workers run under a semaphore.
+  The function waits for all tasks or the first exception,
+  then cancels pending work on failure.
+  end note
+}
+
+partition "operate.py: per-chunk worker" {
+  :primary attempt =\n_run_single_extraction_attempt(phase="primary");
+  :Truncate input to extraction token budget;
+
+  if (Apple bypass needed?) then (yes)
+    :Reverse blocked words\nand extend system prompt;
+  endif
+
+  if (Weak-model input should be skipped?) then (yes)
+    :Return empty structured output;
+  else (no)
+    if (Tool-driven extraction enabled?) then (yes)
+      :_run_model_with_agent_tools(...);
+    else (no)
+      :use_llm_func_with_cache(...,\ncache_type="extract");
+    endif
+  endif
+
+  :Parse structured output\nor normalize legacy text format;
+  :_process_extraction_result(...)\n-> maybe_nodes + maybe_edges;
+
+  if (Structured result needs retry?) then (yes)
+    if (Chunk exceeds retry split size?) then (yes)
+      :chunking_by_token_size(...);
+      :Run retry_split attempts per subchunk;
+      :_merge_structured_outputs(...);
+    endif
+
+    if (Best attempt still sparse?) then (yes)
+      :enrichment attempt with\ncurrent_document_query,\nsearch_extracted_entities, and grep tools;
+    endif
+  endif
+
+  :update_chunk_cache_list(...);
+  :_record_extracted_session_state(...);
+}
+
+:Wait for all chunk tasks or first exception;
+
+if (Any task failed?) then (yes)
+  :Cancel pending tasks and\nraise prefixed exception;
+  stop
+else (no)
+  :chunk_results returned to caller;
+endif
+
+partition "operate.py: merge_nodes_and_edges" {
+  :Collect all nodes and edges\nfrom chunk_results;
+  :Phase 1: _merge_nodes_then_upsert\nfor entities (concurrent);
+  :Phase 2: _merge_edges_then_upsert\nfor relationships (concurrent);
+  :Phase 3: update full_entities\nand full_relations storage;
+}
+
+:Graph, vector, and KV stores updated;
+stop
+@enduml
+
+@startuml
+title LightRAG Current Pipeline Flow - Query and Context
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam ArrowColor #3d4a57
+skinparam ActivityBorderColor #4c5b6b
+skinparam ActivityBackgroundColor #f7fbff
+skinparam NoteBackgroundColor #fff9e6
+skinparam NoteBorderColor #c6a84f
+skinparam DefaultFontName Menlo
+
+start
+
+if (mode == naive?) then (yes)
+  :naive_query branch;
+  :_get_vector_context(...);
+  :Compute available chunk tokens;
+  :process_chunks_unified(...)\nwith optional rerank;
+  :generate_reference_list_from_chunks(...);
+  :Build NAIVE_QUERY_CONTEXT and raw_data;
+
+  if (only_need_context or only_need_prompt?) then (yes)
+    :Return early;
+  else (no)
+    :Use query cache or call LLM\nwith optional agent tools when non-streaming;
+  endif
+
+  :Return QueryResult;
+  stop
+endif
+
+:LightRAG.aquery_llm / aquery_data\ncalls kg_query(...);
+
+if (Query empty?) then (yes)
+  :Return FAIL_RESPONSE;
+  stop
+endif
+
+:Resolve model func and extract keywords;
+
+partition "operate.py: _build_query_context / Stage 1 Search" {
+  :_perform_kg_search(...);
+  :Batch embed query / ll_keywords /\nhl_keywords when possible;
+  :local -> _get_node_data(...);
+  :global -> _get_edge_data(...);
+  :mix -> _get_vector_context(...);
+  :Round-robin merge entities and relations;
+}
+
+partition "operate.py: _build_query_context / Stage 2 Truncation" {
+  :_apply_token_truncation(...)\nfor entities and relations;
+}
+
+partition "operate.py: _build_query_context / Stage 3 Chunk Merge" {
+  :_merge_all_chunks(...);
+  :_find_related_text_unit_from_entities(...);
+  :_find_related_text_unit_from_relations(...);
+  :Round-robin merge + dedupe chunks;
+}
+
+partition "operate.py: _build_query_context / Stage 4 Context Build" {
+  :_build_context_str(...);
+  :Compute dynamic token budget\nfor text chunks;
+  :process_chunks_unified(...);
+  note right
+  Rerank bridge:
+  operate._build_context_str ->
+  utils.process_chunks_unified ->
+  utils.apply_rerank_if_enabled ->
+  global_config["rerank_model_func"] ->
+  lightrag.rerank.*
+  end note
+  :generate_reference_list_from_chunks(...);
+  :convert_to_user_format(...);
+}
+
+if (Context missing?) then (yes)
+  :Return no result;
+  stop
+endif
+
+if (only_need_context or only_need_prompt?) then (yes)
+  :Return context/prompt\nwithout final LLM answer;
+  stop
+endif
+
+:Build system prompt and\napply Apple bypass when needed;
+
+if (Query tools active and non-streaming?) then (yes)
+  :_run_model_with_agent_tools(...)\nwith lightrag_query / answer / grep / web tools;
+else (no)
+  :Check query cache,\notherwise call use_model_func(...);
+endif
+
+:Restore bypassed words, strip prompt echoes,\nand return QueryResult;
+stop
+@enduml
+
+@startuml
+title LightRAG Current Pipeline Flow - Rerank Provider Path
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam ArrowColor #3d4a57
+skinparam ActivityBorderColor #4c5b6b
+skinparam ActivityBackgroundColor #f7fbff
+skinparam NoteBackgroundColor #fff9e6
+skinparam NoteBorderColor #c6a84f
+skinparam DefaultFontName Menlo
+
+start
+:Caller invokes rerank_model_func(query, documents, top_n);
+
+if (Provider is Jina?) then (yes)
+  :jina_rerank(...);
+else (no)
+  if (Provider is Cohere?) then (yes)
+    :cohere_rerank(...);
+  else (no)
+    :ali_rerank(...);
+  endif
+endif
+
+:Resolve API key from args or env;
+:generic_rerank_api(...);
+note right
+generic_rerank_api(...) is wrapped by tenacity:
+up to 3 attempts with exponential backoff for
+aiohttp.ClientError / ClientResponseError.
+end note
+
+if (base_url missing?) then (yes)
+  :Raise ValueError;
+  stop
+endif
+
+:Build auth headers;
+
+if (enable_chunking?) then (yes)
+  :chunk_documents_for_rerank(...);
+
+  if (Tokenizer available?) then (yes)
+    :Token-based overlapping chunks;
+  else (no)
+    :Character-based fallback chunks;
+  endif
+
+  :Store doc_indices and disable\nAPI-level top_n for full coverage;
+endif
+
+if (request_format == aliyun?) then (yes)
+  :Build nested input/parameters payload;
+else (no)
+  :Build standard query/documents payload;
+endif
+
+:POST JSON request with aiohttp;
+
+if (HTTP status != 200?) then (yes)
+  :Clean HTML/plain error message;
+  :Raise ClientResponseError\nfor retry/failure handling;
+  stop
+endif
+
+:Parse JSON results\n(standard or aliyun format);
+
+if (Results empty?) then (yes)
+  :Return empty list;
+  stop
+endif
+
+:Standardize to\n[{index, relevance_score}, ...];
+
+if (Chunking was enabled?) then (yes)
+  :aggregate_chunk_scores(...,\naggregation="max");
+  :Apply original_top_n\nat document level;
+endif
+
+:Return ranked indices + scores\nto utils.apply_rerank_if_enabled(...);
+stop
+@enduml

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
-import os
-from dotenv import load_dotenv
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -16,36 +14,18 @@ from typing import (
     List,
     AsyncIterator,
 )
+from .config import settings
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
 from .constants import (
-    DEFAULT_TOP_K,
-    DEFAULT_CHUNK_TOP_K,
-    DEFAULT_MAX_ENTITY_TOKENS,
-    DEFAULT_MAX_RELATION_TOKENS,
-    DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_HISTORY_TURNS,
-    DEFAULT_OLLAMA_MODEL_NAME,
-    DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_OLLAMA_MODEL_SIZE,
     DEFAULT_OLLAMA_CREATED_AT,
     DEFAULT_OLLAMA_DIGEST,
 )
-
-# use the .env that is inside the current folder
-# allows to use different .env file for each lightrag instance
-# the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
-
-
 class OllamaServerInfos:
     def __init__(self, name=None, tag=None):
-        self._lightrag_name = name or os.getenv(
-            "OLLAMA_EMULATING_MODEL_NAME", DEFAULT_OLLAMA_MODEL_NAME
-        )
-        self._lightrag_tag = tag or os.getenv(
-            "OLLAMA_EMULATING_MODEL_TAG", DEFAULT_OLLAMA_MODEL_TAG
-        )
+        self._lightrag_name = name or settings.ollama_emulating_model_name
+        self._lightrag_tag = tag or settings.ollama_emulating_model_tag
         self.LIGHTRAG_SIZE = DEFAULT_OLLAMA_MODEL_SIZE
         self.LIGHTRAG_CREATED_AT = DEFAULT_OLLAMA_CREATED_AT
         self.LIGHTRAG_DIGEST = DEFAULT_OLLAMA_DIGEST
@@ -106,27 +86,21 @@ class QueryParam:
     stream: bool = False
     """If True, enables streaming output for real-time responses."""
 
-    top_k: int = int(os.getenv("TOP_K", str(DEFAULT_TOP_K)))
+    top_k: int = settings.top_k
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
-    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", str(DEFAULT_CHUNK_TOP_K)))
+    chunk_top_k: int = settings.chunk_top_k
     """Number of text chunks to retrieve initially from vector search and keep after reranking.
     If None, defaults to top_k value.
     """
 
-    max_entity_tokens: int = int(
-        os.getenv("MAX_ENTITY_TOKENS", str(DEFAULT_MAX_ENTITY_TOKENS))
-    )
+    max_entity_tokens: int = settings.max_entity_tokens
     """Maximum number of tokens allocated for entity context in unified token control system."""
 
-    max_relation_tokens: int = int(
-        os.getenv("MAX_RELATION_TOKENS", str(DEFAULT_MAX_RELATION_TOKENS))
-    )
+    max_relation_tokens: int = settings.max_relation_tokens
     """Maximum number of tokens allocated for relationship context in unified token control system."""
 
-    max_total_tokens: int = int(
-        os.getenv("MAX_TOTAL_TOKENS", str(DEFAULT_MAX_TOTAL_TOKENS))
-    )
+    max_total_tokens: int = settings.max_total_tokens
     """Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)."""
 
     hl_keywords: list[str] = field(default_factory=list)
@@ -142,7 +116,7 @@ class QueryParam:
     """
 
     # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM
-    history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
+    history_turns: int = settings.history_turns
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
     model_func: Callable[..., object] | None = None
@@ -157,7 +131,9 @@ class QueryParam:
     It's purpose is the let user customize the way LLM generate the response.
     """
 
-    enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
+    enable_rerank: bool = (
+        settings.lightrag_rerank_enabled and settings.rerank_by_default
+    )
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
     """
@@ -241,9 +217,14 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         Return suffix if model_name exists in embedding_func, otherwise return None.
         Note: embedding_func is guaranteed to exist (validated in __post_init__).
 
+        The suffix is safe_model_name_{dim}d, capped to 40 chars to leave room
+        for PostgreSQL's 63-char identifier limit when prefixed (e.g. LIGHTRAG_VDB_ENTITY_).
+        Long suffixes are replaced with a stable 8-char hash.
+
         Returns:
             str | None: Suffix string e.g. "text_embedding_3_large_3072d", or None if model_name not available
         """
+        import hashlib
         import re
 
         # Check if model_name exists (model_name is optional in EmbeddingFunc)
@@ -256,7 +237,14 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
         # Generate suffix: clean model name and append dimension
         safe_model_name = re.sub(r"[^a-zA-Z0-9_]", "_", model_name.lower())
-        return f"{safe_model_name}_{embedding_dim}d"
+        suffix = f"{safe_model_name}_{embedding_dim}d"
+
+        # Cap suffix length to leave room for base table prefix (up to ~63 chars PG limit)
+        if len(suffix) > 40:
+            short_hash = hashlib.md5(suffix.encode()).hexdigest()[:8]
+            suffix = f"emb_{short_hash}_{embedding_dim}d"
+
+        return suffix
 
     @abstractmethod
     async def query(

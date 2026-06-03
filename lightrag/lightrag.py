@@ -47,6 +47,7 @@ from lightrag.constants import (
     DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
     DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
     DEFAULT_ENTITY_TYPES,
+    DEFAULT_RELATION_LABELS,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
@@ -54,7 +55,7 @@ from lightrag.constants import (
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
-from lightrag.utils import get_env_value
+from lightrag.config import settings
 
 from lightrag.kg import (
     STORAGES,
@@ -114,12 +115,6 @@ from lightrag.utils import (
     normalize_source_ids_limit_method,
 )
 from lightrag.types import KnowledgeGraph
-from dotenv import load_dotenv
-
-# use the .env that is inside the current folder
-# allows to use different .env file for each lightrag instance
-# the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
 
 
 def _chunk_fields_from_status_doc(
@@ -234,7 +229,7 @@ class LightRAG:
     # Workspace
     # ---
 
-    workspace: str = field(default_factory=lambda: os.getenv("WORKSPACE", ""))
+    workspace: str = field(default_factory=lambda: settings.workspace)
     """Workspace for data isolation. Defaults to empty string if WORKSPACE environment variable is not set."""
 
     # ---
@@ -245,74 +240,48 @@ class LightRAG:
     # Query parameters
     # ---
 
-    top_k: int = field(default=get_env_value("TOP_K", DEFAULT_TOP_K, int))
+    top_k: int = field(default=settings.top_k)
     """Number of entities/relations to retrieve for each query."""
 
-    chunk_top_k: int = field(
-        default=get_env_value("CHUNK_TOP_K", DEFAULT_CHUNK_TOP_K, int)
-    )
+    chunk_top_k: int = field(default=settings.chunk_top_k)
     """Maximum number of chunks in context."""
 
-    max_entity_tokens: int = field(
-        default=get_env_value("MAX_ENTITY_TOKENS", DEFAULT_MAX_ENTITY_TOKENS, int)
-    )
+    max_entity_tokens: int = field(default=settings.max_entity_tokens)
     """Maximum number of tokens for entity in context."""
 
-    max_relation_tokens: int = field(
-        default=get_env_value("MAX_RELATION_TOKENS", DEFAULT_MAX_RELATION_TOKENS, int)
-    )
+    max_relation_tokens: int = field(default=settings.max_relation_tokens)
     """Maximum number of tokens for relation in context."""
 
-    max_total_tokens: int = field(
-        default=get_env_value("MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS, int)
-    )
+    max_total_tokens: int = field(default=settings.max_total_tokens)
     """Maximum total tokens in context (including system prompt, entities, relations and chunks)."""
 
-    cosine_threshold: int = field(
-        default=get_env_value("COSINE_THRESHOLD", DEFAULT_COSINE_THRESHOLD, int)
-    )
+    cosine_threshold: float = field(default=settings.cosine_threshold)
     """Cosine threshold of vector DB retrieval for entities, relations and chunks."""
 
-    related_chunk_number: int = field(
-        default=get_env_value("RELATED_CHUNK_NUMBER", DEFAULT_RELATED_CHUNK_NUMBER, int)
-    )
+    related_chunk_number: int = field(default=settings.related_chunk_number)
     """Number of related chunks to grab from single entity or relation."""
 
-    kg_chunk_pick_method: str = field(
-        default=get_env_value("KG_CHUNK_PICK_METHOD", DEFAULT_KG_CHUNK_PICK_METHOD, str)
-    )
+    kg_chunk_pick_method: str = field(default=settings.kg_chunk_pick_method)
     """Method for selecting text chunks: 'WEIGHT' for weight-based selection, 'VECTOR' for embedding similarity-based selection."""
 
     # Entity extraction
     # ---
 
-    entity_extract_max_gleaning: int = field(
-        default=get_env_value("MAX_GLEANING", DEFAULT_MAX_GLEANING, int)
-    )
+    entity_extract_max_gleaning: int = field(default=settings.max_gleaning)
     """Maximum number of entity extraction attempts for ambiguous content."""
 
-    max_extract_input_tokens: int = field(
-        default=get_env_value(
-            "MAX_EXTRACT_INPUT_TOKENS", DEFAULT_MAX_EXTRACT_INPUT_TOKENS, int
-        )
-    )
+    max_extract_input_tokens: int = field(default=settings.max_extract_input_tokens)
     """Maximum tokens allowed for entity extraction input context."""
 
-    force_llm_summary_on_merge: int = field(
-        default=get_env_value(
-            "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
-        )
-    )
+    force_llm_summary_on_merge: int = field(default=settings.force_llm_summary_on_merge)
 
     # Text chunking
     # ---
 
-    chunk_token_size: int = field(default=int(os.getenv("CHUNK_SIZE", 1200)))
+    chunk_token_size: int = field(default=settings.chunk_size)
     """Maximum number of tokens per text chunk when splitting documents."""
 
-    chunk_overlap_token_size: int = field(
-        default=int(os.getenv("CHUNK_OVERLAP_SIZE", 100))
-    )
+    chunk_overlap_token_size: int = field(default=settings.chunk_overlap_size)
     """Number of overlapping tokens between consecutive text chunks to preserve context."""
 
     tokenizer: Optional[Tokenizer] = field(default=None)
@@ -369,12 +338,10 @@ class LightRAG:
     embedding_token_limit: int | None = field(default=None, init=False)
     """Token limit for embedding model. Set automatically from embedding_func.max_token_size in __post_init__."""
 
-    embedding_batch_num: int = field(default=int(os.getenv("EMBEDDING_BATCH_NUM", 10)))
+    embedding_batch_num: int = field(default=settings.embedding_batch_num)
     """Batch size for embedding computations."""
 
-    embedding_func_max_async: int = field(
-        default=int(os.getenv("EMBEDDING_FUNC_MAX_ASYNC", 8))
-    )
+    embedding_func_max_async: int = field(default=settings.embedding_func_max_async)
     """Maximum number of concurrent embedding function calls."""
 
     embedding_cache_config: dict[str, Any] = field(
@@ -390,9 +357,7 @@ class LightRAG:
     - use_llm_check: If True, validates cached embeddings using an LLM.
     """
 
-    default_embedding_timeout: int = field(
-        default=int(os.getenv("EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT))
-    )
+    default_embedding_timeout: int = field(default=settings.embedding_timeout)
 
     # LLM Configuration
     # ---
@@ -403,34 +368,22 @@ class LightRAG:
     llm_model_name: str = field(default="gpt-4o-mini")
     """Name of the LLM model used for generating responses."""
 
-    summary_max_tokens: int = field(
-        default=int(os.getenv("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS))
-    )
+    summary_max_tokens: int = field(default=settings.summary_max_tokens)
     """Maximum tokens allowed for entity/relation description."""
 
-    summary_context_size: int = field(
-        default=int(os.getenv("SUMMARY_CONTEXT_SIZE", DEFAULT_SUMMARY_CONTEXT_SIZE))
-    )
+    summary_context_size: int = field(default=settings.summary_context_size)
     """Maximum number of tokens allowed per LLM response."""
 
-    summary_length_recommended: int = field(
-        default=int(
-            os.getenv("SUMMARY_LENGTH_RECOMMENDED", DEFAULT_SUMMARY_LENGTH_RECOMMENDED)
-        )
-    )
+    summary_length_recommended: int = field(default=settings.summary_length_recommended)
     """Recommended length of LLM summary output."""
 
-    llm_model_max_async: int = field(
-        default=int(os.getenv("MAX_ASYNC", DEFAULT_MAX_ASYNC))
-    )
+    llm_model_max_async: int = field(default=settings.max_async)
     """Maximum number of concurrent LLM calls."""
 
     llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional keyword arguments passed to the LLM model function."""
 
-    default_llm_timeout: int = field(
-        default=int(os.getenv("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT))
-    )
+    default_llm_timeout: int = field(default=settings.llm_timeout)
 
     # Rerank Configuration
     # ---
@@ -438,9 +391,7 @@ class LightRAG:
     rerank_model_func: Callable[..., object] | None = field(default=None)
     """Function for reranking retrieved documents. All rerank configurations (model name, API keys, top_k, etc.) should be included in this function. Optional."""
 
-    min_rerank_score: float = field(
-        default=get_env_value("MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float)
-    )
+    min_rerank_score: float = field(default=settings.min_rerank_score)
     """Minimum rerank score threshold for filtering chunks after reranking."""
 
     # Storage
@@ -455,49 +406,36 @@ class LightRAG:
     enable_llm_cache_for_entity_extract: bool = field(default=True)
     """If True, enables caching for entity extraction steps to reduce LLM costs."""
 
+    agent_tools: bool = field(default=settings.lightrag_agent_tools)
+    """If True, enables the agent tool loop for queries, allowing the LLM to
+    interactively search entities, relationships, and chunks via tool calls
+    before producing a final answer. Controlled via LIGHTRAG_AGENT_TOOLS env var."""
+
     # Extensions
     # ---
 
-    max_parallel_insert: int = field(
-        default=int(os.getenv("MAX_PARALLEL_INSERT", DEFAULT_MAX_PARALLEL_INSERT))
-    )
+    max_parallel_insert: int = field(default=settings.max_parallel_insert)
     """Maximum number of parallel insert operations."""
 
-    max_graph_nodes: int = field(
-        default=get_env_value("MAX_GRAPH_NODES", DEFAULT_MAX_GRAPH_NODES, int)
-    )
+    max_graph_nodes: int = field(default=settings.max_graph_nodes)
     """Maximum number of graph nodes to return in knowledge graph queries."""
 
-    max_source_ids_per_entity: int = field(
-        default=get_env_value(
-            "MAX_SOURCE_IDS_PER_ENTITY", DEFAULT_MAX_SOURCE_IDS_PER_ENTITY, int
-        )
-    )
+    max_source_ids_per_entity: int = field(default=settings.max_source_ids_per_entity)
     """Maximum number of source (chunk) ids in entity Grpah + VDB."""
 
     max_source_ids_per_relation: int = field(
-        default=get_env_value(
-            "MAX_SOURCE_IDS_PER_RELATION",
-            DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
-            int,
-        )
+        default=settings.max_source_ids_per_relation
     )
     """Maximum number of source (chunk) ids in relation Graph + VDB."""
 
     source_ids_limit_method: str = field(
         default_factory=lambda: normalize_source_ids_limit_method(
-            get_env_value(
-                "SOURCE_IDS_LIMIT_METHOD",
-                DEFAULT_SOURCE_IDS_LIMIT_METHOD,
-                str,
-            )
+            settings.source_ids_limit_method
         )
     )
     """Strategy for enforcing source_id limits: IGNORE_NEW or FIFO."""
 
-    max_file_paths: int = field(
-        default=get_env_value("MAX_FILE_PATHS", DEFAULT_MAX_FILE_PATHS, int)
-    )
+    max_file_paths: int = field(default=settings.max_file_paths)
     """Maximum number of file paths to store in entity/relation file_path field."""
 
     file_path_more_placeholder: str = field(default=DEFAULT_FILE_PATH_MORE_PLACEHOLDER)
@@ -505,10 +443,9 @@ class LightRAG:
 
     addon_params: dict[str, Any] = field(
         default_factory=lambda: {
-            "language": get_env_value(
-                "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
-            ),
-            "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
+            "language": settings.summary_language,
+            "entity_types": settings.entity_types,
+            "relation_labels": settings.relation_labels,
         }
     )
 
@@ -519,9 +456,7 @@ class LightRAG:
     auto_manage_storages_states: bool = field(default=False)
     """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
 
-    cosine_better_than_threshold: float = field(
-        default=float(os.getenv("COSINE_THRESHOLD", 0.2))
-    )
+    cosine_better_than_threshold: float = field(default=settings.cosine_threshold)
 
     ollama_server_infos: Optional[OllamaServerInfos] = field(default=None)
     """Configuration for Ollama server information."""
@@ -2833,6 +2768,9 @@ class LightRAG:
                 global_config,
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
+                entities_vdb=self.entities_vdb,
+                relationships_vdb=self.relationships_vdb,
+                knowledge_graph_inst=self.chunk_entity_relation_graph,
             )
         elif data_param.mode == "bypass":
             logger.debug("[aquery_data] Using bypass mode")
@@ -2929,6 +2867,9 @@ class LightRAG:
                     global_config,
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
+                    entities_vdb=self.entities_vdb,
+                    relationships_vdb=self.relationships_vdb,
+                    knowledge_graph_inst=self.chunk_entity_relation_graph,
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval
@@ -2943,6 +2884,7 @@ class LightRAG:
                     history_messages=param.conversation_history,
                     enable_cot=True,
                     stream=param.stream,
+                    _lightrag_request_kind="query",
                 )
                 if type(response) is str:
                     return {

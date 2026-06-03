@@ -1,0 +1,127 @@
+description: LightRAG entity extraction parser gate
+
+prompts:
+  - "{{input_text}}"
+
+providers:
+  - id: file://evals/extraction-provider.cjs
+
+defaultTest:
+  vars:
+    language: English
+    entity_types: "Person, Organization, Location, Event, Concept, Method, Content, Data, Artifact, Workspace, Project, Repository, Directory, File, ProgrammingLanguage, TechnologyStack, Framework, Library, Runtime, Service, Deployment, Environment, Configuration, Command, APIEndpoint, Database, StorageBackend, Other"
+  assert:
+    - type: javascript
+      value: file://evals/assert-lightrag-format.cjs
+
+tests:
+  - description: coding project README
+    vars:
+      input_text: |
+        LightRAG is a Python package with a FastAPI API server, a React WebUI, and PostgreSQL storage.
+        The repository is located at /Users/max/projs/github.com/HKUDS/LightRAG.
+        Developers run `make test-prompt`, `make lightrag-restart`, and `make lightrag-logs`.
+        The local extraction LLM service is served at http://127.0.0.1:11438/v1.
+
+  - description: markdown table and pipes
+    vars:
+      input_text: |
+        | Component | Port | Notes |
+        | --- | --- | --- |
+        | LightRAG API | 9621 | API and WebUI |
+        | LightRAG MCP HTTP | 9696 | streamable HTTP endpoint |
+        | Extraction LLM | 11438 | mlx local model |
+
+        The table contains pipe characters. Do not copy pipe separators into graph records.
+
+  - description: config snippet
+    vars:
+      input_text: |
+        LLM_BINDING=openai
+        LLM_BINDING_HOST=http://127.0.0.1:11435/v1
+        LLM_MODEL=apple-foundationmodel
+        OPENAI_LLM_CONTEXT_WINDOW=4096
+        OPENAI_LLM_INPUT_TOKEN_BUDGET=3072
+        MAX_EXTRACT_INPUT_TOKENS=3072
+        MAX_GLEANING=0
+
+  - description: code block
+    vars:
+      input_text: |
+        ```python
+        async def extract_entities(chunks, global_config):
+            use_llm_func = global_config["llm_model_func"]
+            entity_extract_max_gleaning = int(global_config.get("entity_extract_max_gleaning", 0))
+            return await use_llm_func("extract compact graph records")
+        ```
+        The function extracts entities from text chunks and calls the configured LLM function.
+
+  - description: relation keyword trap
+    vars:
+      input_text: |
+        Nginx forwards requests to LightRAG.
+        A bad record would be relation<|#|>Nginx<|#|>LightRAG<|#|>forwards requests.
+        The correct relation must include a keyword field before the description.
+
+  - description: near token budget long docs
+    vars:
+      input_text: |
+        LightRAG deployment notes repeated for token budget validation.
+        The workspace uses PostgreSQL, pgvector, Apache AGE, Ollama bge-m3 embeddings,
+        Apple local inference, and launchd services.
+        The API server must never send more than the 4096-token context window.
+        The entity extraction prompt must preserve output instructions and truncate input text only.
+
+  - description: content policy spec chunk
+    vars:
+      input_text: |
+        MUST cite an explicit Bridge (direction, CL, loss notes) and MUST NOT override in-Context <=, bottom, or tensor-product constraints.
+
+        Everyday pattern snippets:
+
+        "Who can do this step?"
+        On a MethodStep, write requires: [RoleX].
+        Any performedBy whose role <= RoleX, with a valid window and enactable state.
+
+        Example:
+        Alex#IncidentCommander:SRE_Prod@08:00..12:00
+        Riya#IncidentCommander:SRE_Prod@12:00..20:00
+
+        Independence by construction.
+
+  - description: citation list and section markers
+    vars:
+      input_text: |
+        [7]: https://www.nature.com/articles/sdata201618 "The FAIR Guiding Principles for scientific data management"
+        [8]: https://www.researchobject.org/ro-crate/about_ro_crate "About RO-Crate - Research Object"
+        [9]: https://journals.sagepub.com/doi/10.3233/DS-210053 "Packaging research artefacts with RO-Crate"
+
+        ### A.3:End
+        ## A.3.1 - U.Method
+        ### A.3.1:1 - Context (plain-language motivation)
+
+        Teams must talk about how something is done without entangling who is assigned.
+
+  - description: references and role terminology
+    vars:
+      input_text: |
+        [10]: https://openlineage.io/docs/ "About OpenLineage"
+        [11]: https://github.com/OpenLineage/OpenLineage "An Open Standard for lineage metadata collection"
+        [12]: https://arxiv.org/pdf/2010.02013 "A Brief History Of TensorFlow Extended"
+
+        ### A.3:End
+        ## A.3.1 - U.Method
+        ### A.3.1:1 - Context (plain-language motivation)
+
+        Teams must talk about how something is done without entangling:
+        * Who is assigned (that is Role and RoleAssigning)
+        LightRAG deployment notes repeated for token budget validation.
+        The workspace uses PostgreSQL, pgvector, Apache AGE, Ollama bge-m3 embeddings,
+        Apple local inference, and launchd services.
+        The API server must never send more than the 4096-token context window.
+        The entity extraction prompt must preserve output instructions and truncate input text only.
+        LightRAG deployment notes repeated for token budget validation.
+        The workspace uses PostgreSQL, pgvector, Apache AGE, Ollama bge-m3 embeddings,
+        Apple local inference, and launchd services.
+        The API server must never send more than the 4096-token context window.
+        The entity extraction prompt must preserve output instructions and truncate input text only.

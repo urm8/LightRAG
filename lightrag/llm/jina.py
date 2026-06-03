@@ -1,5 +1,6 @@
 import os
 import pipmaster as pm  # Pipmaster for dynamic library install
+from lightrag.config import settings
 
 # install specific modules
 if not pm.is_installed("aiohttp"):
@@ -77,8 +78,8 @@ async def jina_embed(
     model: str = "jina-embeddings-v4",
     embedding_dim: int = 2048,
     late_chunking: bool = False,
-    base_url: str = None,
-    api_key: str = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
     context: str | None = None,
     task: str | None = None,
 ) -> np.ndarray:
@@ -119,13 +120,14 @@ async def jina_embed(
     if api_key:
         os.environ["JINA_API_KEY"] = api_key
 
-    if "JINA_API_KEY" not in os.environ:
+    resolved_api_key = api_key or settings.jina_api_key
+    if not resolved_api_key:
         raise ValueError("JINA_API_KEY environment variable is required")
 
     url = base_url or "https://api.jina.ai/v1/embeddings"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {os.environ['JINA_API_KEY']}",
+        "Authorization": f"Bearer {resolved_api_key}",
     }
 
     # Determine task based on context if not explicitly provided

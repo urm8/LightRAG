@@ -1,0 +1,45 @@
+@startuml
+title LightRAG Enrich Pipeline
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam ArrowColor #3d4a57
+skinparam ActivityBorderColor #4c5b6b
+skinparam ActivityBackgroundColor #f7fbff
+skinparam ActivityDiamondBorderColor #4c5b6b
+skinparam ActivityDiamondBackgroundColor #eef5fb
+skinparam DefaultFontName Menlo
+
+|Entry|
+start
+:Entry State
+- receive retry-worthy primary attempt
+- keep best_attempt = primary_attempt
+- collect primary cache keys;
+
+|Split Retry|
+:Split Retry Phase
+- if token_count exceeds threshold
+	split chunk by token size
+- run phase=retry_split per subchunk
+- collect parsed retry outputs
+- merge outputs and build split_aggregate_attempt
+- promote if better than best_attempt;
+
+|Enrichment|
+:Enrichment Phase
+- if best_attempt is still retry-worthy
+	run phase=enrichment
+- pass draft_output from best_attempt
+- may enable extract tools + CoT
+- tool handlers: current_document_query,
+	search_extracted_entities, grep
+- append enrichment cache keys
+- promote if enrichment_attempt is better;
+
+|Result|
+:Return Best Attempt
+- maybe_nodes + maybe_edges
+- tags + cache keys;
+stop
+@enduml

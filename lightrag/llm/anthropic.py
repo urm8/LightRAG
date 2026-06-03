@@ -1,10 +1,10 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
 import sys
-import os
 import logging
 import warnings
 from typing import Any, Union, AsyncIterator
 import pipmaster as pm  # Pipmaster for dynamic library install
+from lightrag.config import settings
 
 if sys.version_info < (3, 9):
     from typing import AsyncIterator
@@ -66,7 +66,7 @@ async def anthropic_complete_if_cache(
             "enable_cot=True is not supported for the Anthropic API and will be ignored."
         )
     if not api_key:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = settings.anthropic_api_key
 
     default_headers = {
         "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
