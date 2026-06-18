@@ -3013,6 +3013,66 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     return text.strip()
 
 
+def strip_control_characters(text: str, replacement_char: str = "") -> str:
+    """Remove control and surrogate characters without unescaping or trimming."""
+    if not text:
+        return text
+    text = _SURROGATE_PATTERN.sub(replacement_char, text)
+    return _CONTROL_CHAR_PATTERN_ALL.sub(replacement_char, text)
+
+
+_FORMFEED_LATEX_PATTERN = re.compile(r"\x0c(?=[A-Za-z])")
+_BACKSPACE_LATEX_PATTERN = re.compile(r"\x08(?=[A-Za-z])")
+_WS_LATEX_SUSPECT_PATTERN = re.compile(
+    r"\t(?=(?:au|heta|imes|ext|ilde|herefore|riangle)\b)"
+    r"|\r(?=(?:ho|ight|angle|ceil)\b)"
+    r"|\n(?=(?:abla|otin)\b)"
+)
+
+
+def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
+    """Restore common LaTeX backslashes destroyed by JSON escape decoding."""
+    if not text:
+        return text
+
+    repaired = _FORMFEED_LATEX_PATTERN.sub(r"\\f", text)
+    repaired = _BACKSPACE_LATEX_PATTERN.sub(r"\\b", repaired)
+    if repaired != text:
+        logger.warning(
+            "Repaired LaTeX escape damage (\\f/\\b decoded by JSON parser)%s",
+            f" in {context}" if context else "",
+        )
+
+    suspect = _WS_LATEX_SUSPECT_PATTERN.search(repaired)
+    if suspect:
+        snippet = repaired[max(0, suspect.start() - 30) : suspect.start() + 30]
+        logger.warning(
+            "Suspected whitespace-class LaTeX escape damage%s (not auto-repaired): %r",
+            f" in {context}" if context else "",
+            snippet,
+        )
+
+    return repaired
+
+
+def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
+    """Recursively apply ``repair_vlm_json_escape_damage`` to string leaves."""
+    if isinstance(obj, str):
+        return repair_vlm_json_escape_damage(obj, context=context)
+    if isinstance(obj, dict):
+        return {
+            key: repair_vlm_json_escape_damage_nested(
+                value, context=f"{context}.{key}" if context else str(key)
+            )
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [
+            repair_vlm_json_escape_damage_nested(item, context=context) for item in obj
+        ]
+    return obj
+
+
 def check_storage_env_vars(storage_name: str) -> None:
     """Check if all required environment variables for storage implementation exist
 
@@ -4077,3 +4137,13 @@ def contains_chatml_markers(text: str) -> bool:
     if not text:
         return False
     return _CHATML_STOP_RE.search(text) is not None
+
+
+def validate_workspace(workspace: str) -> str:
+    """Validate that a workspace name is a single safe path component."""
+    if "/" in workspace or "\\" in workspace or workspace in (".", ".."):
+        raise ValueError(
+            f"Invalid workspace name {workspace!r}: must not contain path "
+            "separators ('/', '\\\\') or be a relative path reference ('.', '..')"
+        )
+    return workspace

@@ -4,6 +4,7 @@ This module contains all query-related routes for the LightRAG API.
 
 import asyncio
 import copy
+import inspect
 import json
 import re
 import time
@@ -56,6 +57,12 @@ def _get_fast_path_prompt() -> str:
 
 def _query_model_name() -> str:
     return str(settings.llm_model_configured or "").strip().lower()
+
+
+async def _await_query_call(result: Any) -> Any:
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 def _query_binding_host() -> str:
@@ -1433,10 +1440,12 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             normal_param.stream_event_callback = _stream_event_callback
             normal_task = asyncio.create_task(
-                rag.aquery_llm(
-                    request.query,
-                    param=normal_param,
-                    system_prompt=_get_query_prompt_for_request(request),
+                _await_query_call(
+                    rag.aquery_llm(
+                        request.query,
+                        param=normal_param,
+                        system_prompt=_get_query_prompt_for_request(request),
+                    )
                 )
             )
 
@@ -1445,10 +1454,12 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 fast_param = _make_fast_path_param(normal_param)
                 fast_param.stream_event_callback = None
                 fast_task = asyncio.create_task(
-                    rag.aquery_llm(
-                        request.query,
-                        param=fast_param,
-                        system_prompt=_get_fast_path_prompt(),
+                    _await_query_call(
+                        rag.aquery_llm(
+                            request.query,
+                            param=fast_param,
+                            system_prompt=_get_fast_path_prompt(),
+                        )
                     )
                 )
 

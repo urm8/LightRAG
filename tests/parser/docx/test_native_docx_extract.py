@@ -22,8 +22,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from lxml import etree
 
-from lightrag.parser.docx import parse_document as parse_doc
 from lightrag.parser.docx.parse_document import (
+    DocxContentError,
     extract_docx_blocks,
     extract_paragraph_content,
 )
@@ -183,9 +183,9 @@ def test_each_heading_becomes_its_own_block(tmp_path) -> None:
     docx_path = tmp_path / "headings.docx"
     docx_path.write_bytes(buf.getvalue())
 
-    # fixlevel=0 mirrors the production path (pipeline.py): split at every
-    # heading level, no token-based splitting or small-block merging.
-    blocks = extract_docx_blocks(str(docx_path), fixlevel=0)
+    # The native parser splits at every heading level and never does
+    # token-based splitting or small-block merging (that is the chunker's job).
+    blocks = extract_docx_blocks(str(docx_path))
 
     # The content line carries a markdown ``#`` prefix matching the level,
     # while the ``heading`` field stays clean (no prefix).
@@ -220,7 +220,7 @@ def test_heading_markdown_prefix_capped_at_six(tmp_path) -> None:
     docx_path = tmp_path / "deep.docx"
     docx_path.write_bytes(buf.getvalue())
 
-    blocks = extract_docx_blocks(str(docx_path), fixlevel=0)
+    blocks = extract_docx_blocks(str(docx_path))
 
     summary = [(b["heading"], b["content"].split("\n")[0], b["level"]) for b in blocks]
     assert summary == [
@@ -265,7 +265,7 @@ def test_oversize_outline_heading_with_softbreak_splits(tmp_path) -> None:
     docx_path = tmp_path / "softbreak.docx"
     docx_path.write_bytes(buf.getvalue())
 
-    blocks = extract_docx_blocks(str(docx_path), fixlevel=0)
+    blocks = extract_docx_blocks(str(docx_path))
 
     # The short first line becomes the heading; the long remainder is body.
     heading_block = next(b for b in blocks if b["heading"] == head)
@@ -289,7 +289,7 @@ def test_oversize_outline_heading_no_softbreak_demoted_to_body(tmp_path) -> None
     docx_path = tmp_path / "demote.docx"
     docx_path.write_bytes(buf.getvalue())
 
-    blocks = extract_docx_blocks(str(docx_path), fixlevel=0)
+    blocks = extract_docx_blocks(str(docx_path))
 
     # The text survives as body content, and no block adopts it as a heading.
     assert any(long_text in b["content"] for b in blocks)
@@ -309,7 +309,7 @@ def test_short_outline_paragraph_still_heading(tmp_path) -> None:
     docx_path = tmp_path / "short.docx"
     docx_path.write_bytes(buf.getvalue())
 
-    blocks = extract_docx_blocks(str(docx_path), fixlevel=0)
+    blocks = extract_docx_blocks(str(docx_path))
 
     heading_block = next(b for b in blocks if b["heading"] == "处置程序")
     assert heading_block["level"] == 3
@@ -330,39 +330,12 @@ def test_existing_markdown_heading_keeps_content_but_metadata_is_clean(
     docx_path.write_bytes(buf.getvalue())
 
     parse_metadata: dict[str, str] = {}
-    blocks = extract_docx_blocks(
-        str(docx_path), fixlevel=0, parse_metadata=parse_metadata
-    )
+    blocks = extract_docx_blocks(str(docx_path), parse_metadata=parse_metadata)
 
     assert parse_metadata["first_heading"] == "Already MD"
     assert blocks[0]["heading"] == "Already MD"
     assert blocks[0]["parent_headings"] == []
     assert blocks[0]["content"].splitlines()[0] == "# Already MD"
-
-
-@pytest.mark.offline
-def test_split_long_block_promoted_markdown_anchor_metadata_is_clean(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(parse_doc, "MAX_BLOCK_CONTENT_TOKENS", 25)
-    monkeypatch.setattr(parse_doc, "IDEAL_BLOCK_CONTENT_TOKENS", 20)
-    monkeypatch.setattr(parse_doc, "estimate_tokens", len)
-
-    blocks = parse_doc.split_long_block(
-        "Top",
-        [
-            {"text": "aaaaa", "para_id": "p1", "is_table": False},
-            {"text": "bbbbbbbbbb", "para_id": "p2", "is_table": False},
-            {"text": "# Anchor", "para_id": "p3", "is_table": False},
-            {"text": "cccccccccc", "para_id": "p4", "is_table": False},
-        ],
-        parent_headings=[],
-        block_level=1,
-    )
-
-    assert blocks[1]["heading"] == "Anchor"
-    assert blocks[1]["parent_headings"] == ["Top"]
-    assert blocks[1]["content"].splitlines()[0] == "# Anchor"
 
 
 @pytest.mark.offline
@@ -379,3 +352,54 @@ def test_empty_tables_are_skipped(tmp_path) -> None:
         "must be dropped before the placeholder is emitted"
     )
     assert any('"A"' in b["content"] and '"B"' in b["content"] for b in blocks)
+
+
+# --- invalid (non-ZIP) .docx files surface an accurate error ---------------
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("header", "format_hint"),
+    [
+        (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"junk", "Word 97-2003"),
+        (b"{\\rtf1\\ansi}", "RTF"),
+        (b"%PDF-1.7\n%binary", "PDF"),
+        (b"<?xml version='1.0'?><html></html>", "HTML or XML"),
+        (b"plain text masquerading as docx", "not a valid DOCX"),
+    ],
+)
+def test_invalid_docx_raises_accurate_error(tmp_path, header, format_hint) -> None:
+    """A file that exists but is not a ZIP/OOXML package must fail with an
+    accurate message — never the misleading python-docx "Package not found".
+
+    The native worker confirms the file exists before parsing, so the only way
+    ``PackageNotFoundError`` can fire here is a corrupt file or a non-DOCX
+    payload wearing a .docx extension. The error must name the real format and
+    keep the file path.
+    """
+    docx_path = tmp_path / "masquerade.docx"
+    docx_path.write_bytes(header)
+
+    with pytest.raises(DocxContentError) as excinfo:
+        extract_docx_blocks(str(docx_path))
+
+    message = str(excinfo.value)
+    assert "Package not found" not in message
+    assert "valid DOCX" in message
+    assert str(docx_path) in message
+    assert format_hint in message
+
+
+@pytest.mark.offline
+def test_empty_docx_file_reports_truncation(tmp_path) -> None:
+    """A 0-byte .docx must be diagnosed as empty/truncated, not 'not found'."""
+    docx_path = tmp_path / "empty.docx"
+    docx_path.write_bytes(b"")
+
+    with pytest.raises(DocxContentError) as excinfo:
+        extract_docx_blocks(str(docx_path))
+
+    message = str(excinfo.value)
+    assert "Package not found" not in message
+    assert "empty" in message
+    assert str(docx_path) in message

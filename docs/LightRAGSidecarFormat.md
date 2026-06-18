@@ -53,7 +53,6 @@ inputs/space1/__parsed__/<canonical filename>.parsed/
   "equation_file": true,
   "drawing_file": true,
   "asset_dir": true,
-  "split_option": { "fixlevel": 0 },
   "blocks": 39,
   "doc_id": "doc-f1bee60173d067d88595c00e7d9b0ce5",
   "parse_engine": "native",
@@ -72,7 +71,7 @@ inputs/space1/__parsed__/<canonical filename>.parsed/
 | `document_hash` | `"sha256:<hex>"` | Sidecar body fingerprint, defined as `SHA-256(merged_text)`, where `merged_text` is the concatenation of all non-empty content lines' `content` fields joined by `"\n\n"`. Used by external consumers to quickly determine whether two `.parsed/` directories share the same source (without line-by-line body comparison), and serves as a self-describing content checksum for the sidecar file. Note: the LightRAG ingestion pipeline itself does not read this field; cross-document deduplication is handled separately by `doc_status.content_hash`. |
 | `table_file` / `equation_file` / `drawing_file` | `bool` | Whether the corresponding sidecar files exist (when true, the corresponding file must exist) |
 | `asset_dir` | `bool` | Whether the `blocks.assets` asset directory exists |
-| `split_option` | `object` | Chunking parameters used during file extraction. This field is reserved for the extraction engine itself to record and use |
+| `split_option` | `object` | Optional. Free-form metadata the parsing engine records about itself (e.g. `engine_version`, engine-specific extras). Omitted entirely when the engine recorded nothing (the common native/markdown case). Chunking is NOT performed at the parse stage — it is the downstream chunker's responsibility — so this field never carries chunking parameters. |
 | `blocks` | `int` | Number of content lines (excluding meta) |
 | `doc_id` | `"doc-<md5>"` | Global document ID. Sidecar item IDs (`im-/tb-/eq-`) use the hash portion of `doc_id` with the `doc-` prefix removed, in order to shorten the placeholder tags embedded in body text. |
 | `parse_engine` | `str` | Parsing engine `native/mineru/docling/legacy` |
@@ -142,7 +141,7 @@ When the text is fed to the LLM during entity/relation extraction, internal attr
 When a sidecar file exists, the chunking strategies attach `sidecar = {"type": "block", "id": <primary source blockid>, "refs": [{"type": "block", "id": <blockid>}, …]}` to each output chunk, where:
 
 - Unmerged chunk → `sidecar.refs` has only one element, equal to the `blockid` of the blocks.jsonl line the chunk came from;
-- Chunk merged in Stage D → `refs` preserves the order of all source `blockid`s (deduplicated);
+- Chunk merged in LevelMerge → `refs` preserves the order of all source `blockid`s (deduplicated);
 - Sub-chunks after hard fallback split → share the parent chunk's `sidecar`.
 
 This linkage is the basis for document-level traceability (chunk ↔ block ↔ original paragraph paraId).
@@ -156,6 +155,7 @@ The top level is a dict container of the form `{"version": "1.0", "drawings": { 
   "id": "im-f1bee60173d067d88595c00e7d9b0ce5-0004",
   "blockid": "2f52b70839d13a936d97955916820147",
   "heading": "2.3 Structural Dimensions and Weight",
+  "parent_headings": ["2 Product Description"],
   "format": "png",
   "path": "m012-manual.blocks.assets/image4.png",
   "src": "",
@@ -188,6 +188,7 @@ The top level is a dict container of the form `{"version": "1.0", "drawings": { 
 | `id` | Form `im-<doc_hash>-<NNNN>` (`doc_hash` is the 32-character md5 portion of `doc_id` with the `doc-` prefix removed) |
 | `blockid` | Points to the content line that produced this drawing |
 | `heading` | The section heading the drawing belongs to |
+| `parent_headings` | String array: the top-down list of ancestor headings, excluding the current `heading` (mirrors the `blocks.jsonl` field of the same name on the block this drawing belongs to) |
 | `format` | Original extension (no dot): `png` / `jpeg` / `gif` / `webp` / `wmf` / `emf` / … |
 | `path` | Resource path relative to the `*.parsed/` directory; **always** points to a file inside `*.blocks.assets/` |
 | `src` | The reference alias of the drawing in the original document (empty in most cases) |
@@ -219,6 +220,7 @@ The top level is a dict container of the form `{"version": "1.0", "tables": { <i
   "id": "tb-f1bee60173d067d88595c00e7d9b0ce5-0007",
   "blockid": "3f33897b5e105d254addc655f1efbf8c",
   "heading": "2.4.4 Temperature-Humidity-Altitude (run with the system)",
+  "parent_headings": ["2 Product Description", "2.4 Environmental Adaptability"],
   "dimension": [16, 8],
   "format": "json",
   "content": "[[\"Step\", \"Temperature (°C)\", \"Altitude (m)\", \"Relative humidity\", \"Time (min)\", \"Auxiliary cooling\", \"System power\", \"Functional/performance check\"],…",
@@ -242,7 +244,7 @@ The top level is a dict container of the form `{"version": "1.0", "tables": { <i
 }
 ```
 
-The `blockid` / `heading` / `surrounding` / `llm_analyze_result` fields of tables.json have the same meaning as in drawings.json. Different or newly added fields are described below:
+The `blockid` / `heading` / `parent_headings` / `surrounding` / `llm_analyze_result` fields of tables.json have the same meaning as in drawings.json. Different or newly added fields are described below:
 
 | Field | Description |
 |---|---|
@@ -264,6 +266,7 @@ The top level is a dict container of the form `{"version": "1.0", "equations": {
   "id": "eq-f1bee60173d067d88595c00e7d9b0ce5-0001",
   "blockid": "2f52b70839d13a936d97955916820147",
   "heading": "2.3 Structural Dimensions and Weight",
+  "parent_headings": ["2 Product Description"],
   "format": "latex",
   "content": "C=2∗\\frac{P∗T}{\\left( {V}_{H}^{2}−{V}_{L}^{2} \\right)∗η}",
   "caption": "",
@@ -286,7 +289,7 @@ The top level is a dict container of the form `{"version": "1.0", "equations": {
 }
 ```
 
-The `blockid` / `heading` / `surrounding` / `llm_analyze_result` fields of equations.json have the same meaning as in drawings.json. Different or newly added fields are described below:
+The `blockid` / `heading` / `parent_headings` / `surrounding` / `llm_analyze_result` fields of equations.json have the same meaning as in drawings.json. Different or newly added fields are described below:
 
 | Field | Description |
 |---|---|
