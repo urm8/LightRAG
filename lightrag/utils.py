@@ -296,7 +296,6 @@ def get_env_value(
         return default
 
 
->>>>>>> lightrag/main
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
     from lightrag.base import BaseKVStorage, BaseVectorStorage, QueryParam
@@ -646,6 +645,11 @@ def _serialize_cache_variant(value: Any) -> str:
     if value is None:
         return ""
 
+    if isinstance(value, type):
+        model_json_schema = getattr(value, "model_json_schema", None)
+        if callable(model_json_schema):
+            value = model_json_schema()
+
     if hasattr(value, "model_dump") and callable(value.model_dump):
         try:
             value = value.model_dump(mode="json")
@@ -706,6 +710,9 @@ def _validate_cached_response_format(response_format: Any | None) -> None:
         isinstance(response_format, dict)
         and response_format.get("type") == "json_object"
     ):
+        return
+
+    if isinstance(response_format, type):
         return
 
     raise ValueError(
@@ -985,7 +992,7 @@ def priority_limit_async_func_call(
                             )
                         except Exception as e:
                             # Function execution error
-                            logger.error(
+                            logger.exception(
                                 f"{queue_name}: Error in decorated function for task {task_id}: {str(e)}"
                             )
                             if not task_state.future.done():
@@ -3140,11 +3147,16 @@ async def pick_by_vector_similarity(
     if not entity_info or num_of_chunks <= 0:
         return []
 
-    # Collect all unique chunk IDs from entity info
-    all_chunk_ids = set()
-    for i, entity in enumerate(entity_info):
-        chunk_ids = entity.get("sorted_chunks", [])
-        all_chunk_ids.update(chunk_ids)
+    # Collect all unique chunk IDs from entity info while preserving order.
+    # The earlier entity/chunk ordering already encodes priority.
+    all_chunk_ids: list[str] = []
+    seen_chunk_ids: set[str] = set()
+    for entity in entity_info:
+        for chunk_id in entity.get("sorted_chunks", []):
+            if chunk_id in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(chunk_id)
+            all_chunk_ids.append(chunk_id)
 
     if not all_chunk_ids:
         logger.warning(
@@ -3155,8 +3167,6 @@ async def pick_by_vector_similarity(
     logger.debug(
         f"Vector similarity chunk selection: {len(all_chunk_ids)} unique chunk IDs collected"
     )
-
-    all_chunk_ids = list(all_chunk_ids)
 
     try:
         # Use pre-computed query embedding if provided, otherwise compute it
@@ -3179,16 +3189,18 @@ async def pick_by_vector_similarity(
             f"Vector similarity chunk selection: {len(chunk_vectors)} chunk vectors Retrieved"
         )
 
-        if not chunk_vectors or len(chunk_vectors) != len(all_chunk_ids):
-            if not chunk_vectors:
-                logger.warning(
-                    "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
-                )
-            else:
-                logger.warning(
-                    f"Vector similarity chunk selection: found {len(chunk_vectors)} but expecting {len(all_chunk_ids)}"
-                )
+        if not chunk_vectors:
+            logger.warning(
+                "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
+            )
             return []
+        if len(chunk_vectors) != len(all_chunk_ids):
+            logger.warning(
+                "Vector similarity chunk selection: found %s but expecting %s; "
+                "continuing with available vectors",
+                len(chunk_vectors),
+                len(all_chunk_ids),
+            )
 
         # Calculate cosine similarities
         similarities = []

@@ -2,17 +2,22 @@ from __future__ import annotations
 from functools import partial
 
 import asyncio
+import inspect
 import json
-import re
 import json_repair
 import re
-from typing import Any, AsyncIterator, Callable, overload, Literal
+import os
+from typing import Any, AsyncIterator, Callable, NamedTuple, overload, Literal
 from collections import Counter, defaultdict
-from urllib.parse import urlparse
 
 from lightrag.exceptions import (
     PipelineCancelledException,
 )
+from lightrag.query.apfel import _build_apfel_iterative_portions
+from lightrag.query.apfel import _apfel_iterative_metadata
+from lightrag.query.apfel import _run_apfel_iterative_answer_generator
+from lightrag.query.apfel import _run_apfel_iterative_answer
+from lightrag.query.apfel import _is_apfel_fast_query
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -37,7 +42,6 @@ from lightrag.utils import (
     process_chunks_unified,
     safe_vdb_operation_with_exception,
     create_prefixed_exception,
-    fix_tuple_delimiter_corruption,
     convert_to_user_format,
     generate_reference_list_from_chunks,
     apply_source_ids_limit,
@@ -47,6 +51,11 @@ from lightrag.utils import (
     performance_timing_log,
     clean_chatml_markers,
     contains_chatml_markers,
+)
+from lightrag.web_search import (
+    duckduckgo_search,
+    format_search_results,
+    WebSearchResult,
 )
 from lightrag.base import (
     BaseGraphStorage,
@@ -59,9 +68,15 @@ from lightrag.base import (
 )
 
 from lightrag.types import ExtractionStructuredOutput
-from lightrag.prompt import ENTITY_CONTINUE_EXTRACTION_USER_PROMPT, KEYWORDS_EXTRACTION_EXAMPLES, PROMPTS
+from lightrag.common_tools import EXTRACTION_TOOL_CHOICE, EXTRACTION_TOOLS
+from lightrag.extraction import (
+    ExtractionPromptContext,
+    build_continue_prompt,
+    build_initial_user_prompt,
+    build_system_prompt,
+)
+from lightrag.prompt import KEYWORDS_EXTRACTION_EXAMPLES, PROMPTS
 from lightrag.chunk_schema import strip_internal_multimodal_markup_for_extraction
-from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
 
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
@@ -73,10 +88,8 @@ from lightrag.constants import (
     DEFAULT_SUMMARY_PRIORITY,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_KG_CHUNK_PICK_METHOD,
-
     DEFAULT_ENTITY_TYPES,
     DEFAULT_RELATION_LABELS,
-
     DEFAULT_SUMMARY_LANGUAGE,
     SOURCE_IDS_LIMIT_METHOD_KEEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
@@ -88,471 +101,6 @@ from lightrag.constants import (
 from lightrag.config import settings
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 import time
-
-_APFEL_ANSWER_DELTA_RE = re.compile(
-    r"###\s*Answer\s+Delta\s*(.*?)(?=###\s*Carry\s+Summary|\Z)",
-    re.IGNORECASE | re.DOTALL,
-)
-_APFEL_CARRY_SUMMARY_RE = re.compile(
-    r"###\s*Carry\s+Summary\s*(.*)\Z",
-    re.IGNORECASE | re.DOTALL,
-)
-_APFEL_REFERENCES_RE = re.compile(
-    r"(?:\n|^)\s*(?:#{1,6}\s*)?References\b[\s\S]*\Z",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-
-def _is_apfel_fast_query(
-    global_config: dict[str, Any], query_param: QueryParam
-) -> bool:
-    """Detect the local Apfel fast query path without adding config flags."""
-
-    if query_param.model_func is not None:
-        return False
-
-    model_name = str(
-        global_config.get("llm_model_name") or settings.llm_model_configured or ""
-    ).lower()
-    binding_host = str(settings.llm_binding_host or "").lower()
-    return (
-        "apple-foundationmodel" in model_name
-        or "apfel" in model_name
-        or "127.0.0.1:11435" in binding_host
-        or "localhost:11435" in binding_host
-    )
-
-
-def _normalize_base_url_host_port(base_url: str) -> tuple[str, int | None]:
-    parsed = urlparse((base_url or "").rstrip("/"))
-    host = (parsed.hostname or "").lower()
-    if host in {"127.0.0.1", "localhost", "::1"}:
-        host = "loopback"
-    return host, parsed.port
-
-
-def _should_use_api_structured_extraction() -> bool:
-    extraction_host = (
-        settings.extraction_llm_binding_host
-        or settings.llm_binding_host
-        or ""
-    ).strip()
-    if not extraction_host:
-        return True
-
-    # Managed MLX OpenAI server (v1.6.1+) supports response_format with
-    # json_schema via JSONLogitsProcessor (Outlines grammar-constrained
-    # decoding in app/models/mlx_lm.py). No need to disable it.
-    return True
-
-
-def _count_tokens(tokenizer: Tokenizer, text: str) -> int:
-    return len(tokenizer.encode(text or ""))
-
-
-def _clip_text_by_tokens(tokenizer: Tokenizer, text: str, max_tokens: int) -> str:
-    if max_tokens <= 0 or not text:
-        return ""
-
-    tokens = tokenizer.encode(text)
-    if len(tokens) <= max_tokens:
-        return text
-
-    clipped = tokenizer.decode(tokens[:max_tokens]).rstrip()
-    return f"{clipped}\n[truncated]"
-
-
-def _format_apfel_reference_id(value: Any) -> str:
-    return str(value or "").strip()
-
-
-def _format_apfel_item(kind: str, item: dict[str, Any]) -> tuple[str, set[str]]:
-    reference_ids: set[str] = set()
-
-    if kind == "chunk":
-        ref_id = _format_apfel_reference_id(item.get("reference_id"))
-        if ref_id:
-            reference_ids.add(ref_id)
-        source = str(item.get("file_path") or "unknown_source").strip()
-        chunk_id = str(item.get("chunk_id") or "").strip()
-        content = str(item.get("content") or "").strip()
-        header = f"CHUNK ref=[{ref_id or '?'}] source={source}"
-        if chunk_id:
-            header = f"{header} chunk_id={chunk_id}"
-        return f"{header}\n{content}", reference_ids
-
-    if kind == "relationship":
-        source_ids = str(item.get("source_id") or "").strip()
-        for source_id in source_ids.split(GRAPH_FIELD_SEP):
-            source_id = source_id.strip()
-            if source_id:
-                reference_ids.add(source_id)
-        src = str(item.get("src_id") or "").strip()
-        tgt = str(item.get("tgt_id") or "").strip()
-        keywords = str(item.get("keywords") or "").strip()
-        description = str(item.get("description") or "").strip()
-        file_path = str(item.get("file_path") or "").strip()
-        return (
-            f"RELATION {src} -> {tgt}"
-            f"\nkeywords={keywords}"
-            f"\nsource_ids={source_ids}"
-            f"\nfile_path={file_path}"
-            f"\ndescription={description}"
-        ), reference_ids
-
-    source_ids = str(item.get("source_id") or "").strip()
-    for source_id in source_ids.split(GRAPH_FIELD_SEP):
-        source_id = source_id.strip()
-        if source_id:
-            reference_ids.add(source_id)
-    name = str(item.get("entity_name") or "").strip()
-    entity_type = str(item.get("entity_type") or "").strip()
-    description = str(item.get("description") or "").strip()
-    file_path = str(item.get("file_path") or "").strip()
-    return (
-        f"ENTITY {name}"
-        f"\ntype={entity_type}"
-        f"\nsource_ids={source_ids}"
-        f"\nfile_path={file_path}"
-        f"\ndescription={description}"
-    ), reference_ids
-
-
-def _build_apfel_reference_lines(
-    references: list[dict[str, Any]], reference_ids: set[str]
-) -> list[str]:
-    lines: list[str] = []
-    seen: set[tuple[str, str]] = set()
-
-    for ref in references:
-        ref_id = _format_apfel_reference_id(ref.get("reference_id"))
-        file_path = str(ref.get("file_path") or "").strip()
-        if not ref_id or not file_path:
-            continue
-        if reference_ids and ref_id not in reference_ids:
-            continue
-        key = (ref_id, file_path)
-        if key in seen:
-            continue
-        seen.add(key)
-        lines.append(f"[{ref_id}] {file_path}")
-
-    return lines
-
-
-def _new_apfel_portion() -> dict[str, Any]:
-    return {
-        "items": [],
-        "token_estimate": 0,
-        "reference_ids": set(),
-        "counts": {"chunks": 0, "relationships": 0, "entities": 0},
-    }
-
-
-def _finalize_apfel_portion(
-    portion: dict[str, Any], references: list[dict[str, Any]]
-) -> dict[str, Any]:
-    reference_ids = portion["reference_ids"]
-    sections: list[str] = []
-    grouped: dict[str, list[str]] = {
-        "chunks": [],
-        "relationships": [],
-        "entities": [],
-    }
-
-    for item in portion["items"]:
-        grouped[item["group"]].append(item["text"])
-
-    for group, title in (
-        ("chunks", "Document Chunks"),
-        ("relationships", "Knowledge Graph Relationships"),
-        ("entities", "Knowledge Graph Entities"),
-    ):
-        if grouped[group]:
-            sections.append(f"{title}:\n\n" + "\n\n---\n\n".join(grouped[group]))
-
-    reference_lines = _build_apfel_reference_lines(references, reference_ids)
-    if reference_lines:
-        sections.append("Reference Document List:\n" + "\n".join(reference_lines))
-
-    return {
-        "context": "\n\n".join(sections).strip(),
-        "token_estimate": portion["token_estimate"],
-        "counts": portion["counts"],
-        "reference_ids": sorted(reference_ids),
-    }
-
-
-def _build_apfel_iterative_portions(
-    raw_data: dict[str, Any],
-    tokenizer: Tokenizer,
-    max_total_tokens: int,
-) -> list[dict[str, Any]]:
-    """Pack retrieved query data into Apfel-sized source-bearing portions."""
-
-    data = raw_data.get("data", {}) or {}
-    references = data.get("references", []) or []
-    source_items: list[tuple[str, dict[str, Any]]] = []
-
-    for chunk in data.get("chunks", []) or []:
-        source_items.append(("chunk", chunk))
-    for relation in data.get("relationships", []) or []:
-        source_items.append(("relationship", relation))
-    for entity in data.get("entities", []) or []:
-        source_items.append(("entity", entity))
-
-    if not source_items:
-        return []
-
-    item_budget = max(192, int(max_total_tokens * 0.65))
-    portion_budget = max(512, int(max_total_tokens * 0.72))
-    portions: list[dict[str, Any]] = []
-    current = _new_apfel_portion()
-
-    for kind, source_item in source_items:
-        text, reference_ids = _format_apfel_item(kind, source_item)
-        if _count_tokens(tokenizer, text) > item_budget:
-            text = _clip_text_by_tokens(tokenizer, text, item_budget)
-        item_tokens = max(1, _count_tokens(tokenizer, text))
-
-        if current["items"] and current["token_estimate"] + item_tokens > portion_budget:
-            portions.append(_finalize_apfel_portion(current, references))
-            current = _new_apfel_portion()
-
-        group = {
-            "chunk": "chunks",
-            "relationship": "relationships",
-        }.get(kind, "entities")
-        current["items"].append({"group": group, "text": text})
-        current["token_estimate"] += item_tokens
-        current["reference_ids"].update(reference_ids)
-        current["counts"][group] += 1
-
-    if current["items"]:
-        portions.append(_finalize_apfel_portion(current, references))
-
-    return portions
-
-
-def _strip_apfel_section_noise(text: str) -> str:
-    text = remove_think_tags(text or "").strip()
-    text = _APFEL_REFERENCES_RE.sub("", text).strip()
-    return text
-
-
-def _parse_apfel_iterative_response(text: str) -> tuple[str, str]:
-    text = _strip_apfel_section_noise(text)
-    answer_match = _APFEL_ANSWER_DELTA_RE.search(text)
-    carry_match = _APFEL_CARRY_SUMMARY_RE.search(text)
-
-    answer = answer_match.group(1).strip() if answer_match else text.strip()
-    carry = carry_match.group(1).strip() if carry_match else ""
-
-    answer = _strip_apfel_section_noise(answer)
-    carry = _strip_apfel_section_noise(carry)
-
-    normalized_answer = re.sub(r"[\W_]+", " ", answer.lower()).strip()
-    if normalized_answer in {"none", "n a", "empty"} or (
-        len(normalized_answer.split()) <= 8
-        and normalized_answer.startswith(("nothing new", "no new", "no useful"))
-    ):
-        answer = ""
-    return answer, carry
-
-
-async def _response_to_text(response: Any) -> str:
-    if isinstance(response, str):
-        return response
-    if hasattr(response, "__aiter__"):
-        chunks: list[str] = []
-        async for chunk in response:
-            if chunk:
-                chunks.append(str(chunk))
-        return "".join(chunks)
-    return str(response or "")
-
-
-def _apfel_iterative_metadata(portions: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "iterative": True,
-        "portion_count": len(portions),
-        "current_portion": 0,
-        "token_estimates": [
-            portion.get("token_estimate", 0) for portion in portions
-        ],
-        "counts": [portion.get("counts", {}) for portion in portions],
-    }
-
-
-def _make_apfel_iterative_user_prompt(
-    *,
-    query: str,
-    response_type: str,
-    carry_summary: str,
-    portion: dict[str, Any],
-    portion_index: int,
-    portion_count: int,
-) -> str:
-    return PROMPTS["apfel_iterative_rag_user"].format(
-        query=query,
-        response_type=response_type,
-        carry_summary=carry_summary or "None yet.",
-        portion_index=portion_index,
-        portion_count=portion_count,
-        context_data=portion.get("context", ""),
-    )
-
-
-def _make_apfel_iterative_final_prompt(
-    *, query: str, response_type: str, accumulated_answer: str, carry_summary: str
-) -> str:
-    return PROMPTS["apfel_iterative_rag_final_user"].format(
-        query=query,
-        response_type=response_type,
-        accumulated_answer=accumulated_answer or "No answer deltas.",
-        carry_summary=carry_summary or "No carry summary.",
-    )
-
-
-def _fallback_apfel_answer_from_portions(
-    portions: list[dict[str, Any]], tokenizer: Tokenizer, max_tokens: int
-) -> str:
-    for portion in portions:
-        context = portion.get("context", "")
-        chunk_match = re.search(
-            r"CHUNK\s+ref=\[[^\]]+\][^\n]*\n"
-            r"(.*?)(?=\n\n---|\n\nKnowledge Graph|\n\nRELATION|\Z)",
-            context,
-            flags=re.DOTALL,
-        )
-        if chunk_match:
-            content = chunk_match.group(1).strip()
-            if content:
-                return _clip_text_by_tokens(tokenizer, content, max_tokens)
-
-    for portion in portions:
-        context = re.sub(r"\s+", " ", portion.get("context", "")).strip()
-        if context:
-            return _clip_text_by_tokens(tokenizer, context, max_tokens)
-
-    return ""
-
-
-async def _run_apfel_iterative_answer_generator(
-    *,
-    query: str,
-    response_type: str,
-    query_param: QueryParam,
-    use_model_func: Callable[..., Any],
-    tokenizer: Tokenizer,
-    portions: list[dict[str, Any]],
-    raw_data: dict[str, Any],
-) -> AsyncIterator[str]:
-    carry_summary = ""
-    answer_deltas: list[str] = []
-    system_prompt = PROMPTS["apfel_iterative_rag_system"]
-    max_completion_tokens = getattr(query_param, "max_completion_tokens", None)
-    llm_call_kwargs = {"max_completion_tokens": max_completion_tokens}
-    if not max_completion_tokens:
-        llm_call_kwargs = {}
-
-    metadata = raw_data.setdefault("metadata", {}).setdefault(
-        "apfel_iterative", _apfel_iterative_metadata(portions)
-    )
-
-    for index, portion in enumerate(portions, start=1):
-        metadata["current_portion"] = index
-        logger.info(
-            "APFEL_ITERATIVE_PORTION_START index=%s total=%s tokens=%s counts=%s",
-            index,
-            len(portions),
-            portion.get("token_estimate"),
-            portion.get("counts"),
-        )
-        prompt = _make_apfel_iterative_user_prompt(
-            query=query,
-            response_type=response_type,
-            carry_summary=carry_summary,
-            portion=portion,
-            portion_index=index,
-            portion_count=len(portions),
-        )
-        response = await use_model_func(
-            prompt,
-            system_prompt=system_prompt,
-            history_messages=[],
-            enable_cot=False,
-            stream=False,
-            _lightrag_request_kind="query",
-            **llm_call_kwargs,
-        )
-        response_text = await _response_to_text(response)
-        answer_delta, next_carry = _parse_apfel_iterative_response(response_text)
-
-        if answer_delta:
-            answer_deltas.append(answer_delta)
-            yield answer_delta.rstrip() + "\n\n"
-
-        if next_carry:
-            carry_summary = _clip_text_by_tokens(
-                tokenizer,
-                next_carry,
-                max(96, int((max_completion_tokens or 384) * 0.75)),
-            )
-        elif answer_delta:
-            carry_summary = _clip_text_by_tokens(
-                tokenizer,
-                "\n".join(answer_deltas[-3:]),
-                max(96, int((max_completion_tokens or 384) * 0.75)),
-            )
-
-    if not answer_deltas:
-        fallback_answer = _fallback_apfel_answer_from_portions(
-            portions,
-            tokenizer,
-            max(64, int((max_completion_tokens or 384) * 0.5)),
-        )
-        if fallback_answer:
-            logger.warning(
-                "APFEL_ITERATIVE_FALLBACK no usable model delta; using retrieved context excerpt"
-            )
-            answer_deltas.append(fallback_answer)
-            yield fallback_answer.rstrip()
-
-    if len(answer_deltas) > 1:
-        final_prompt = _make_apfel_iterative_final_prompt(
-            query=query,
-            response_type=response_type,
-            accumulated_answer="\n\n".join(answer_deltas),
-            carry_summary=carry_summary,
-        )
-        response = await use_model_func(
-            final_prompt,
-            system_prompt=system_prompt,
-            history_messages=[],
-            enable_cot=False,
-            stream=False,
-            _lightrag_request_kind="query",
-            **llm_call_kwargs,
-        )
-        response_text = await _response_to_text(response)
-        final_answer, _ = _parse_apfel_iterative_response(response_text)
-        if final_answer:
-            yield "### Final\n\n" + final_answer.rstrip()
-
-    metadata["current_portion"] = len(portions)
-    logger.info("APFEL_ITERATIVE_DONE portions=%s", len(portions))
-
-
-async def _run_apfel_iterative_answer(
-    **kwargs: Any,
-) -> str:
-    chunks: list[str] = []
-    async for chunk in _run_apfel_iterative_answer_generator(**kwargs):
-        if chunk:
-            chunks.append(chunk)
-    return "".join(chunks).strip()
-
 
 def _get_relationship_vdb_timeout_seconds(global_config: dict[str, Any]) -> float:
     """Derive a defensive timeout for relation VDB upserts.
@@ -1164,6 +712,62 @@ def _structured_output_to_graph_data(
             dict(
                 entity_name=truncated_name,
                 entity_type=entity_type.replace(" ", "").lower(),
+                description=entity_description,
+                source_id=chunk_key,
+                file_path=file_path,
+                timestamp=timestamp,
+            )
+        )
+
+    for relation in structured.relations:
+        source_entity = sanitize_and_normalize_extracted_text(
+            relation.source_entity, remove_inner_quotes=True
+        )
+        target_entity = sanitize_and_normalize_extracted_text(
+            relation.target_entity, remove_inner_quotes=True
+        )
+        relation_label = sanitize_and_normalize_extracted_text(
+            relation.relationship_keywords, remove_inner_quotes=True
+        )
+        if not source_entity or not target_entity or not relation_label:
+            continue
+        if source_entity == target_entity:
+            continue
+
+        relation_description = sanitize_and_normalize_extracted_text(
+            relation.relationship_description
+            or _default_relation_description(
+                source_entity, target_entity, relation_label
+            )
+        )
+        truncated_source = _truncate_entity_identifier(
+            source_entity,
+            DEFAULT_ENTITY_NAME_MAX_LENGTH,
+            chunk_key,
+            "Relation entity",
+        )
+        truncated_target = _truncate_entity_identifier(
+            target_entity,
+            DEFAULT_ENTITY_NAME_MAX_LENGTH,
+            chunk_key,
+            "Relation entity",
+        )
+        maybe_edges[(truncated_source, truncated_target)].append(
+            dict(
+                src_id=truncated_source,
+                tgt_id=truncated_target,
+                weight=1.0,
+                description=relation_description,
+                keywords=relation_label,
+                source_id=chunk_key,
+                file_path=file_path,
+                timestamp=timestamp,
+            )
+        )
+
+    return dict(maybe_nodes), dict(maybe_edges)
+
+
 def _normalize_text_extraction_record_attributes(
     record_attributes: list[str], chunk_key: str
 ) -> list[str]:
@@ -1290,59 +894,15 @@ async def _process_json_extraction_result(
                 "Entity name",
             )
 
-            node_data = dict(
+            entity_data_to_store = dict(
                 entity_name=truncated_name,
                 entity_type=entity_type,
-
                 description=entity_description,
                 source_id=chunk_key,
                 file_path=file_path,
                 timestamp=timestamp,
             )
-
-        )
-
-    for relation in structured.relations:
-        source_entity = sanitize_and_normalize_extracted_text(
-            relation.source_entity, remove_inner_quotes=True
-        )
-        target_entity = sanitize_and_normalize_extracted_text(
-            relation.target_entity, remove_inner_quotes=True
-        )
-        relation_label = sanitize_and_normalize_extracted_text(
-            relation.relationship_keywords, remove_inner_quotes=True
-        )
-        if not source_entity or not target_entity or not relation_label:
-            continue
-        if source_entity == target_entity:
-            continue
-
-        relation_description = sanitize_and_normalize_extracted_text(
-            relation.relationship_description
-            or _default_relation_description(
-                source_entity, target_entity, relation_label
-            )
-        )
-        truncated_source = _truncate_entity_identifier(
-            source_entity,
-            DEFAULT_ENTITY_NAME_MAX_LENGTH,
-            chunk_key,
-            "Relation entity",
-        )
-        truncated_target = _truncate_entity_identifier(
-            target_entity,
-            DEFAULT_ENTITY_NAME_MAX_LENGTH,
-            chunk_key,
-            "Relation entity",
-        )
-        maybe_edges[(truncated_source, truncated_target)].append(
-            dict(
-                src_id=truncated_source,
-                tgt_id=truncated_target,
-                weight=1.0,
-                description=relation_description,
-                keywords=relation_label,
-            maybe_nodes[truncated_name].append(node_data)
+            maybe_nodes[truncated_name].append(entity_data_to_store)
 
         except Exception as e:
             logger.warning(
@@ -1418,13 +978,10 @@ async def _process_json_extraction_result(
                 weight=1.0,
                 description=edge_description,
                 keywords=edge_keywords,
-
                 source_id=chunk_key,
                 file_path=file_path,
                 timestamp=timestamp,
             )
-
-        )
             maybe_edges[(truncated_source, truncated_target)].append(edge_data)
 
         except Exception as e:
@@ -1819,20 +1376,8 @@ async def _process_extraction_result(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
-    tuple_delimiter: str = "<|#|>",
-    completion_delimiter: str = "<|COMPLETE|>",
 ) -> tuple[dict, dict]:
-    """Process a single extraction result (either initial or gleaning)
-    Args:
-        result (str): The extraction result to process
-        chunk_key (str): The chunk key for source tracking
-        file_path (str): The file path for citation
-        tuple_delimiter (str): Delimiter for tuple fields
-        record_delimiter (str): Delimiter for records
-        completion_delimiter (str): Delimiter for completion
-    Returns:
-        tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
-    """
+    """Process a single structured extraction result."""
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
 
@@ -1845,116 +1390,10 @@ async def _process_extraction_result(
             file_path,
         )
 
-    if not isinstance(result, str):
-        logger.warning("%s: extraction result is not a string and not structured JSON", chunk_key)
-        return dict(maybe_nodes), dict(maybe_edges)
-
-    if completion_delimiter not in result:
-        logger.warning(
-            f"{chunk_key}: Complete delimiter can not be found in extraction result"
-        )
-
-    # Split LLL output result to records by "\n"
-    records = split_string_by_multi_markers(
-        result,
-        ["\n", completion_delimiter, completion_delimiter.lower()],
+    logger.warning(
+        "%s: extraction result is not valid structured output; legacy delimiter parsing is disabled",
+        chunk_key,
     )
-
-    # Fix LLM output format error which use tuple_delimiter to separate record instead of "\n"
-    fixed_records = []
-    for i, record in enumerate(records, start=1):
-        record = record.strip()
-        if record is None:
-            continue
-        entity_records = split_string_by_multi_markers(
-            record, [f"{tuple_delimiter}entity{tuple_delimiter}"]
-        )
-        for entity_record in entity_records:
-            if not entity_record.startswith("entity") and not entity_record.startswith(
-                "relation"
-            ):
-                entity_record = f"entity<|{entity_record}"
-            entity_relation_records = split_string_by_multi_markers(
-                # treat "relationship" and "relation" interchangeable
-                entity_record,
-                [
-                    f"{tuple_delimiter}relationship{tuple_delimiter}",
-                    f"{tuple_delimiter}relation{tuple_delimiter}",
-                ],
-            )
-            for entity_relation_record in entity_relation_records:
-                if not entity_relation_record.startswith(
-                    "entity"
-                ) and not entity_relation_record.startswith("relation"):
-                    entity_relation_record = (
-                        f"relation{tuple_delimiter}{entity_relation_record}"
-                    )
-                fixed_records.append(entity_relation_record)
-        await _cooperative_yield(i, every=8)
-
-    if len(fixed_records) != len(records):
-        logger.warning(
-            f"{chunk_key}: LLM output format error; find LLM use {tuple_delimiter} as record separators instead new-line"
-        )
-
-    delimiter_core = tuple_delimiter[2:-2]  # Extract "#" from "<|#|>"
-    delimiter_core_lower = delimiter_core.lower()
-    for i, record in enumerate(fixed_records, start=1):
-        record = record.strip()
-        if record is None:
-            continue
-
-        # Fix various forms of tuple_delimiter corruption from the LLM output using the dedicated function
-        record = fix_tuple_delimiter_corruption(record, delimiter_core, tuple_delimiter)
-        if delimiter_core != delimiter_core_lower:
-            # change delimiter_core to lower case, and fix again
-            record = fix_tuple_delimiter_corruption(
-                record, delimiter_core_lower, tuple_delimiter
-            )
-
-        record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
-        record_attributes = _normalize_text_extraction_record_attributes(
-            record_attributes, chunk_key
-        )
-
-        # Try to parse as entity
-        entity_data = _handle_single_entity_extraction(
-            record_attributes, chunk_key, timestamp, file_path
-        )
-        if entity_data is not None:
-            truncated_name = _truncate_entity_identifier(
-                entity_data["entity_name"],
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
-                chunk_key,
-                "Entity name",
-            )
-            entity_data["entity_name"] = truncated_name
-            maybe_nodes[truncated_name].append(entity_data)
-            await _cooperative_yield(i, every=8)
-            continue
-
-        # Try to parse as relationship
-        relationship_data = _handle_single_relationship_extraction(
-            record_attributes, chunk_key, timestamp, file_path
-        )
-        if relationship_data is not None:
-            truncated_source = _truncate_entity_identifier(
-                relationship_data["src_id"],
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
-                chunk_key,
-                "Relation entity",
-            )
-            truncated_target = _truncate_entity_identifier(
-                relationship_data["tgt_id"],
-                DEFAULT_ENTITY_NAME_MAX_LENGTH,
-                chunk_key,
-                "Relation entity",
-            )
-            relationship_data["src_id"] = truncated_source
-            relationship_data["tgt_id"] = truncated_target
-            maybe_edges[(truncated_source, truncated_target)].append(relationship_data)
-        await _cooperative_yield(i, every=8)
-
     return dict(maybe_nodes), dict(maybe_edges)
 
 
@@ -1964,20 +1403,7 @@ async def _rebuild_from_extraction_result(
     chunk_id: str,
     timestamp: int,
 ) -> tuple[dict, dict]:
-    """Parse cached extraction result using the same logic as extract_entities.
-
-    Supports both JSON and delimiter-based formats for backward compatibility.
-    Attempts JSON parsing first; if the cached result looks like JSON (starts with '{'),
-    uses the JSON parser. Otherwise, falls back to the traditional delimiter-based parser.
-
-    Args:
-        text_chunks_storage: Text chunks storage to get chunk data
-        extraction_result: The cached LLM extraction result
-        chunk_id: The chunk ID for source tracking
-
-    Returns:
-        Tuple of (entities_dict, relationships_dict)
-    """
+    """Parse cached extraction result using the structured extractor path."""
 
     # Get chunk data for file_path from storage
     chunk_data = await text_chunks_storage.get_by_id(chunk_id)
@@ -1987,28 +1413,11 @@ async def _rebuild_from_extraction_result(
         else "unknown_source"
     )
 
-    # Auto-detect format: try JSON first if the result looks like JSON
-    if _looks_like_json_extraction_result(extraction_result):
-        # Likely JSON format (from entity_extraction_use_json mode)
-        nodes, edges = await _process_json_extraction_result(
-            extraction_result,
-            chunk_id,
-            timestamp,
-            file_path,
-        )
-        # If JSON parsing yielded results, use them
-        if nodes or edges:
-            return nodes, edges
-        # Otherwise fall through to text-based parsing
-
-    # Fall back to traditional delimiter-based parsing
     return await _process_extraction_result(
         extraction_result,
         chunk_id,
         timestamp,
         file_path,
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
     )
 
 
@@ -3862,6 +3271,349 @@ async def merge_nodes_and_edges(
         pipeline_status["history_messages"].append(log_message)
 
 
+type ChunkGraphNodes = dict[str, list[dict[str, Any]]]
+type ChunkGraphEdges = dict[tuple[str, str], list[dict[str, Any]]]
+
+
+class ExtractionRequestPlan(NamedTuple):
+    request_kwargs: dict[str, Any]
+    cache_format: str
+    protocol: Literal["tools", "json"]
+
+
+def _resolve_extraction_prompt_context(
+    global_config: dict[str, Any],
+) -> ExtractionPromptContext:
+    addon_params = global_config.get("addon_params") or {}
+    language = global_config.get("_resolved_summary_language")
+    if language is None:
+        language = addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
+
+    entity_types = addon_params.get("entity_types", DEFAULT_ENTITY_TYPES)
+    relation_labels = addon_params.get("relation_labels", DEFAULT_RELATION_LABELS)
+
+    return ExtractionPromptContext(
+        language=language,
+        entity_types=list(entity_types)
+        if isinstance(entity_types, list)
+        else [str(entity_types)],
+        relation_labels=list(relation_labels)
+        if isinstance(relation_labels, list)
+        else [str(relation_labels)],
+        max_total_records=global_config["entity_extract_max_records"],
+        max_entity_records=global_config["entity_extract_max_entities"],
+    )
+
+
+def _normalize_base_url(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.rstrip("/").lower()
+
+
+def _is_managed_swift_lm_extract_host(global_config: dict[str, Any]) -> bool:
+    if not settings.lightrag_manage_swift_lm:
+        return False
+
+    host = (
+        ((global_config.get("llm_cache_identities") or {}).get("extract") or {}).get("host")
+        or ((global_config.get("role_llm_configs") or {}).get("extract") or {}).get("host")
+        or ""
+    )
+    return _normalize_base_url(host) == _normalize_base_url(
+        settings.managed_swift_lm_base_url
+    )
+
+
+def _build_extraction_request_plan(
+    global_config: dict[str, Any],
+) -> ExtractionRequestPlan:
+    if _is_managed_swift_lm_extract_host(global_config):
+        return ExtractionRequestPlan(
+            request_kwargs={
+                "_lightrag_extraction_request": True,
+                "response_format": {"type": "json_object"},
+            },
+            cache_format="json_object_v1",
+            protocol="json",
+        )
+
+    return ExtractionRequestPlan(
+        request_kwargs={
+            "_lightrag_extraction_request": True,
+            "tools": EXTRACTION_TOOLS,
+            "tool_choice": EXTRACTION_TOOL_CHOICE,
+        },
+        cache_format="tool_v1",
+        protocol="tools",
+    )
+
+
+def _build_extraction_prompts(
+    prompt_context: ExtractionPromptContext,
+    content: str,
+) -> tuple[str, str, str]:
+    return (
+        build_system_prompt(prompt_context),
+        build_initial_user_prompt(prompt_context, input_text=content),
+        build_continue_prompt(prompt_context),
+    )
+
+
+def _build_extraction_cache_identity(
+    global_config: dict[str, Any],
+    request_plan: ExtractionRequestPlan,
+) -> dict[str, Any]:
+    return {
+        **get_llm_cache_identity(global_config, "extract"),
+        "extract_format": request_plan.cache_format,
+    }
+
+
+def _build_extraction_runtime(
+    *,
+    global_config: dict[str, Any],
+    content: str,
+) -> tuple[str, str, str, ExtractionRequestPlan, dict[str, Any]]:
+    prompt_context = _resolve_extraction_prompt_context(global_config)
+    request_plan = _build_extraction_request_plan(global_config)
+    return (
+        *_build_extraction_prompts(prompt_context, content),
+        request_plan,
+        _build_extraction_cache_identity(global_config, request_plan),
+    )
+
+
+def _should_run_extraction_gleaning(
+    *,
+    entity_extract_max_gleaning: int,
+    extract_tokenizer: Tokenizer | None,
+    max_extract_input_tokens: int,
+    system_prompt: str,
+    history: list[dict[str, Any]],
+    continue_prompt: str,
+    chunk_key: str,
+) -> bool:
+    if entity_extract_max_gleaning <= 0:
+        return False
+    if extract_tokenizer is None or max_extract_input_tokens <= 0:
+        return True
+
+    gleaning_token_count = (
+        len(extract_tokenizer.encode(system_prompt))
+        + sum(
+            len(extract_tokenizer.encode(msg.get("content", "") or ""))
+            for msg in history
+        )
+        + len(extract_tokenizer.encode(continue_prompt))
+    )
+    if gleaning_token_count <= max_extract_input_tokens:
+        return True
+
+    logger.warning(
+        "Gleaning stopped for chunk %s: Input tokens (%s) exceeded limit (%s).",
+        chunk_key,
+        gleaning_token_count,
+        max_extract_input_tokens,
+    )
+    return False
+
+
+async def _merge_graph_data_by_description(
+    primary: ChunkGraphNodes | ChunkGraphEdges,
+    secondary: ChunkGraphNodes | ChunkGraphEdges,
+) -> None:
+    for index, (item_key, candidate_values) in enumerate(secondary.items(), start=1):
+        if item_key not in primary:
+            primary[item_key] = list(candidate_values)
+            await _cooperative_yield(index, every=8)
+            continue
+
+        current_desc_len = len(primary[item_key][0].get("description", "") or "")
+        candidate_desc_len = len(candidate_values[0].get("description", "") or "")
+        if candidate_desc_len > current_desc_len:
+            primary[item_key] = list(candidate_values)
+        await _cooperative_yield(index, every=8)
+
+
+def _augment_multimodal_extraction_result(
+    *,
+    chunk_key: str,
+    chunk_dp: TextChunkSchema,
+    file_path: str,
+    maybe_nodes: ChunkGraphNodes,
+    maybe_edges: ChunkGraphEdges,
+) -> None:
+    sidecar_block = chunk_dp.get("sidecar")
+    if not isinstance(sidecar_block, dict):
+        return
+
+    sidecar_type = sidecar_block.get("type")
+    sidecar_id = sidecar_block.get("id")
+    if sidecar_type not in {"drawing", "table", "equation"}:
+        return
+    if not isinstance(sidecar_id, str) or not sidecar_id:
+        return
+
+    mm_entity_name = sidecar_id
+    now_ts = int(time.time())
+    maybe_nodes.setdefault(mm_entity_name, []).append(
+        {
+            "entity_name": mm_entity_name,
+            "entity_type": sidecar_type,
+            "description": chunk_dp.get("content", "") or "",
+            "source_id": chunk_key,
+            "file_path": file_path,
+            "timestamp": now_ts,
+        }
+    )
+
+    heading_block = chunk_dp.get("heading")
+    heading_label = "unknown"
+    if isinstance(heading_block, dict):
+        heading_label = str(heading_block.get("heading") or "").strip() or "unknown"
+    mm_display_name = _parse_mm_display_name(
+        chunk_dp.get("content", "") or "", sidecar_id
+    )
+    for target_name in list(maybe_nodes.keys()):
+        if target_name == mm_entity_name:
+            continue
+        maybe_edges.setdefault((mm_entity_name, target_name), []).append(
+            {
+                "src_id": mm_entity_name,
+                "tgt_id": target_name,
+                "weight": 1.0,
+                "description": (
+                    f"{target_name} is associated with {sidecar_type} "
+                    f"{mm_display_name} in section {heading_label} "
+                    f'of document "{file_path}"'
+                ),
+                "keywords": "associated with, contained in",
+                "source_id": chunk_key,
+                "file_path": file_path,
+                "timestamp": now_ts,
+            }
+    )
+
+
+async def _run_single_extraction_pass(
+    *,
+    prompt: str,
+    system_prompt: str,
+    use_llm_func: Callable[..., Any],
+    llm_response_cache: BaseKVStorage | None,
+    chunk_key: str,
+    cache_keys_collector: list[str],
+    request_plan: ExtractionRequestPlan,
+    llm_cache_identity: dict[str, Any],
+    history_messages: list[dict[str, Any]] | None = None,
+) -> tuple[str | dict[str, Any] | ExtractionStructuredOutput, int]:
+    return await use_llm_func_with_cache(
+        prompt,
+        use_llm_func,
+        system_prompt=system_prompt,
+        llm_response_cache=llm_response_cache,
+        history_messages=history_messages,
+        cache_type="extract",
+        chunk_id=chunk_key,
+        cache_keys_collector=cache_keys_collector,
+        llm_cache_identity=llm_cache_identity,
+        **request_plan.request_kwargs,
+    )
+
+
+async def _run_chunk_extraction(
+    *,
+    chunk_key: str,
+    chunk_dp: TextChunkSchema,
+    global_config: dict[str, Any],
+    use_llm_func: Callable[..., Any],
+    llm_response_cache: BaseKVStorage | None,
+    text_chunks_storage: BaseKVStorage | None,
+    entity_extract_max_gleaning: int,
+    extract_tokenizer: Tokenizer | None,
+    max_extract_input_tokens: int,
+) -> tuple[ChunkGraphNodes, ChunkGraphEdges]:
+    content = strip_internal_multimodal_markup_for_extraction(chunk_dp["content"])
+    file_path = chunk_dp.get("file_path", "unknown_source")
+    cache_keys_collector: list[str] = []
+    (
+        entity_extraction_system_prompt,
+        entity_extraction_user_prompt,
+        entity_continue_extraction_user_prompt,
+        request_plan,
+        llm_cache_identity,
+    ) = _build_extraction_runtime(global_config=global_config, content=content)
+
+    final_result, timestamp = await _run_single_extraction_pass(
+        prompt=entity_extraction_user_prompt,
+        system_prompt=entity_extraction_system_prompt,
+        use_llm_func=use_llm_func,
+        llm_response_cache=llm_response_cache,
+        chunk_key=chunk_key,
+        cache_keys_collector=cache_keys_collector,
+        request_plan=request_plan,
+        llm_cache_identity=llm_cache_identity,
+    )
+    history = pack_user_ass_to_openai_messages(
+        entity_extraction_user_prompt, final_result
+    )
+    maybe_nodes, maybe_edges = await _process_extraction_result(
+        final_result,
+        chunk_key,
+        timestamp,
+        file_path,
+    )
+
+    if _should_run_extraction_gleaning(
+        entity_extract_max_gleaning=entity_extract_max_gleaning,
+        extract_tokenizer=extract_tokenizer,
+        max_extract_input_tokens=max_extract_input_tokens,
+        system_prompt=entity_extraction_system_prompt,
+        history=history,
+        continue_prompt=entity_continue_extraction_user_prompt,
+        chunk_key=chunk_key,
+    ):
+        glean_result, timestamp = await _run_single_extraction_pass(
+            prompt=entity_continue_extraction_user_prompt,
+            system_prompt=entity_extraction_system_prompt,
+            use_llm_func=use_llm_func,
+            llm_response_cache=llm_response_cache,
+            chunk_key=chunk_key,
+            cache_keys_collector=cache_keys_collector,
+            request_plan=request_plan,
+            llm_cache_identity=llm_cache_identity,
+            history_messages=history,
+        )
+
+        glean_nodes, glean_edges = await _process_extraction_result(
+            glean_result,
+            chunk_key,
+            timestamp,
+            file_path,
+        )
+        await _merge_graph_data_by_description(maybe_nodes, glean_nodes)
+        await _merge_graph_data_by_description(maybe_edges, glean_edges)
+
+    _augment_multimodal_extraction_result(
+        chunk_key=chunk_key,
+        chunk_dp=chunk_dp,
+        file_path=file_path,
+        maybe_nodes=maybe_nodes,
+        maybe_edges=maybe_edges,
+    )
+
+    if cache_keys_collector and text_chunks_storage:
+        await update_chunk_cache_list(
+            chunk_key,
+            text_chunks_storage,
+            cache_keys_collector,
+            "entity_extraction",
+        )
+
+    return maybe_nodes, maybe_edges
+
+
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
     global_config: dict[str, str],
@@ -3885,95 +3637,19 @@ async def extract_entities(
     # the same env knob that gates ``analyze_multimodal``'s sidecar trimming
     # so both EXTRACT-role consumers share one source of truth.  ``0``
     # disables the gleaning guard (gleaning always runs regardless of size).
-    max_extract_input_tokens = get_env_value(
-        "MAX_EXTRACT_INPUT_TOKENS",
-        DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
-        int,
+    max_extract_input_tokens = int(
+        global_config.get(
+            "max_extract_input_tokens",
+            get_env_value(
+                "MAX_EXTRACT_INPUT_TOKENS",
+                DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
+                int,
+            ),
+        )
     )
     extract_tokenizer: Tokenizer | None = global_config.get("tokenizer")
 
-    # Check if JSON structured output mode is enabled
-    use_json_extraction = global_config.get("entity_extraction_use_json", False)
-
     ordered_chunks = list(chunks.items())
-    # add language and example number params to prompt
-
-    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
-    entity_types = global_config["addon_params"].get(
-        "entity_types", DEFAULT_ENTITY_TYPES
-    )
-    relation_labels = global_config["addon_params"].get(
-        "relation_labels", DEFAULT_RELATION_LABELS
-    )
-    addon_params = global_config.get("addon_params") or {}
-    language = global_config.get("_resolved_summary_language")
-    if language is None:
-        language = addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
-    prompt_profile = global_config.get("_entity_extraction_prompt_profile")
-    if prompt_profile is None:
-        # Fallback for callers that construct global_config directly (e.g. tests
-        # or custom wiring). Re-run the resolver so behavior matches the cached
-        # path that LightRAG.__post_init__ populates, instead of duplicating
-        # guidance/override logic here.
-        prompt_profile = resolve_entity_extraction_prompt_profile(
-            addon_params, use_json_extraction
-        )
-    entity_types_guidance = prompt_profile["entity_types_guidance"]
-
-
-    max_total_records = global_config["entity_extract_max_records"]
-    max_entity_records = global_config["entity_extract_max_entities"]
-
-
-    context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=",".join(entity_types),
-        relation_labels=",".join(relation_labels),
-        examples=examples,
-        language=language,
-    )
-    request_structured_output = _should_use_api_structured_extraction()
-    extraction_call_kwargs: dict[str, Any] = {
-        "_lightrag_extraction_request": True
-    }
-    if request_structured_output:
-        extraction_call_kwargs["response_format"] = ExtractionStructuredOutput
-    else:
-        logger.info(
-            "Extraction API response_format disabled for managed local MLX host; relying on prompt-constrained JSON output"
-    if use_json_extraction:
-        # JSON mode: use JSON-specific prompts without delimiters
-        examples = "\n".join(prompt_profile["entity_extraction_json_examples"])
-        context_base = dict(
-            entity_types_guidance=entity_types_guidance,
-            examples=examples,
-            language=language,
-            max_total_records=max_total_records,
-            max_entity_records=max_entity_records,
-        )
-    else:
-        # Text mode: use traditional delimiter-based prompts
-        examples = "\n".join(prompt_profile["entity_extraction_examples"])
-        example_context_base = dict(
-            tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-            completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-            entity_types_guidance=entity_types_guidance,
-            language=language,
-        )
-        # add example's format
-        examples = examples.format(**example_context_base)
-
-        context_base = dict(
-            tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-            completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-            entity_types_guidance=entity_types_guidance,
-            examples=examples,
-            language=language,
-            max_total_records=max_total_records,
-            max_entity_records=max_entity_records,
-
-        )
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
@@ -3989,278 +3665,17 @@ async def extract_entities(
         nonlocal processed_chunks
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
-        # Strip parser-internal markup (<cite refid>, <drawing id/path/src>,
-        # <equation id>) before building the extraction prompt. The stored
-        # chunk content is left intact so query-time citations still resolve.
-        content = strip_internal_multimodal_markup_for_extraction(chunk_dp["content"])
-        # Get file path from chunk data or use default
-        file_path = chunk_dp.get("file_path", "unknown_source")
-
-        # Create cache keys collector for batch processing
-        cache_keys_collector = []
-
-
-        # Get initial extraction
-        # Format system prompt without input_text for each chunk (enables OpenAI prompt caching across chunks)
-        entity_extraction_system_prompt = PROMPTS[
-            "entity_extraction_system_prompt"
-        ].format(**context_base)
-        # Format user prompts with input_text for each chunk
-        entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
-            **{**context_base, "input_text": content}
-        )
-        entity_continue_extraction_user_prompt = ENTITY_CONTINUE_EXTRACTION_USER_PROMPT.format(**{**context_base, "input_text": content})
-        if use_json_extraction:
-            # JSON mode: use JSON prompts and pass entity_extraction flag to LLM provider
-            entity_extraction_system_prompt = PROMPTS[
-                "entity_extraction_json_system_prompt"
-            ].format(**context_base)
-            entity_extraction_user_prompt = PROMPTS[
-                "entity_extraction_json_user_prompt"
-            ].format(**{**context_base, "input_text": content})
-            entity_continue_extraction_user_prompt = PROMPTS[
-                "entity_continue_extraction_json_user_prompt"
-            ].format(**context_base)
-        else:
-            # Text mode: use traditional delimiter-based prompts
-            entity_extraction_system_prompt = PROMPTS[
-                "entity_extraction_system_prompt"
-            ].format(**context_base)
-            entity_extraction_user_prompt = PROMPTS[
-                "entity_extraction_user_prompt"
-            ].format(**{**context_base, "input_text": content})
-            entity_continue_extraction_user_prompt = PROMPTS[
-                "entity_continue_extraction_user_prompt"
-            ].format(**{**context_base, "input_text": content})
-
-
-        final_result, timestamp = await use_llm_func_with_cache(
-            entity_extraction_user_prompt,
-            use_llm_func,
-            system_prompt=entity_extraction_system_prompt,
+        maybe_nodes, maybe_edges = await _run_chunk_extraction(
+            chunk_key=chunk_key,
+            chunk_dp=chunk_dp,
+            global_config=global_config,
+            use_llm_func=use_llm_func,
             llm_response_cache=llm_response_cache,
-            cache_type="extract",
-            chunk_id=chunk_key,
-            cache_keys_collector=cache_keys_collector,
-
-            **extraction_call_kwargs,
-            response_format=({"type": "json_object"} if use_json_extraction else None),
-            llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
-
+            text_chunks_storage=text_chunks_storage,
+            entity_extract_max_gleaning=entity_extract_max_gleaning,
+            extract_tokenizer=extract_tokenizer,
+            max_extract_input_tokens=max_extract_input_tokens,
         )
-
-        history = pack_user_ass_to_openai_messages(
-            entity_extraction_user_prompt, final_result
-        )
-
-        # Process initial extraction with appropriate parser
-        if use_json_extraction:
-            maybe_nodes, maybe_edges = await _process_json_extraction_result(
-                final_result,
-                chunk_key,
-                timestamp,
-                file_path,
-            )
-        else:
-            maybe_nodes, maybe_edges = await _process_extraction_result(
-                final_result,
-                chunk_key,
-                timestamp,
-                file_path,
-                tuple_delimiter=context_base["tuple_delimiter"],
-                completion_delimiter=context_base["completion_delimiter"],
-            )
-
-        # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
-        run_gleaning = entity_extract_max_gleaning > 0
-        if (
-            run_gleaning
-            and extract_tokenizer is not None
-            and max_extract_input_tokens > 0
-        ):
-            # Gleaning replays the initial extraction's user/assistant pair
-            # via ``history_messages`` and appends a "continue" instruction.
-            # When the initial response was large (many entities/edges) or
-            # the chunk content is itself near the budget, that combined
-            # payload can blow past MAX_EXTRACT_INPUT_TOKENS and yield a
-            # provider ``context_length_exceeded`` error.  Pre-check here
-            # and skip rather than fail.
-            gleaning_token_count = (
-                len(extract_tokenizer.encode(entity_extraction_system_prompt))
-                + sum(
-                    len(extract_tokenizer.encode(msg.get("content", "") or ""))
-                    for msg in history
-                )
-                + len(extract_tokenizer.encode(entity_continue_extraction_user_prompt))
-            )
-            if gleaning_token_count > max_extract_input_tokens:
-                logger.warning(
-                    f"Gleaning stopped for chunk {chunk_key}: "
-                    f"Input tokens ({gleaning_token_count}) exceeded limit "
-                    f"({max_extract_input_tokens})."
-                )
-                run_gleaning = False
-
-        if run_gleaning:
-            glean_result, timestamp = await use_llm_func_with_cache(
-                entity_continue_extraction_user_prompt,
-                use_llm_func,
-                system_prompt=entity_extraction_system_prompt,
-                llm_response_cache=llm_response_cache,
-                history_messages=history,
-                cache_type="extract",
-                chunk_id=chunk_key,
-                cache_keys_collector=cache_keys_collector,
-                response_format=(
-                    {"type": "json_object"} if use_json_extraction else None
-                ),
-                llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
-            )
-
-            # Process gleaning result with appropriate parser
-            if use_json_extraction:
-                glean_nodes, glean_edges = await _process_json_extraction_result(
-                    glean_result,
-                    chunk_key,
-                    timestamp,
-                    file_path,
-                )
-            else:
-
-                glean_result, timestamp = await use_llm_func_with_cache(
-                    entity_continue_extraction_user_prompt,
-                    use_llm_func,
-                    system_prompt=entity_extraction_system_prompt,
-                    llm_response_cache=llm_response_cache,
-                    history_messages=history,
-                    cache_type="extract",
-                    chunk_id=chunk_key,
-                    cache_keys_collector=cache_keys_collector,
-                    **extraction_call_kwargs,
-                )
-
-                # Process gleaning result separately with file path
-
-                glean_nodes, glean_edges = await _process_extraction_result(
-                    glean_result,
-                    chunk_key,
-                    timestamp,
-                    file_path,
-                    tuple_delimiter=context_base["tuple_delimiter"],
-                    completion_delimiter=context_base["completion_delimiter"],
-                )
-
-            # Merge results - compare description lengths to choose better version
-            for i, (entity_name, glean_entities) in enumerate(
-                glean_nodes.items(), start=1
-            ):
-                if entity_name in maybe_nodes:
-                    # Compare description lengths and keep the better one
-                    original_desc_len = len(
-                        maybe_nodes[entity_name][0].get("description", "") or ""
-                    )
-                    glean_desc_len = len(glean_entities[0].get("description", "") or "")
-
-                    if glean_desc_len > original_desc_len:
-                        maybe_nodes[entity_name] = list(glean_entities)
-                    # Otherwise keep original version
-                else:
-                    # New entity from gleaning stage
-                    maybe_nodes[entity_name] = list(glean_entities)
-                await _cooperative_yield(i, every=8)
-
-            for i, (edge_key, glean_edge_list) in enumerate(
-                glean_edges.items(), start=1
-            ):
-                if edge_key in maybe_edges:
-                    # Compare description lengths and keep the better one
-                    original_desc_len = len(
-                        maybe_edges[edge_key][0].get("description", "") or ""
-                    )
-                    glean_desc_len = len(
-                        glean_edge_list[0].get("description", "") or ""
-                    )
-
-                    if glean_desc_len > original_desc_len:
-                        maybe_edges[edge_key] = list(glean_edge_list)
-                    # Otherwise keep original version
-                else:
-                    # New edge from gleaning stage
-                    maybe_edges[edge_key] = list(glean_edge_list)
-                await _cooperative_yield(i, every=8)
-
-        # Inject multimodal entity + associations for drawing/table/equation
-        # chunks. Placed before update_chunk_cache_list so the per-chunk
-        # cache write still happens after; placed inside the chunk's
-        # concurrency slot (rather than the centralized post-pass that used
-        # to live in utils_pipeline.augment_chunk_results_with_mm_entities)
-        # so each multimodal chunk benefits from the chunk-level concurrency
-        # already enforced by extract_entities.
-        sidecar_block = chunk_dp.get("sidecar")
-        if isinstance(sidecar_block, dict):
-            sidecar_type = sidecar_block.get("type")
-            sidecar_id = sidecar_block.get("id")
-            if (
-                sidecar_type in {"drawing", "table", "equation"}
-                and isinstance(sidecar_id, str)
-                and sidecar_id
-            ):
-                mm_entity_name = sidecar_id
-                now_ts = int(time.time())
-                mm_nodes_list = maybe_nodes.setdefault(mm_entity_name, [])
-                mm_nodes_list.append(
-                    {
-                        "entity_name": mm_entity_name,
-                        "entity_type": sidecar_type,
-                        # description == the full multimodal chunk content so
-                        # the extracted entity carries the same grounding
-                        # surface the prompt produced; analyze_multimodal's
-                        # description/name field is already inlined there.
-                        "description": chunk_dp.get("content", "") or "",
-                        "source_id": chunk_key,
-                        "file_path": file_path,
-                        "timestamp": now_ts,
-                    }
-                )
-                heading_block = chunk_dp.get("heading")
-                heading_label = "unknown"
-                if isinstance(heading_block, dict):
-                    heading_label = (
-                        str(heading_block.get("heading") or "").strip() or "unknown"
-                    )
-                mm_display_name = _parse_mm_display_name(
-                    chunk_dp.get("content", "") or "", sidecar_id
-                )
-                for tgt in list(maybe_nodes.keys()):
-                    if tgt == mm_entity_name:
-                        continue
-                    edge_key = (mm_entity_name, tgt)
-                    edge_list = maybe_edges.setdefault(edge_key, [])
-                    edge_list.append(
-                        {
-                            "src_id": mm_entity_name,
-                            "tgt_id": tgt,
-                            "weight": 1.0,
-                            "description": (
-                                f"{tgt} is associated with {sidecar_type} "
-                                f"{mm_display_name} in section {heading_label} "
-                                f'of document "{file_path}"'
-                            ),
-                            "keywords": "associated with, contained in",
-                            "source_id": chunk_key,
-                            "file_path": file_path,
-                            "timestamp": now_ts,
-                        }
-                    )
-
-        # Batch update chunk's llm_cache_list with all collected cache keys
-        if cache_keys_collector and text_chunks_storage:
-            await update_chunk_cache_list(
-                chunk_key,
-                text_chunks_storage,
-                cache_keys_collector,
-                "entity_extraction",
-            )
 
         processed_chunks += 1
         entities_count = len(maybe_nodes)
@@ -4275,8 +3690,10 @@ async def extract_entities(
         # Return the extracted nodes and edges for centralized processing
         return maybe_nodes, maybe_edges
 
-    # Get max async tasks limit from global_config
-    chunk_max_async = global_config.get("llm_model_max_async", 4)
+    role_max_async = (global_config.get("role_llm_max_async") or {}).get("extract")
+    chunk_max_async = min(
+        role_max_async or global_config.get("llm_model_max_async", 4), 2
+    )
     semaphore = asyncio.Semaphore(chunk_max_async)
 
     async def _process_with_semaphore(chunk):
@@ -4347,9 +3764,112 @@ async def extract_entities(
     return chunk_results
 
 
-# ---------------------------------------------------------------------------
-# Agent tool execution runtime
-# ---------------------------------------------------------------------------
+def _build_query_prompt(
+    *,
+    query: str,
+    query_param: QueryParam,
+    context_result: QueryContextResult,
+    system_prompt: str | None,
+) -> tuple[str, str, str]:
+    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    response_type = (
+        query_param.response_type
+        if query_param.response_type
+        else "Multiple Paragraphs"
+    )
+    sys_prompt_template = system_prompt if system_prompt else PROMPTS["rag_response"]
+    sys_prompt = sys_prompt_template.format(
+        response_type=response_type,
+        user_prompt=user_prompt,
+        context_data=context_result.context,
+    )
+    return sys_prompt, query, response_type
+
+
+def _build_query_cache_hash(
+    *,
+    query: str,
+    query_param: QueryParam,
+    llm_cache_identity: dict[str, Any],
+    hl_keywords_str: str,
+    ll_keywords_str: str,
+    cache_generation_marker: str,
+) -> str:
+    return compute_args_hash(
+        query_param.mode,
+        query,
+        query_param.response_type,
+        query_param.top_k,
+        query_param.chunk_top_k,
+        query_param.max_entity_tokens,
+        query_param.max_relation_tokens,
+        query_param.max_total_tokens,
+        hl_keywords_str,
+        ll_keywords_str,
+        query_param.user_prompt or "",
+        query_param.enable_rerank,
+        cache_generation_marker,
+        "\n<llm_identity>\n",
+        serialize_llm_cache_identity(llm_cache_identity),
+    )
+
+
+async def _run_query_generation(
+    *,
+    user_query: str,
+    sys_prompt: str,
+    response_type: str,
+    query_param: QueryParam,
+    global_config: dict[str, Any],
+    use_model_func: Callable[..., Any],
+    context_result: QueryContextResult,
+    tokenizer: Tokenizer,
+) -> str | AsyncIterator[str]:
+    use_apfel_iterative = _is_apfel_fast_query(global_config, query_param)
+    apfel_portions: list[dict[str, Any]] = []
+    if use_apfel_iterative:
+        apfel_portions = _build_apfel_iterative_portions(
+            context_result.raw_data,
+            tokenizer,
+            query_param.max_total_tokens,
+        )
+        context_result.raw_data.setdefault("metadata", {})[
+            "apfel_iterative"
+        ] = _apfel_iterative_metadata(apfel_portions)
+        logger.info(
+            "APFEL_ITERATIVE_PREPARED portions=%s token_estimates=%s",
+            len(apfel_portions),
+            [portion.get("token_estimate", 0) for portion in apfel_portions],
+        )
+
+    max_completion_tokens = getattr(query_param, "max_completion_tokens", None)
+    llm_call_kwargs = {}
+    if max_completion_tokens:
+        llm_call_kwargs["max_completion_tokens"] = max_completion_tokens
+
+    if use_apfel_iterative and apfel_portions:
+        iterative_kwargs = {
+            "query": user_query,
+            "response_type": response_type,
+            "query_param": query_param,
+            "use_model_func": use_model_func,
+            "tokenizer": tokenizer,
+            "portions": apfel_portions,
+            "raw_data": context_result.raw_data,
+        }
+        if query_param.stream:
+            return _run_apfel_iterative_answer_generator(**iterative_kwargs)
+        return await _run_apfel_iterative_answer(**iterative_kwargs)
+
+    return await use_model_func(
+        user_query,
+        system_prompt=sys_prompt,
+        history_messages=query_param.conversation_history,
+        enable_cot=True,
+        stream=query_param.stream,
+        _lightrag_request_kind="query",
+        **llm_call_kwargs,
+    )
 
 
 def _parse_tool_calls(text: str) -> list[dict]:
@@ -4388,6 +3908,7 @@ async def _execute_tool_call(
     relationships_vdb: BaseVectorStorage | None,
     chunks_vdb: BaseVectorStorage | None,
     knowledge_graph_inst: BaseGraphStorage | None,
+    web_search_func: Callable[..., Any] | None = None,
 ) -> str:
     """Execute a single tool call and return a human-readable result string.
 
@@ -4397,9 +3918,32 @@ async def _execute_tool_call(
         - ``search_chunks``         – semantic search over document chunk vectors
         - ``get_entity_detail``     – full description for one entity from the graph
         - ``get_relations_for_entity`` – all relations connected to one entity
+        - ``web_search``            – DuckDuckGo web search (no API key needed)
     """
     tool_name = tool_call.get("tool", "")
     args = tool_call.get("args", {})
+
+    # --- Web search is handled first since it doesn't need any LightRAG storage ---
+    if tool_name == "web_search":
+        if web_search_func is None:
+            return (
+                "Error: Web search is not enabled. "
+                "Set enable_web_search=True in QueryParam to use this tool."
+            )
+        query = args.get("query", "")
+        num_results = int(args.get("num_results", 5))
+        if not query:
+            return "Error: 'query' argument is required for web_search."
+        try:
+            results = await web_search_func(query, num_results)
+            return format_search_results(results)
+        except ImportError as e:
+            return (
+                f"Error: Web search is not available. {e}\n"
+                "Install it with: uv pip install duckduckgo_search"
+            )
+        except Exception as e:
+            return f"Error during web search: {e}"
 
     if tool_name == "search_entities":
         if entities_vdb is None:
@@ -4509,9 +4053,24 @@ async def _execute_tool_call(
     else:
         available = (
             "search_entities, search_relations, search_chunks, "
-            "get_entity_detail, get_relations_for_entity"
+            "get_entity_detail, get_relations_for_entity, web_search"
         )
         return f"Unknown tool '{tool_name}'. Available tools: {available}"
+
+
+async def _emit_stream_event(
+    query_param: QueryParam,
+    payload: dict[str, Any],
+) -> None:
+    callback = getattr(query_param, "stream_event_callback", None)
+    if callback is None:
+        return
+    try:
+        result = callback(payload)
+        if inspect.isawaitable(result):
+            await result
+    except Exception as exc:
+        logger.warning("[_emit_stream_event] failed to emit event: %s", exc)
 
 
 async def _run_tool_loop(
@@ -4523,6 +4082,7 @@ async def _run_tool_loop(
     relationships_vdb: BaseVectorStorage | None,
     chunks_vdb: BaseVectorStorage | None,
     knowledge_graph_inst: BaseGraphStorage | None,
+    web_search_func: Callable[..., Any] | None = None,
     max_tool_rounds: int = 5,
 ) -> str:
     """Interactive tool loop for agentic retrieval.
@@ -4570,6 +4130,15 @@ async def _run_tool_loop(
             tool_call.get("tool"),
             tool_call.get("args"),
         )
+        await _emit_stream_event(
+            query_param,
+            {
+                "phase": "tool_call",
+                "round": _round + 1,
+                "tool": tool_call.get("tool"),
+                "args": tool_call.get("args", {}),
+            },
+        )
 
         try:
             result = await _execute_tool_call(
@@ -4578,10 +4147,20 @@ async def _run_tool_loop(
                 relationships_vdb,
                 chunks_vdb,
                 knowledge_graph_inst,
+                web_search_func=web_search_func,
             )
         except Exception as exc:
             logger.error("[_run_tool_loop] tool execution error: %s", exc)
             result = f"Error executing {tool_call.get('tool')}: {exc}"
+        await _emit_stream_event(
+            query_param,
+            {
+                "phase": "tool_result",
+                "round": _round + 1,
+                "tool": tool_call.get("tool"),
+                "output": result,
+            },
+        )
 
         # Feed assistant message (containing tool call) and tool result back
         history.append({"role": "assistant", "content": response})
@@ -4697,22 +4276,12 @@ async def kg_query(
             content=context_result.context, raw_data=context_result.raw_data
         )
 
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
-    response_type = (
-        query_param.response_type
-        if query_param.response_type
-        else "Multiple Paragraphs"
+    sys_prompt, user_query, response_type = _build_query_prompt(
+        query=query,
+        query_param=query_param,
+        context_result=context_result,
+        system_prompt=system_prompt,
     )
-
-    # Build system prompt
-    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
-    sys_prompt = sys_prompt_temp.format(
-        response_type=response_type,
-        user_prompt=user_prompt,
-        context_data=context_result.context,
-    )
-
-    user_query = query
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
@@ -4726,6 +4295,19 @@ async def kg_query(
         logger.info(
             "[kg_query] Agent tools enabled – dispatching to tool loop"
         )
+        # Check if web search should be available
+        web_search_enabled = getattr(
+            query_param, "enable_web_search", global_config.get("web_search", False)
+        )
+        web_search_max_results = getattr(
+            query_param, "web_search_max_results", global_config.get("web_search_max_results", 5)
+        )
+        web_search_func: Callable[..., Any] | None = None
+        if web_search_enabled:
+            async def _web_search(query_str: str, num_results: int = 5) -> list[WebSearchResult]:
+                return duckduckgo_search(query_str, num_results or web_search_max_results)
+            web_search_func = _web_search
+
         # Prepend tool protocol instructions to the system prompt
         tool_prompt = PROMPTS["agent_tool_protocol_query"]
         augmented_sys_prompt = f"{tool_prompt}\n\n{sys_prompt}"
@@ -4738,6 +4320,7 @@ async def kg_query(
             relationships_vdb=relationships_vdb,
             chunks_vdb=chunks_vdb,
             knowledge_graph_inst=knowledge_graph_inst,
+            web_search_func=web_search_func,
         )
         # Tool-loop responses are non-deterministic – skip caching
         return QueryResult(content=response, raw_data=context_result.raw_data)
@@ -4746,13 +4329,16 @@ async def kg_query(
     # Call LLM
     tokenizer: Tokenizer = global_config["tokenizer"]
     use_apfel_iterative = _is_apfel_fast_query(global_config, query_param)
-    apfel_portions: list[dict[str, Any]] = []
-    if use_apfel_iterative:
-        apfel_portions = _build_apfel_iterative_portions(
+    apfel_portions = (
+        _build_apfel_iterative_portions(
             context_result.raw_data,
             tokenizer,
             query_param.max_total_tokens,
         )
+        if use_apfel_iterative
+        else []
+    )
+    if apfel_portions:
         context_result.raw_data.setdefault("metadata", {})[
             "apfel_iterative"
         ] = _apfel_iterative_metadata(apfel_portions)
@@ -4773,24 +4359,13 @@ async def kg_query(
         if use_apfel_iterative and apfel_portions
         else "standard_v1"
     )
-    args_hash = compute_args_hash(
-        query_param.mode,
-        query,
-        query_param.response_type,
-        query_param.top_k,
-        query_param.chunk_top_k,
-        query_param.max_entity_tokens,
-        query_param.max_relation_tokens,
-        query_param.max_total_tokens,
-        hl_keywords_str,
-        ll_keywords_str,
-        query_param.user_prompt or "",
-        query_param.enable_rerank,
-
-        cache_generation_marker,
-        "\n<llm_identity>\n",
-        serialize_llm_cache_identity(llm_cache_identity),
-
+    args_hash = _build_query_cache_hash(
+        query=query,
+        query_param=query_param,
+        llm_cache_identity=llm_cache_identity,
+        hl_keywords_str=hl_keywords_str,
+        ll_keywords_str=ll_keywords_str,
+        cache_generation_marker=cache_generation_marker,
     )
 
     cached_result = await handle_cache(
@@ -4804,35 +4379,16 @@ async def kg_query(
         )
         response = cached_response
     else:
-        llm_call_kwargs = {}
-        max_completion_tokens = getattr(query_param, "max_completion_tokens", None)
-        if max_completion_tokens:
-            llm_call_kwargs["max_completion_tokens"] = max_completion_tokens
-
-        if use_apfel_iterative and apfel_portions:
-            iterative_kwargs = {
-                "query": user_query,
-                "response_type": response_type,
-                "query_param": query_param,
-                "use_model_func": use_model_func,
-                "tokenizer": tokenizer,
-                "portions": apfel_portions,
-                "raw_data": context_result.raw_data,
-            }
-            if query_param.stream:
-                response = _run_apfel_iterative_answer_generator(**iterative_kwargs)
-            else:
-                response = await _run_apfel_iterative_answer(**iterative_kwargs)
-        else:
-            response = await use_model_func(
-                user_query,
-                system_prompt=sys_prompt,
-                history_messages=query_param.conversation_history,
-                enable_cot=True,
-                stream=query_param.stream,
-                _lightrag_request_kind="query",
-                **llm_call_kwargs,
-            )
+        response = await _run_query_generation(
+            user_query=user_query,
+            sys_prompt=sys_prompt,
+            response_type=response_type,
+            query_param=query_param,
+            global_config=global_config,
+            use_model_func=use_model_func,
+            context_result=context_result,
+            tokenizer=tokenizer,
+        )
 
         if (
             hashing_kv
@@ -6815,6 +6371,18 @@ async def naive_query(
         logger.info(
             "[naive_query] Agent tools enabled – dispatching to tool loop"
         )
+        web_search_enabled = getattr(
+            query_param, "enable_web_search", global_config.get("web_search", False)
+        )
+        web_search_max_results = getattr(
+            query_param, "web_search_max_results", global_config.get("web_search_max_results", 5)
+        )
+        web_search_func: Callable[..., Any] | None = None
+        if web_search_enabled:
+            async def _web_search(q: str, n: int = 5) -> list[WebSearchResult]:
+                return duckduckgo_search(q, n or web_search_max_results)
+            web_search_func = _web_search
+
         tool_prompt = PROMPTS["agent_tool_protocol_query"]
         augmented_sys_prompt = f"{tool_prompt}\n\n{sys_prompt}"
         response = await _run_tool_loop(
@@ -6826,6 +6394,7 @@ async def naive_query(
             relationships_vdb=relationships_vdb,
             chunks_vdb=chunks_vdb,
             knowledge_graph_inst=knowledge_graph_inst,
+            web_search_func=web_search_func,
         )
         # Tool-loop responses are non-deterministic – skip caching
         return QueryResult(content=response, raw_data=raw_data)

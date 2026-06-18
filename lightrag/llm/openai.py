@@ -1,4 +1,5 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
+import os
 import logging
 import json
 import time
@@ -92,13 +93,15 @@ class TransientBadRequestError(Exception):
 
 
 def _validate_openai_response_format(response_format: Any | None) -> None:
-    """Reject typed structured-output helpers; only wire-format dicts are supported."""
+    """Accept OpenAI wire-format dicts and typed Pydantic schemas."""
     if response_format is None or isinstance(response_format, dict):
+        return
+    if isinstance(response_format, type) and issubclass(response_format, BaseModel):
         return
 
     raise TypeError(
-        "openai_complete_if_cache only supports dict response_format payloads; "
-        "typed/Pydantic response_format values are not supported."
+        "openai_complete_if_cache only supports dict response_format payloads "
+        "or Pydantic BaseModel schema types."
     )
 
 
@@ -654,6 +657,7 @@ async def openai_complete_if_cache(
     # Remove special kwargs that shouldn't be passed to OpenAI
     kwargs.pop("hashing_kv", None)
     request_kind = kwargs.pop("_lightrag_request_kind", None)
+    kwargs.pop("_lightrag_extraction_request", None)
 
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
@@ -1134,52 +1138,69 @@ async def openai_complete_if_cache(
                 final_content = message.parsed.model_dump_json()
                 logger.debug("Using parsed structured response from API")
             else:
-                # Handle regular content responses
-                content = getattr(message, "content", None)
-                reasoning_content = getattr(message, "reasoning_content", "")
-
-                # Handle COT logic for non-streaming responses (only if enabled)
-                final_content = ""
-
-                if enable_cot:
-                    # Check if we should include reasoning content
-                    should_include_reasoning = False
-                    if reasoning_content and reasoning_content.strip():
-                        if not content or content.strip() == "":
-                            # Case 1: Only reasoning content, should include COT
-                            should_include_reasoning = True
-                            final_content = (
-                                content or ""
-                            )  # Use empty string if content is None
-                        else:
-                            # Case 3: Both content and reasoning_content present, ignore reasoning
-                            should_include_reasoning = False
-                            final_content = content
+                tool_calls = getattr(message, "tool_calls", None) or []
+                if tool_calls:
+                    tool_call = tool_calls[0]
+                    function_payload = getattr(tool_call, "function", None)
+                    arguments = getattr(function_payload, "arguments", None)
+                    if arguments:
+                        final_content = arguments
                     else:
-                        # No reasoning content, use regular content
-                        final_content = content or ""
-
-                    # Apply COT wrapping if needed
-                    if should_include_reasoning:
-                        if r"\u" in reasoning_content:
-                            reasoning_content = safe_unicode_decode(
-                                reasoning_content.encode("utf-8")
-                            )
-                        final_content = (
-                            f"<think>{reasoning_content}</think>{final_content}"
+                        logger.error("Received tool call response without arguments")
+                        try:
+                            await openai_async_client.close()
+                        except Exception as close_error:
+                            logger.warning(f"Failed to close OpenAI client: {close_error}")
+                        raise InvalidResponseError(
+                            "Received tool call response without arguments"
                         )
                 else:
-                    # COT disabled, only use regular content
-                    final_content = content or ""
+                # Handle regular content responses
+                    content = getattr(message, "content", None)
+                    reasoning_content = getattr(message, "reasoning_content", "")
 
-                # Validate final content
-                if not final_content or final_content.strip() == "":
-                    logger.error("Received empty content from OpenAI API")
-                    try:
-                        await openai_async_client.close()
-                    except Exception as close_error:
-                        logger.warning(f"Failed to close OpenAI client: {close_error}")
-                    raise InvalidResponseError("Received empty content from OpenAI API")
+                    # Handle COT logic for non-streaming responses (only if enabled)
+                    final_content = ""
+
+                    if enable_cot:
+                        # Check if we should include reasoning content
+                        should_include_reasoning = False
+                        if reasoning_content and reasoning_content.strip():
+                            if not content or content.strip() == "":
+                                # Case 1: Only reasoning content, should include COT
+                                should_include_reasoning = True
+                                final_content = (
+                                    content or ""
+                                )  # Use empty string if content is None
+                            else:
+                                # Case 3: Both content and reasoning_content present, ignore reasoning
+                                should_include_reasoning = False
+                                final_content = content
+                        else:
+                            # No reasoning content, use regular content
+                            final_content = content or ""
+
+                        # Apply COT wrapping if needed
+                        if should_include_reasoning:
+                            if r"\u" in reasoning_content:
+                                reasoning_content = safe_unicode_decode(
+                                    reasoning_content.encode("utf-8")
+                                )
+                            final_content = (
+                                f"<think>{reasoning_content}</think>{final_content}"
+                            )
+                    else:
+                        # COT disabled, only use regular content
+                        final_content = content or ""
+
+                    # Validate final content
+                    if not final_content or final_content.strip() == "":
+                        logger.error("Received empty content from OpenAI API")
+                        try:
+                            await openai_async_client.close()
+                        except Exception as close_error:
+                            logger.warning(f"Failed to close OpenAI client: {close_error}")
+                        raise InvalidResponseError("Received empty content from OpenAI API")
 
             # Apply Unicode decoding to final content if needed
             if r"\u" in final_content:

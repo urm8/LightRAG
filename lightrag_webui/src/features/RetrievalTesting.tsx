@@ -228,6 +228,7 @@ export default function RetrievalTesting() {
         thinkingTime: null,        // Explicitly initialize to null
         thinkingContent: undefined, // Explicitly initialize to undefined
         displayContent: undefined,  // Explicitly initialize to undefined
+        toolEvents: [],
         enrichedContent: undefined,
         enrichmentModel: undefined,
         enrichmentElapsedMs: undefined,
@@ -423,6 +424,26 @@ export default function RetrievalTesting() {
         })
       }
 
+      const updateAssistantToolEvent = (event: {
+        phase: 'tool_call' | 'tool_result'
+        round: number
+        tool: string
+        args?: Record<string, unknown>
+        output?: string
+      }) => {
+        assistantMessage.toolEvents = [...(assistantMessage.toolEvents || []), event]
+        setMessages((prev) => {
+          const newMessages = [...prev]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage && lastMessage.id === assistantMessage.id) {
+            Object.assign(lastMessage, {
+              toolEvents: assistantMessage.toolEvents
+            })
+          }
+          return newMessages
+        })
+      }
+
       // Prepare query parameters
       const state = useSettingsStore.getState()
 
@@ -445,6 +466,7 @@ export default function RetrievalTesting() {
         query: actualQuery,
         include_debug: true,
         include_enrichment: true,
+        use_fast_query: state.querySettings.use_fast_query ?? false,
         response_type: 'Multiple Paragraphs',
         conversation_history: effectiveHistoryTurns > 0
           ? prevMessages
@@ -467,7 +489,8 @@ export default function RetrievalTesting() {
             },
             updateAssistantDebug,
             updateAssistantEnrichment,
-            updateAssistantEnrichmentError
+            updateAssistantEnrichmentError,
+            updateAssistantToolEvent
           )
           if (errorMessage) {
             if (assistantMessage.content) {

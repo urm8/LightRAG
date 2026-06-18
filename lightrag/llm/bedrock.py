@@ -515,9 +515,7 @@ async def bedrock_embed(
     # Region handling: prefer settings, else kwarg
     region = settings.aws_region or aws_region
 
-    region = aws_region
     endpoint_url = _normalize_bedrock_endpoint_url(endpoint_url)
->>>>>>> lightrag/main
 
     session = aioboto3.Session()
     async with session.client(

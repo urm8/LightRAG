@@ -132,18 +132,33 @@ def _mcp_query_profile() -> str:
 
 
 def _to_jsonable(value: Any) -> Any:
+    value_type = type(value)
+    if value_type.__name__ == "Unset" and getattr(value_type, "__module__", "").endswith(
+        ".types"
+    ):
+        return None
     if value is None or isinstance(value, str | int | float | bool):
         return value
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
-    if attrs.has(type(value)):
-        return attrs.asdict(value)
-    if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, list | tuple | set):
-        return [_to_jsonable(v) for v in value]
     if hasattr(value, "to_dict") and callable(value.to_dict):
         return _to_jsonable(value.to_dict())
+    if attrs.has(type(value)):
+        return _to_jsonable(attrs.asdict(value, recurse=False))
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            rendered = _to_jsonable(item)
+            if rendered is not None:
+                normalized[str(key)] = rendered
+        return normalized
+    if isinstance(value, list | tuple | set):
+        normalized_items: list[Any] = []
+        for item in value:
+            rendered = _to_jsonable(item)
+            if rendered is not None:
+                normalized_items.append(rendered)
+        return normalized_items
     if hasattr(value, "dict") and callable(value.dict):
         return _to_jsonable(value.dict())
     if hasattr(value, "__dict__"):
@@ -155,6 +170,30 @@ def _format_response(result: Any, *, is_error: bool = False) -> dict[str, Any]:
     if is_error:
         return {"status": "error", "error": str(result)}
     return {"status": "success", "response": _to_jsonable(result)}
+
+
+def _summarize_value(value: Any, *, limit: int = 240) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        compact = " ".join(value.split())
+        return compact[:limit] + ("..." if len(compact) > limit else "")
+    if isinstance(value, list | tuple | set):
+        return f"{type(value).__name__}(len={len(value)})"
+    if isinstance(value, dict):
+        preview_keys = list(value.keys())[:8]
+        more = "" if len(value) <= 8 else ",..."
+        return f"dict(keys={preview_keys}{more})"
+    return repr(value)[:limit]
+
+
+def _summarize_tool_kwargs(kwargs: dict[str, Any]) -> str:
+    if not kwargs:
+        return "-"
+    parts = []
+    for key, value in kwargs.items():
+        parts.append(f"{key}={_summarize_value(value)}")
+    return "; ".join(parts)
 
 
 def _get_lifespan_context(ctx: Context) -> dict[str, Any]:
@@ -173,6 +212,8 @@ async def _execute_lightrag_operation(
     ctx: Context,
     operation_name: str,
     operation_func: Callable[[Any], Awaitable[Any]],
+    *,
+    tool_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
     try:
@@ -187,23 +228,29 @@ async def _execute_lightrag_operation(
                 is_error=True,
             )
 
-        logger.info("Executing LightRAG MCP operation: %s", operation_name)
+        logger.info(
+            "Executing LightRAG MCP operation: %s args=%s",
+            operation_name,
+            _summarize_tool_kwargs(tool_kwargs or {}),
+        )
         result = await operation_func(client)
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info(
-            "Completed LightRAG MCP operation: %s duration_ms=%.2f response_type=%s",
+            "Completed LightRAG MCP operation: %s duration_ms=%.2f response_type=%s result=%s",
             operation_name,
             elapsed_ms,
             type(result).__name__,
+            _summarize_value(result),
         )
         return _format_response(result)
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.exception(
-            "LightRAG MCP operation failed: %s duration_ms=%.2f error_type=%s",
+            "LightRAG MCP operation failed: %s duration_ms=%.2f error_type=%s args=%s",
             operation_name,
             elapsed_ms,
             type(exc).__name__,
+            _summarize_tool_kwargs(tool_kwargs or {}),
         )
         return _format_response(exc, is_error=True)
 
@@ -364,9 +411,11 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         client = client_class(base_url=base_url, api_key=resolved_api_key)
         _configure_lightrag_client_auth(client, resolved_api_key)
         logger.info(
-            "Integrated LightRAG MCP server started base_url=%s api_key_configured=%s",
+            "Integrated LightRAG MCP server started base_url=%s api_key_configured=%s query_profile=%s transport=%s",
             base_url,
             bool(resolved_api_key),
+            _mcp_query_profile(),
+            settings.lightrag_mcp_transport,
         )
         try:
             yield {"lightrag_client": client}
@@ -442,7 +491,22 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                 query_model=_mcp_query_profile(),
             )
 
-        return await _execute_lightrag_operation(ctx, "query_document", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "query_document",
+            _operation,
+            tool_kwargs={
+                "query": query,
+                "mode": mode,
+                "top_k": top_k,
+                "only_need_context": only_need_context,
+                "only_need_prompt": only_need_prompt,
+                "response_type": response_type,
+                "hl_keywords": hl_keywords,
+                "ll_keywords": ll_keywords,
+                "history_turns": history_turns,
+            },
+        )
 
     @mcp.tool(
         name="insert_document",
@@ -455,7 +519,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         async def _operation(client: Any) -> Any:
             return await client.insert_text(text=text)
 
-        return await _execute_lightrag_operation(ctx, "insert_document", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "insert_document",
+            _operation,
+            tool_kwargs={"text": text},
+        )
 
     @mcp.tool(
         name="upload_document",
@@ -468,7 +537,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         async def _operation(client: Any) -> Any:
             return await client.upload_document(file_path=file_path)
 
-        return await _execute_lightrag_operation(ctx, "upload_document", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "upload_document",
+            _operation,
+            tool_kwargs={"file_path": file_path},
+        )
 
     @mcp.tool(name="insert_file", description=AGENTIC_TOOL_DESCRIPTIONS["insert_file"])
     async def insert_file(
@@ -478,7 +552,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         async def _operation(client: Any) -> Any:
             return await client.insert_file(file_path=file_path)
 
-        return await _execute_lightrag_operation(ctx, "insert_file", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "insert_file",
+            _operation,
+            tool_kwargs={"file_path": file_path},
+        )
 
     @mcp.tool(name="insert_batch", description=AGENTIC_TOOL_DESCRIPTIONS["insert_batch"])
     async def insert_batch(
@@ -509,7 +588,19 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                 ignore_files=ignore_files,
             )
 
-        return await _execute_lightrag_operation(ctx, "insert_batch", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "insert_batch",
+            _operation,
+            tool_kwargs={
+                "directory_path": directory_path,
+                "recursive": recursive,
+                "depth": depth,
+                "include_only": include_only,
+                "ignore_files": ignore_files,
+                "ignore_directories": ignore_directories,
+            },
+        )
 
     @mcp.tool(
         name="scan_for_new_documents",
@@ -593,7 +684,16 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                 merge_strategy=merge_strategy,
             )
 
-        return await _execute_lightrag_operation(ctx, "merge_entities", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "merge_entities",
+            _operation,
+            tool_kwargs={
+                "source_entities": source_entities,
+                "target_entity": target_entity,
+                "merge_strategy": merge_strategy,
+            },
+        )
 
     @mcp.tool(
         name="create_entities",
@@ -646,7 +746,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                 "results": results,
             }
 
-        return await _execute_lightrag_operation(ctx, "create_entities", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "create_entities",
+            _operation,
+            tool_kwargs={"entities": entities},
+        )
 
     @mcp.tool(
         name="delete_by_entities",
@@ -678,7 +783,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                 "results": results,
             }
 
-        return await _execute_lightrag_operation(ctx, "delete_by_entities", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "delete_by_entities",
+            _operation,
+            tool_kwargs={"entity_names": entity_names},
+        )
 
     @mcp.tool(
         name="delete_by_doc_ids",
@@ -706,7 +816,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                 "results": results,
             }
 
-        return await _execute_lightrag_operation(ctx, "delete_by_doc_ids", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "delete_by_doc_ids",
+            _operation,
+            tool_kwargs={"doc_ids": doc_ids},
+        )
 
     @mcp.tool(name="edit_entities", description=AGENTIC_TOOL_DESCRIPTIONS["edit_entities"])
     async def edit_entities(
@@ -756,7 +871,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                 "results": results,
             }
 
-        return await _execute_lightrag_operation(ctx, "edit_entities", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "edit_entities",
+            _operation,
+            tool_kwargs={"entities": entities},
+        )
 
     @mcp.tool(
         name="create_relations",
@@ -810,7 +930,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                 "results": results,
             }
 
-        return await _execute_lightrag_operation(ctx, "create_relations", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "create_relations",
+            _operation,
+            tool_kwargs={"relations": relations},
+        )
 
     @mcp.tool(name="edit_relations", description=AGENTIC_TOOL_DESCRIPTIONS["edit_relations"])
     async def edit_relations(
@@ -863,7 +988,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                 "results": results,
             }
 
-        return await _execute_lightrag_operation(ctx, "edit_relations", _operation)
+        return await _execute_lightrag_operation(
+            ctx,
+            "edit_relations",
+            _operation,
+            tool_kwargs={"relations": relations},
+        )
 
     return mcp
 

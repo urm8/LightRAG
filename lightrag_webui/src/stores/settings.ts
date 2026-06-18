@@ -131,6 +131,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         only_need_context: false,
         only_need_prompt: false,
         stream: true,
+        use_fast_query: false,
         history_turns: 0,
         user_prompt: '',
         enable_rerank: false

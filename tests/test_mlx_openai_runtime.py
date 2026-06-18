@@ -560,6 +560,28 @@ def test_managed_swift_lm_launch_command_supports_acceleration_flags(
 
 
 @pytest.mark.offline
+def test_managed_swift_lm_launch_command_forces_ssd_prefetch_with_stream_experts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    from lightrag.api.lightrag_server import _managed_swift_lm_launch_command
+
+    binary = tmp_path / "SwiftLM"
+    model_path = tmp_path / "gemma"
+    binary.touch()
+    model_path.mkdir()
+    monkeypatch.setenv("SWIFT_LM_BINARY", str(binary))
+    monkeypatch.setenv("SWIFT_LM_MODEL_PATH", str(model_path))
+    monkeypatch.setenv("SWIFT_LM_STREAM_EXPERTS", "false")
+    monkeypatch.setenv("SWIFT_LM_SSD_PREFETCH", "false")
+
+    command = _managed_swift_lm_launch_command(force_ssd_prefetch=True)
+
+    assert "--stream-experts" in command
+    assert "--ssd-prefetch" in command
+
+
+@pytest.mark.offline
 def test_managed_swift_embeddings_launch_command_uses_native_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -608,6 +630,124 @@ def test_swift_lm_response_format_uses_json_object_mode(
         _StructuredSmokeOutput,
         json_object_only=True,
     ) == {"type": "json_object"}
+
+
+@pytest.mark.offline
+def test_validate_openai_response_format_accepts_pydantic_type():
+    openai_llm._validate_openai_response_format(_StructuredSmokeOutput)
+
+
+@pytest.mark.offline
+def test_validate_openai_response_format_rejects_non_schema_object():
+    with pytest.raises(TypeError):
+        openai_llm._validate_openai_response_format(_StructuredSmokeOutput(status="ok"))
+
+
+@pytest.mark.offline
+async def test_openai_complete_if_cache_strips_private_lightrag_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict[str, object] = {}
+
+    class _FakeCompletions:
+        async def create(self, *, model, messages, **kwargs):
+            captured["model"] = model
+            captured["messages"] = messages
+            captured["kwargs"] = dict(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="ok"),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            )
+
+    class _FakeChat:
+        def __init__(self):
+            self.completions = _FakeCompletions()
+
+    class _FakeClient:
+        def __init__(self):
+            self.chat = _FakeChat()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(
+        openai_llm,
+        "create_openai_async_client",
+        lambda **_: _FakeClient(),
+    )
+
+    result = await openai_llm.openai_complete_if_cache(
+        "test-model",
+        "hello",
+        api_key="test-key",
+        base_url="http://127.0.0.1:9999/v1",
+        _lightrag_request_kind="extraction",
+        _lightrag_extraction_request=True,
+        timeout=12,
+    )
+
+    assert result == "ok"
+    assert captured["model"] == "test-model"
+    assert captured["kwargs"] == {"timeout": 12}
+
+
+@pytest.mark.offline
+async def test_openai_complete_if_cache_returns_tool_call_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _FakeCompletions:
+        async def create(self, *, model, messages, **kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="",
+                            tool_calls=[
+                                SimpleNamespace(
+                                    function=SimpleNamespace(
+                                        arguments='{"entities":[],"relations":[]}'
+                                    )
+                                )
+                            ],
+                        ),
+                        finish_reason="tool_calls",
+                    )
+                ],
+                usage=None,
+            )
+
+    class _FakeChat:
+        def __init__(self):
+            self.completions = _FakeCompletions()
+
+    class _FakeClient:
+        def __init__(self):
+            self.chat = _FakeChat()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(
+        openai_llm,
+        "create_openai_async_client",
+        lambda **_: _FakeClient(),
+    )
+
+    result = await openai_llm.openai_complete_if_cache(
+        "test-model",
+        "hello",
+        api_key="test-key",
+        base_url="http://127.0.0.1:9999/v1",
+        tools=[{"type": "function", "function": {"name": "submit_extraction"}}],
+        tool_choice={"type": "function", "function": {"name": "submit_extraction"}},
+    )
+
+    assert result == '{"entities":[],"relations":[]}'
 
 
 @pytest.mark.offline

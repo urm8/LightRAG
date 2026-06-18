@@ -147,31 +147,6 @@ def _json_profile_example(label: str) -> str:
 
 # --- Minimal valid LLM responses ---
 
-_TEXT_MODE_RESPONSE = (
-    "entity<|#|>Alice<|#|>Person<|#|>Alice is the founder of Acme Corp."
-    "\nentity<|#|>Acme Corp<|#|>Organization<|#|>Acme Corp is a company founded by Alice."
-    "\nrelation<|#|>Alice<|#|>Acme Corp<|#|>founded<|#|>Alice founded Acme Corp."
-    "\n<|COMPLETE|>"
-)
-
-_TEXT_MODE_MISPREFIXED_RELATION_RESPONSE = (
-    "entity<|#|>Alice<|#|>Person<|#|>Alice is the founder of Acme Corp."
-    "\nentity<|#|>Acme Corp<|#|>Organization<|#|>Acme Corp is a company founded by Alice."
-    "\nentity<|#|>Alice<|#|>Acme Corp<|#|>founded<|#|>Alice founded Acme Corp."
-    "\n<|COMPLETE|>"
-)
-
-_TEXT_MODE_GLEANED_RELATION_RESPONSES = [
-    _TEXT_MODE_MISPREFIXED_RELATION_RESPONSE,
-    "\nrelation<|#|>Alice<|#|>Acme Corp<|#|>founded<|#|>Alice founded Acme Corp.\n<|COMPLETE|>",
-]
-
-_TEXT_MODE_CROSS_PASS_RELATION_RESPONSES = [
-    "entity<|#|>Alice<|#|>Person<|#|>Alice founded a company.\n<|COMPLETE|>",
-    "entity<|#|>Acme Corp<|#|>Organization<|#|>Acme Corp was founded by Alice."
-    "\nrelation<|#|>Alice<|#|>Acme Corp<|#|>founded<|#|>Alice founded Acme Corp.\n<|COMPLETE|>",
-]
-
 _JSON_MODE_RESPONSE = json.dumps(
     {
         "entities": [
@@ -196,6 +171,42 @@ _JSON_MODE_RESPONSE = json.dumps(
         ],
     }
 )
+
+_TEXT_MODE_RESPONSE = _JSON_MODE_RESPONSE
+
+_TEXT_MODE_MISPREFIXED_RELATION_RESPONSE = _JSON_MODE_RESPONSE
+
+_TEXT_MODE_GLEANED_RELATION_RESPONSES = [
+    json.dumps(
+        {
+            "entities": [
+                {
+                    "name": "Alice",
+                    "type": "Person",
+                    "description": "Alice is the founder of Acme Corp.",
+                }
+            ],
+            "relationships": [],
+        }
+    ),
+    _JSON_MODE_RESPONSE,
+]
+
+_TEXT_MODE_CROSS_PASS_RELATION_RESPONSES = [
+    json.dumps(
+        {
+            "entities": [
+                {
+                    "name": "Alice",
+                    "type": "Person",
+                    "description": "Alice founded a company.",
+                }
+            ],
+            "relationships": [],
+        }
+    ),
+    _JSON_MODE_RESPONSE,
+]
 
 
 class _DummyTextChunksStorage:

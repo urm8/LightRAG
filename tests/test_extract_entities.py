@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lightrag.types import ExtractionStructuredOutput
 from lightrag.utils import Tokenizer, TokenizerInterface
 
 
@@ -24,19 +23,30 @@ def _make_global_config(
 ) -> dict:
     """Build a minimal global_config dict for extract_entities."""
     tokenizer = Tokenizer("dummy", DummyTokenizer())
+    llm_func = AsyncMock(return_value="")
     return {
-        "llm_model_func": AsyncMock(return_value=""),
+        "llm_model_func": llm_func,
+        "role_llm_funcs": {
+            "extract": llm_func,
+            "keyword": llm_func,
+            "query": llm_func,
+            "vlm": llm_func,
+        },
         "entity_extract_max_gleaning": entity_extract_max_gleaning,
+        "entity_extract_max_records": 100,
+        "entity_extract_max_entities": 40,
         "addon_params": {},
         "tokenizer": tokenizer,
         "max_extract_input_tokens": max_extract_input_tokens,
         "llm_model_max_async": 1,
+        "role_llm_max_async": {"extract": 1},
     }
 
 
 # Minimal valid extraction result that _process_extraction_result can parse
 _EXTRACTION_RESULT = (
-    "(entity<|#|>TEST_ENTITY<|#|>CONCEPT<|#|>A test entity)<|COMPLETE|>"
+    '{"entities":[{"entity_name":"TEST_ENTITY","entity_type":"CONCEPT",'
+    '"entity_description":"A test entity."}],"relations":[]}'
 )
 
 _STRUCTURED_EXTRACTION_RESULT = """
@@ -168,13 +178,14 @@ async def test_process_extraction_result_parses_structured_json_first():
     )
 
     assert set(nodes.keys()) == {"LightRAG", "FastAPI"}
+    assert nodes["LightRAG"][0]["description"] == "LightRAG is a graph RAG project."
     assert ("LightRAG", "FastAPI") in edges
     assert edges[("LightRAG", "FastAPI")][0]["keywords"] == "USES"
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_extract_entities_requests_structured_output_contract():
+async def test_extract_entities_requests_tool_based_structured_contract():
     from lightrag.operate import extract_entities
 
     monkeypatch = pytest.MonkeyPatch()
@@ -198,12 +209,16 @@ async def test_extract_entities_requests_structured_output_contract():
     monkeypatch.undo()
 
     assert llm_func.await_count == 1
-    assert llm_func.await_args.kwargs["response_format"] is ExtractionStructuredOutput
+    assert llm_func.await_args.kwargs["tools"][0]["function"]["name"] == "submit_extraction"
+    assert (
+        llm_func.await_args.kwargs["tool_choice"]["function"]["name"]
+        == "submit_extraction"
+    )
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_extract_entities_skips_api_response_format_for_managed_local_mlx(
+async def test_extract_entities_uses_tools_for_managed_local_mlx(
     monkeypatch,
 ):
     from lightrag.operate import extract_entities
@@ -228,4 +243,38 @@ async def test_extract_entities_skips_api_response_format_for_managed_local_mlx(
         )
 
     assert llm_func.await_count == 1
+    assert llm_func.await_args.kwargs["tools"][0]["function"]["name"] == "submit_extraction"
     assert "response_format" not in llm_func.await_args.kwargs
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_extract_entities_uses_json_response_format_for_managed_swift_lm(
+    monkeypatch,
+):
+    from lightrag.operate import extract_entities
+
+    monkeypatch.setenv("LIGHTRAG_MANAGE_SWIFT_LM", "true")
+    monkeypatch.setenv("SWIFT_LM_HOST", "127.0.0.1")
+    monkeypatch.setenv("SWIFT_LM_PORT", "11436")
+
+    global_config = _make_global_config(
+        max_extract_input_tokens=999999,
+        entity_extract_max_gleaning=0,
+    )
+    global_config["llm_cache_identities"] = {
+        "extract": {"host": "http://127.0.0.1:11436/v1"}
+    }
+
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _STRUCTURED_EXTRACTION_RESULT
+
+    with patch("lightrag.operate.logger"):
+        await extract_entities(
+            chunks=_make_chunks(),
+            global_config=global_config,
+        )
+
+    assert llm_func.await_count == 1
+    assert llm_func.await_args.kwargs["response_format"] == {"type": "json_object"}
+    assert "tools" not in llm_func.await_args.kwargs

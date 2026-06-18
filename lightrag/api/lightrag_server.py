@@ -681,11 +681,37 @@ def _append_optional_value(command: list[str], flag: str, value: Any) -> None:
     command.extend([flag, rendered])
 
 
-def _managed_swift_lm_launch_command() -> list[str]:
+_SWIFT_LM_SSD_PREFETCH_ENABLE_USED_RATIO = 0.60
+_SWIFT_LM_SSD_PREFETCH_DISABLE_USED_RATIO = 0.50
+
+
+def _host_memory_used_ratio() -> float | None:
+    try:
+        import psutil
+
+        percent = float(psutil.virtual_memory().percent) / 100.0
+    except Exception:
+        return None
+    return max(0.0, min(1.0, percent))
+
+
+def _desired_swift_lm_ssd_prefetch(
+    current_enabled: bool, used_ratio: float | None
+) -> bool:
+    if used_ratio is None:
+        return current_enabled
+    if current_enabled:
+        return used_ratio >= _SWIFT_LM_SSD_PREFETCH_DISABLE_USED_RATIO
+    return used_ratio >= _SWIFT_LM_SSD_PREFETCH_ENABLE_USED_RATIO
+
+
+def _managed_swift_lm_launch_command(force_ssd_prefetch: bool = False) -> list[str]:
     model_path = _require_native_runtime_path(
         settings.swift_lm_model_path, "SWIFT_LM_MODEL_PATH"
     )
     binary = _require_native_runtime_path(settings.swift_lm_binary, "SWIFT_LM_BINARY")
+    enable_ssd_prefetch = settings.swift_lm_ssd_prefetch or force_ssd_prefetch
+    enable_stream_experts = settings.swift_lm_stream_experts or enable_ssd_prefetch
     command = [
         binary,
         "--model",
@@ -708,8 +734,8 @@ def _managed_swift_lm_launch_command() -> list[str]:
         str(settings.swift_lm_prefill_size),
     ]
     _append_optional_value(command, "--gpu-layers", settings.swift_lm_gpu_layers)
-    _append_optional_flag(command, "--stream-experts", settings.swift_lm_stream_experts)
-    _append_optional_flag(command, "--ssd-prefetch", settings.swift_lm_ssd_prefetch)
+    _append_optional_flag(command, "--stream-experts", enable_stream_experts)
+    _append_optional_flag(command, "--ssd-prefetch", enable_ssd_prefetch)
     _append_optional_flag(command, "--turbo-kv", settings.swift_lm_turbo_kv)
     _append_optional_value(command, "--draft-model", settings.swift_lm_draft_model_path)
     _append_optional_value(
@@ -727,6 +753,10 @@ def _start_managed_swift_lm_server(app: FastAPI) -> subprocess.Popen[Any] | None
     host = settings.swift_lm_host
     port = settings.swift_lm_port
     health_url = f"http://{host}:{port}/health"
+    current_mode = bool(getattr(app.state, "managed_swift_lm_force_ssd_prefetch", False))
+    used_ratio = _host_memory_used_ratio()
+    force_ssd_prefetch = _desired_swift_lm_ssd_prefetch(current_mode, used_ratio)
+    app.state.managed_swift_lm_force_ssd_prefetch = force_ssd_prefetch
     _terminate_orphaned_managed_native_servers(settings.swift_lm_binary, "SwiftLM")
     if _url_is_healthy(health_url):
         logger.warning("Managed SwiftLM already healthy at http://%s:%s", host, port)
@@ -739,7 +769,7 @@ def _start_managed_swift_lm_server(app: FastAPI) -> subprocess.Popen[Any] | None
     app.state.managed_swift_lm_stdout = stdout_handle
     app.state.managed_swift_lm_stderr = stderr_handle
     process = subprocess.Popen(
-        _managed_swift_lm_launch_command(),
+        _managed_swift_lm_launch_command(force_ssd_prefetch=force_ssd_prefetch),
         cwd=str(_repo_root()),
         stdout=stdout_handle,
         stderr=stderr_handle,
@@ -748,8 +778,106 @@ def _start_managed_swift_lm_server(app: FastAPI) -> subprocess.Popen[Any] | None
     if not _wait_for_healthy_url(health_url, timeout_s=180):
         _terminate_managed_process(process, "SwiftLM")
         raise RuntimeError(f"Managed SwiftLM failed to become healthy at {health_url}")
-    logger.warning("Managed SwiftLM started under LightRAG pid=%s on %s:%s", process.pid, host, port)
+    if used_ratio is None:
+        memory_note = "used_ratio=unknown"
+    else:
+        memory_note = f"used_ratio={used_ratio:.1%}"
+    logger.warning(
+        "Managed SwiftLM started under LightRAG pid=%s on %s:%s ssd_prefetch=%s %s",
+        process.pid,
+        host,
+        port,
+        force_ssd_prefetch,
+        memory_note,
+    )
     return process
+
+
+def _restart_managed_swift_lm_server(
+    app: FastAPI, reason: str
+) -> subprocess.Popen[Any] | None:
+    logger.warning("Recycling managed SwiftLM server: %s", reason)
+    process = getattr(app.state, "managed_swift_lm_process", None)
+    _terminate_managed_process(process, "SwiftLM")
+    app.state.managed_swift_lm_process = None
+    _close_managed_log_handles(app, "managed_swift_lm")
+    return _start_managed_swift_lm_server(app)
+
+
+def _start_managed_swift_lm_watchdog(app: FastAPI) -> threading.Thread | None:
+    if not settings.lightrag_manage_swift_lm:
+        return None
+
+    host = settings.swift_lm_host
+    port = settings.swift_lm_port
+    health_url = f"http://{host}:{port}/health"
+    stop_event = threading.Event()
+    app.state.managed_swift_lm_watchdog_stop = stop_event
+    interval_s = settings.swift_lm_watchdog_interval_s
+    restart_lock = threading.Lock()
+    logger.warning(
+        "Managed SwiftLM watchdog enabled interval_s=%s health_url=%s",
+        interval_s,
+        health_url,
+    )
+
+    def _watchdog() -> None:
+        while not stop_event.wait(interval_s):
+            process = getattr(app.state, "managed_swift_lm_process", None)
+            exit_code = None if process is None else process.poll()
+            try:
+                is_healthy = _url_is_healthy(health_url)
+                current_mode = bool(
+                    getattr(app.state, "managed_swift_lm_force_ssd_prefetch", False)
+                )
+                used_ratio = _host_memory_used_ratio()
+                desired_mode = _desired_swift_lm_ssd_prefetch(current_mode, used_ratio)
+                if process is None and is_healthy and desired_mode == current_mode:
+                    continue
+                if exit_code is None and is_healthy and desired_mode == current_mode:
+                    continue
+                if exit_code is not None:
+                    reason = f"process exited exit_code={exit_code}"
+                elif desired_mode != current_mode:
+                    used_ratio_text = "unknown" if used_ratio is None else f"{used_ratio:.1%}"
+                    reason = (
+                        "memory profile changed "
+                        f"used_ratio={used_ratio_text} ssd_prefetch={desired_mode}"
+                    )
+                elif process is None:
+                    reason = "healthcheck failed without tracked process"
+                else:
+                    reason = f"healthcheck failed url={health_url}"
+                logger.warning("Managed SwiftLM watchdog restart requested: %s", reason)
+                with restart_lock:
+                    if stop_event.is_set():
+                        return
+                    process = getattr(app.state, "managed_swift_lm_process", None)
+                    exit_code = None if process is None else process.poll()
+                    is_healthy = _url_is_healthy(health_url)
+                    current_mode = bool(
+                        getattr(app.state, "managed_swift_lm_force_ssd_prefetch", False)
+                    )
+                    used_ratio = _host_memory_used_ratio()
+                    desired_mode = _desired_swift_lm_ssd_prefetch(current_mode, used_ratio)
+                    if process is None and is_healthy and desired_mode == current_mode:
+                        continue
+                    if exit_code is None and is_healthy and desired_mode == current_mode:
+                        continue
+                    app.state.managed_swift_lm_force_ssd_prefetch = desired_mode
+                    app.state.managed_swift_lm_process = _restart_managed_swift_lm_server(
+                        app, reason
+                    )
+            except Exception:
+                logger.exception("Managed SwiftLM watchdog failed")
+
+    thread = threading.Thread(
+        target=_watchdog,
+        name="managed-swift-lm-watchdog",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def _managed_swift_embeddings_launch_command() -> list[str]:
@@ -1841,6 +1969,9 @@ def create_app(args):
         app.state.background_tasks = set()
         app.state.managed_mlx_openai_process = None
         app.state.managed_swift_lm_process = None
+        app.state.managed_swift_lm_force_ssd_prefetch = False
+        app.state.managed_swift_lm_watchdog = None
+        app.state.managed_swift_lm_watchdog_stop = None
         app.state.managed_swift_embeddings_process = None
         app.state.managed_swift_embeddings_watchdog = None
         app.state.managed_swift_embeddings_watchdog_stop = None
@@ -1857,6 +1988,7 @@ def create_app(args):
             app.state.managed_swift_lm_process = _start_managed_swift_lm_server(
                 app
             )
+            app.state.managed_swift_lm_watchdog = _start_managed_swift_lm_watchdog(app)
             app.state.managed_mlx_openai_watchdog = _start_managed_mlx_openai_watchdog(
                 app, args
             )
@@ -1891,6 +2023,11 @@ def create_app(args):
             watchdog_stop = getattr(app.state, "managed_mlx_openai_watchdog_stop", None)
             if watchdog_stop is not None:
                 watchdog_stop.set()
+            swift_lm_watchdog_stop = getattr(
+                app.state, "managed_swift_lm_watchdog_stop", None
+            )
+            if swift_lm_watchdog_stop is not None:
+                swift_lm_watchdog_stop.set()
             swift_embeddings_watchdog_stop = getattr(
                 app.state, "managed_swift_embeddings_watchdog_stop", None
             )
@@ -2012,14 +2149,22 @@ def create_app(args):
         query_string = request.url.query or "-"
         content_length = request.headers.get("content-length", "-")
         user_agent = request.headers.get("user-agent", "-")
+        accept = request.headers.get("accept", "-")
+        content_type = request.headers.get("content-type", "-")
+        mcp_session_id = request.headers.get("mcp-session-id", "-")
+        x_request_id = request.headers.get("x-request-id", "-")
 
         logger.info(
-            "[mcp][http] request method=%s path=%s query=%s client=%s content_length=%s user_agent=%s",
+            "[mcp][http] request method=%s path=%s query=%s client=%s content_length=%s accept=%s content_type=%s mcp_session_id=%s x_request_id=%s user_agent=%s",
             request.method,
             request.url.path,
             query_string,
             client_host,
             content_length,
+            accept,
+            content_type,
+            mcp_session_id,
+            x_request_id,
             user_agent,
         )
 
@@ -2039,7 +2184,7 @@ def create_app(args):
 
         duration_ms = (time.perf_counter() - request_start) * 1000
         log_message = (
-            "[mcp][http] response method=%s path=%s query=%s client=%s status=%s duration_ms=%.2f content_type=%s"
+            "[mcp][http] response method=%s path=%s query=%s client=%s status=%s duration_ms=%.2f response_content_type=%s mcp_session_id=%s x_request_id=%s"
         )
         log_args = (
             request.method,
@@ -2049,6 +2194,8 @@ def create_app(args):
             response.status_code,
             duration_ms,
             response.headers.get("content-type", "-"),
+            mcp_session_id,
+            x_request_id,
         )
 
         if response.status_code >= 400:
@@ -3842,13 +3989,6 @@ def main():
 
     print(
         f"Starting Uvicorn server in single-process mode on {global_args.host}:{global_args.port}"
-    )
-    uvicorn.run(**uvicorn_config)
-
-
-if __name__ == "__main__":
-    main()
-t}:{global_args.port}"
     )
     uvicorn.run(**uvicorn_config)
 

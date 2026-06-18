@@ -4,6 +4,11 @@ from pathlib import Path
 from typing import Any, Mapping, TypedDict
 
 import yaml
+from lightrag.extraction.prompts import (
+    ENTITY_EXTRACTION_CONTINUE_USER_PROMPT,
+    ENTITY_EXTRACTION_SYSTEM_PROMPT,
+    ENTITY_EXTRACTION_USER_PROMPT,
+)
 
 
 PROMPTS: dict[str, Any] = {}
@@ -31,171 +36,11 @@ PROMPTS[
 - Artifact: Physical or digital objects created by humans (tools, software, devices)
 - NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)"""
 
-PROMPTS["entity_extraction_system_prompt"] = """---Role---
-
-You are a Knowledge Graph Specialist responsible for extracting entities and relationships from input text for a local RAG system.
-
----Instructions---
-1. Return exactly one valid JSON object and nothing else. No markdown, no code fences, no commentary.
-2. The JSON object must match this schema:
-   {{
-     "entities": [
-       {{
-         "entity_name": "string",
-         "entity_type": "string",
-         "entity_description": "string"
-       }}
-     ],
-     "relations": [
-       {{
-         "source_entity": "string",
-         "target_entity": "string",
-         "relationship_keywords": "string",
-         "relationship_description": "string"
-       }}
-     ]
-   }}
-3. Use only these entity types: {entity_types}. If no type fits, use `Other`.
-4. Prefer exact uppercase relation labels from this set: {relation_labels}. Use one label whenever possible. If no specific label fits, use `RELATED_TO`.
-5. Extract stable, reusable entities and direct relations that improve graph connectivity and retrieval usefulness. Prefer software, AI, workflow, issue, company, metric, and finance entities when present.
-6. Keep descriptions short and factual. One sentence maximum. If details are sparse, provide a minimal factual description rather than omitting the field.
-7. Avoid duplicates. Do not create self-relations. Treat relationships as undirected unless the text clearly implies direction.
-8. Preserve proper nouns as written in the source text. The output language must be {language}.
-9. **CRITICAL: RELATIONS REQUIREMENT.** Every entity you extract MUST participate in at least one relationship with another entity. If you output one or more entities, you MUST also output relationships between them. Inspect every pair of entities in the text and connect them with a meaningful relationship label from the allowed set. A knowledge graph without relations adds no value.
-10. To identify relationships, look for: verbs connecting two entities (e.g., "uses", "depends on", "runs on", "part of", "causes", "connects to", "stores in", "improves", "replaces", "belongs to"), ownership or possession, causal links, hierarchical or compositional structure, and co-occurrence in the same functional context. When in doubt, prefer to create a relation rather than omit it.
-11. If no entities or relations are present, return `{{"entities":[],"relations":[]}}`. Empty results are acceptable only when the text has no meaningful content whatsoever.
-You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the `---Input Text---` section of user prompt.
-
----Instructions---
-1. **Entity Extraction:**
-  - Identify clearly defined and meaningful entities in the `---Input Text---` section of user prompt.
-  - For each entity, extract:
-    - `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-    - `entity_type`: Categorize the entity using the type guidance provided in the `---Entity Types---` section below. If none of the provided entity types apply, classify it as `Other`.
-    - `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
-
-2. **Relationship Extraction:**
-  - Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
-  - If a single statement describes a relationship involving more than two entities, decompose it into multiple binary relationships.
-  - For each binary relationship, extract:
-    - `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-    - `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-    - `relationship_keywords`: One or more high-level keywords summarizing the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
-    - `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities.
-
-3. **Record Types:**
-  - `entity` is used only for entity rows and those rows always contain exactly 4 tuple parts total.
-  - `relation` is used only for relationship rows and those rows always contain exactly 5 tuple parts total.
-  - A row with two entity names plus relationship keywords and a relationship description must start with `relation`, never `entity`.
-  - After the last entity row, switch prefixes to `relation` for every relationship row.
-
-4. **Output Format:**
-  - Entity row: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
-  - Relation row: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
-  - Wrong: `entity{tuple_delimiter}Alice{tuple_delimiter}Acme{tuple_delimiter}founded{tuple_delimiter}Alice founded Acme`
-  - Correct: `relation{tuple_delimiter}Alice{tuple_delimiter}Acme{tuple_delimiter}founded{tuple_delimiter}Alice founded Acme`
-
-5. **Delimiter Usage:**
-  - The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
-  - Incorrect: `entity{tuple_delimiter}Tokyo<|location|>Tokyo is the capital of Japan.`
-  - Correct: `entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the capital of Japan.`
-
-6. **Output Order & Deduplication:**
-  - Output all extracted entities first, followed by all extracted relationships.
-  - Output at most {max_total_records} total rows across entities and relationships in this response.
-  - Output at most {max_entity_records} entity rows in this response.
-  - Output fewer rows if fewer high-value items are present. Do not try to fill the limit.
-  - Only output relationship rows whose source and target entities are both included in the selected entity rows for this response.
-  - If the limit is reached, stop adding new rows immediately and output `{completion_delimiter}`.
-  - Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
-  - Avoid outputting duplicate relationships.
-  - Within the list of relationships, output the relationships that are **most significant** to the core meaning of the input text first.
-
-7. **Context & Language:**
-  - Ensure all entity names and descriptions are written in the **third person**.
-  - Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
-  - The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
-  - Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
-
-8. **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships have been completely extracted and outputted.
-
----Entity Types---
-{entity_types_guidance}
-
-
----Examples---
-{examples}
-"""
-
-PROMPTS["entity_extraction_user_prompt"] = """---Task---
-
-Extract entities and relationships from the input text below.
-
----Instructions---
-1. Output only a JSON object matching the system schema.
-2. Use only the provided entity taxonomy and prefer canonical relation labels.
-3. Do not use legacy delimiter lines such as `entity<|#|>` or `relation<|#|>`.
-4. **CRITICAL: If you extract entities, you MUST also extract relationships between them.** Every entity must connect to at least one other entity through a relationship. For each entity, ask: "how does this entity relate to others in the text?" and record the connection.
-
----Data to be Processed---
-<Entity_types>
-[{entity_types}]
-
-<Relation_labels>
-[{relation_labels}]
-
-<Input Text>
-Extract entities and relationships from the `---Input Text---` session below.
-
----Instructions---
-1. **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
-2. **Quantity Limits:** In this response, output at most {max_total_records} total rows and at most {max_entity_records} entity rows. Output fewer rows if fewer high-value items are present. Only output relationship rows whose source and target entities are both included in this response.
-3. **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-4. **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented. If the row limit is reached, output `{completion_delimiter}` immediately after the last allowed row.
-5. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
-
----Input Text---
-
-```
-{input_text}
-```
-
-
-<Output JSON>
----Output---
-
-"""
-
-PROMPTS["entity_continue_extraction_user_prompt"] = """---Task---
-Based on the last extraction task, identify and extract any missed or incorrectly formatted entities and relationships from the input text.
-
----Instructions---
-
-1. Return only a JSON object matching the same schema from the system prompt.
-2. Return only missed or corrected entities and relations. Do not repeat items that were already correctly extracted.
-3. Do not use legacy delimiter lines such as `entity<|#|>` or `relation<|#|>`.
-4. If nothing is missing, return `{{"entities":[],"relations":[]}}`.
-
-<Output JSON>
-"""
-
-PROMPTS["entity_extraction_examples"] = [
-    """Example 1
-Input text:
-The LightRAG service uses FastAPI and PostgreSQL. The query pipeline depends on bge-m3 embeddings. A deployment issue occurred after mlx-openai-server was restarted.
-1. **Strict Adherence to System Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system instructions.
-2. **Focus on Corrections/Additions:**
-  - **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
-  - If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
-  - If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
-  - Any corrected relationship row must be emitted with the literal `relation` prefix, never `entity`.
-3. **Quantity Limits:** In this response, output at most {max_total_records} total rows and at most {max_entity_records} entity rows. Output fewer rows if fewer high-value corrections or additions remain. A relationship row may reference entities that were already extracted correctly in the previous response. Do not re-output those entities unless they were missing or need correction.
-4. **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-5. **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented. If the row limit is reached, output `{completion_delimiter}` immediately after the last allowed row.
-6. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
-
----Output---
-"""
+PROMPTS["entity_extraction_system_prompt"] = ENTITY_EXTRACTION_SYSTEM_PROMPT
+PROMPTS["entity_extraction_user_prompt"] = ENTITY_EXTRACTION_USER_PROMPT
+PROMPTS["entity_continue_extraction_user_prompt"] = (
+    ENTITY_EXTRACTION_CONTINUE_USER_PROMPT
+)
 
 PROMPTS["entity_extraction_examples"] = [
     """---Entity Types---
@@ -205,65 +50,7 @@ PROMPTS["entity_extraction_examples"] = [
 
 ---Input Text---
 ```
-while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
-
-Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. "If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us."
-
-The underlying dismissal earlier seemed to falter, replaced by a glimpse of reluctant respect for the gravity of what lay in their hands. Jordan looked up, and for a fleeting heartbeat, their eyes locked with Taylor's, a wordless clash of wills softening into an uneasy truce.
-
-It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
-```
-
----Output---
-entity{tuple_delimiter}Alex{tuple_delimiter}Person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
-entity{tuple_delimiter}Taylor{tuple_delimiter}Person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
-entity{tuple_delimiter}Jordan{tuple_delimiter}Person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
-entity{tuple_delimiter}Cruz{tuple_delimiter}Person{tuple_delimiter}Cruz is associated with a vision of control and order, influencing the dynamics among other characters.
-entity{tuple_delimiter}The Device{tuple_delimiter}Artifact{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
-entity{tuple_delimiter}Discovery{tuple_delimiter}Concept{tuple_delimiter}Discovery represents the shared intellectual pursuit that unites Jordan and Alex in opposition to Cruz's controlling worldview.
-relation{tuple_delimiter}Alex{tuple_delimiter}Taylor{tuple_delimiter}power dynamics, observation{tuple_delimiter}Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device.
-relation{tuple_delimiter}Alex{tuple_delimiter}Jordan{tuple_delimiter}shared goals, rebellion{tuple_delimiter}Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision.)
-relation{tuple_delimiter}Taylor{tuple_delimiter}Jordan{tuple_delimiter}conflict resolution, mutual respect{tuple_delimiter}Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce.
-relation{tuple_delimiter}Jordan{tuple_delimiter}Cruz{tuple_delimiter}ideological conflict, rebellion{tuple_delimiter}Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order.
-relation{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}reverence, technological significance{tuple_delimiter}Taylor shows reverence towards the device, indicating its importance and potential impact.
-{completion_delimiter}
-
-
-Output JSON:
-{
-  "entities": [
-    {"entity_name": "LightRAG", "entity_type": "Project", "entity_description": "LightRAG is a service with a query pipeline and deployment workflow."},
-    {"entity_name": "FastAPI", "entity_type": "Framework", "entity_description": "FastAPI is used by the LightRAG service."},
-    {"entity_name": "PostgreSQL", "entity_type": "Database", "entity_description": "PostgreSQL is used by the LightRAG service."},
-    {"entity_name": "query pipeline", "entity_type": "Workflow", "entity_description": "query pipeline is the retrieval workflow for LightRAG."},
-    {"entity_name": "bge-m3", "entity_type": "Model", "entity_description": "bge-m3 is the embedding model used by the query pipeline."},
-    {"entity_name": "mlx-openai-server", "entity_type": "Service", "entity_description": "mlx-openai-server is a service involved in the deployment workflow."},
-    {"entity_name": "deployment issue", "entity_type": "Issue", "entity_description": "deployment issue occurred after mlx-openai-server was restarted."}
-  ],
-  "relations": [
-    {"source_entity": "LightRAG", "target_entity": "FastAPI", "relationship_keywords": "USES", "relationship_description": "LightRAG uses FastAPI in the service stack."},
-    {"source_entity": "LightRAG", "target_entity": "PostgreSQL", "relationship_keywords": "STORES_IN", "relationship_description": "LightRAG stores data in PostgreSQL."},
-    {"source_entity": "query pipeline", "target_entity": "bge-m3", "relationship_keywords": "DEPENDS_ON", "relationship_description": "The query pipeline depends on the bge-m3 embedding model."},
-    {"source_entity": "deployment issue", "target_entity": "mlx-openai-server", "relationship_keywords": "FAILS_WITH", "relationship_description": "The deployment issue is associated with mlx-openai-server being restarted."}
-  ]
-}
-""",
-
-    """Example 2
-Input text:
-NVIDIA rose after its earnings report. BTC volatility increased after the CPI release. Analysts are tracking market sentiment and inflation risk.
-    """---Entity Types---
-- Person: Human individuals, real or fictional
-- Location: Geographic places (cities, countries, buildings, regions)
-- Creature: Non-human living beings (animals, mythical beings, etc.)
-- Method: Procedures, techniques, algorithms, workflows
-- Organization: Companies, institutions, government bodies, groups
-- Content: Creative or informational works (books, articles, films, reports)
-- NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)
-
----Input Text---
-```
-Dr. Elena Vasquez led a field expedition to the Borneo rainforest to document the population decline of the Bornean orangutan. Using transect sampling — a method where researchers walk predetermined line paths and record every animal sighting within a fixed distance — her team estimated that fewer than 1,500 individuals remained in the surveyed region.
+Dr. Elena Vasquez led a field expedition to the Borneo rainforest to document the population decline of the Bornean orangutan. Using transect sampling -- a method where researchers walk predetermined line paths and record every animal sighting within a fixed distance -- her team estimated that fewer than 1,500 individuals remained in the surveyed region.
 
 The expedition was funded by the Global Wildlife Conservation Institute and produced a landmark report titled "Primate Decline in Insular Southeast Asia." Vasquez attributed the collapse primarily to peat-soil destruction caused by palm oil plantation expansion, which had converted over 40% of the surveyed forest area within a decade.
 ```
@@ -285,78 +72,22 @@ relation{tuple_delimiter}Peat Soil{tuple_delimiter}Borneo Rainforest{tuple_delim
 
 
 Output JSON:
-{
+{{
   "entities": [
-    {"entity_name": "NVIDIA", "entity_type": "Company", "entity_description": "NVIDIA is a company mentioned in connection with an earnings report."},
-    {"entity_name": "analysts", "entity_type": "Organization", "entity_description": "analysts are tracking market sentiment and inflation risk."},
-    {"entity_name": "earnings report", "entity_type": "Event", "entity_description": "earnings report is the event associated with NVIDIA rising."},
-    {"entity_name": "CPI release", "entity_type": "Event", "entity_description": "CPI release is the event associated with increased BTC volatility."},
-    {"entity_name": "market sentiment", "entity_type": "Concept", "entity_description": "market sentiment is being tracked by analysts."},
-    {"entity_name": "inflation risk", "entity_type": "Concept", "entity_description": "inflation risk is being tracked by analysts."}
+    {{"entity_name": "NVIDIA", "entity_type": "Company", "entity_description": "NVIDIA is a company mentioned in connection with an earnings report."}},
+    {{"entity_name": "analysts", "entity_type": "Organization", "entity_description": "analysts are tracking market sentiment and inflation risk."}},
+    {{"entity_name": "earnings report", "entity_type": "Event", "entity_description": "earnings report is the event associated with NVIDIA rising."}},
+    {{"entity_name": "CPI release", "entity_type": "Event", "entity_description": "CPI release is the event associated with increased BTC volatility."}},
+    {{"entity_name": "market sentiment", "entity_type": "Concept", "entity_description": "market sentiment is being tracked by analysts."}},
+    {{"entity_name": "inflation risk", "entity_type": "Concept", "entity_description": "inflation risk is being tracked by analysts."}}
   ],
   "relations": [
-    {"source_entity": "NVIDIA", "target_entity": "earnings report", "relationship_keywords": "RELATED_TO", "relationship_description": "NVIDIA rose after the earnings report."},
-    {"source_entity": "BTC", "target_entity": "CPI release", "relationship_keywords": "RELATED_TO", "relationship_description": "BTC volatility increased after the CPI release."},
-    {"source_entity": "analysts", "target_entity": "market sentiment", "relationship_keywords": "TRACKS", "relationship_description": "Analysts are tracking market sentiment."},
-    {"source_entity": "analysts", "target_entity": "inflation risk", "relationship_keywords": "TRACKS", "relationship_description": "Analysts are tracking inflation risk."}
+    {{"source_entity": "NVIDIA", "target_entity": "earnings report", "relationship_keywords": "RELATED_TO", "relationship_description": "NVIDIA rose after the earnings report."}},
+    {{"source_entity": "BTC", "target_entity": "CPI release", "relationship_keywords": "RELATED_TO", "relationship_description": "BTC volatility increased after the CPI release."}},
+    {{"source_entity": "analysts", "target_entity": "market sentiment", "relationship_keywords": "TRACKS", "relationship_description": "Analysts are tracking market sentiment."}},
+    {{"source_entity": "analysts", "target_entity": "inflation risk", "relationship_keywords": "TRACKS", "relationship_description": "Analysts are tracking inflation risk."}}
   ]
-}
-""",
-
-    """Example 3
-Input text:
-Alice authored the deployment runbook for Project Atlas. The runbook is stored in docs/deploy.md. Project Atlas uses Docker and deploys to Fly.io.
-    """---Entity Types---
-- Content: Creative or informational works (books, articles, films, reports)
-- Artifact: Physical or digital objects created by humans (tools, software, devices)
-- Person: Human individuals, real or fictional
-- Organization: Companies, institutions, government bodies, groups
-- Method: Procedures, techniques, algorithms, workflows
-- Data: Quantitative or structured information (statistics, datasets, measurements)
-- Concept: Abstract ideas, theories, principles, beliefs
-
----Input Text---
-```
-The 2023 edition of "Advances in Neural Architecture Search" synthesized findings from over 200 peer-reviewed papers and introduced a new benchmarking framework called NASBench-360, designed to evaluate search algorithms across diverse task domains. The publication was co-authored by Dr. Priya Nair and Dr. Luca Ferretti of the DeepSystems Research Lab.
-
-NASBench-360 measures three key metrics: search efficiency (time-to-solution), model accuracy on held-out test sets, and computational cost in GPU-hours. Early results showed that evolutionary search algorithms outperformed gradient-based methods by 12% on accuracy while consuming 30% fewer GPU-hours on vision tasks.
-```
-
----Output---
-entity{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}Content{tuple_delimiter}A 2023 publication that synthesizes findings from over 200 papers and introduces the NASBench-360 benchmarking framework.
-entity{tuple_delimiter}NASBench-360{tuple_delimiter}Artifact{tuple_delimiter}NASBench-360 is a benchmarking framework introduced to evaluate neural architecture search algorithms across diverse task domains.
-entity{tuple_delimiter}Dr. Priya Nair{tuple_delimiter}Person{tuple_delimiter}Dr. Priya Nair is a co-author of the publication and a researcher at the DeepSystems Research Lab.
-entity{tuple_delimiter}Dr. Luca Ferretti{tuple_delimiter}Person{tuple_delimiter}Dr. Luca Ferretti is a co-author of the publication and a researcher at the DeepSystems Research Lab.
-entity{tuple_delimiter}DeepSystems Research Lab{tuple_delimiter}Organization{tuple_delimiter}The DeepSystems Research Lab is the institution where the co-authors of the publication are affiliated.
-entity{tuple_delimiter}Evolutionary Search{tuple_delimiter}Method{tuple_delimiter}Evolutionary search is a class of neural architecture search algorithms that outperformed gradient-based methods in the NASBench-360 evaluation.
-entity{tuple_delimiter}Gradient-Based Search{tuple_delimiter}Method{tuple_delimiter}Gradient-based search is a class of neural architecture search algorithms that was benchmarked against evolutionary search in NASBench-360.
-entity{tuple_delimiter}GPU-Hours{tuple_delimiter}Data{tuple_delimiter}GPU-hours is a metric used in NASBench-360 to measure the computational cost of neural architecture search algorithms.
-entity{tuple_delimiter}Neural Architecture Search{tuple_delimiter}Concept{tuple_delimiter}Neural architecture search is the automated process of designing optimal neural network architectures, the central topic of the publication.
-relation{tuple_delimiter}Dr. Priya Nair{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}authorship{tuple_delimiter}Dr. Priya Nair co-authored the publication.
-relation{tuple_delimiter}Dr. Luca Ferretti{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}authorship{tuple_delimiter}Dr. Luca Ferretti co-authored the publication.
-relation{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}NASBench-360{tuple_delimiter}introduces, benchmarking{tuple_delimiter}The publication introduced the NASBench-360 framework.
-relation{tuple_delimiter}Evolutionary Search{tuple_delimiter}Gradient-Based Search{tuple_delimiter}performance comparison{tuple_delimiter}Evolutionary search outperformed gradient-based methods by 12% on accuracy and used 30% fewer GPU-hours on vision tasks.
-relation{tuple_delimiter}NASBench-360{tuple_delimiter}GPU-Hours{tuple_delimiter}evaluation metric{tuple_delimiter}NASBench-360 uses GPU-hours as one of three key metrics to measure computational cost.
-{completion_delimiter}
-
-
-Output JSON:
-{
-  "entities": [
-    {"entity_name": "Alice", "entity_type": "Person", "entity_description": "Alice authored the deployment runbook for Project Atlas."},
-    {"entity_name": "Project Atlas", "entity_type": "Project", "entity_description": "Project Atlas uses Docker and deploys to Fly.io."},
-    {"entity_name": "deployment runbook", "entity_type": "Document", "entity_description": "deployment runbook is stored in docs/deploy.md."},
-    {"entity_name": "docs/deploy.md", "entity_type": "File", "entity_description": "docs/deploy.md stores the deployment runbook."},
-    {"entity_name": "Docker", "entity_type": "Tool", "entity_description": "Docker is used by Project Atlas."},
-    {"entity_name": "Fly.io", "entity_type": "Service", "entity_description": "Fly.io is the deployment target for Project Atlas."}
-  ],
-  "relations": [
-    {"source_entity": "deployment runbook", "target_entity": "Alice", "relationship_keywords": "AUTHORED_BY", "relationship_description": "The deployment runbook was authored by Alice."},
-    {"source_entity": "deployment runbook", "target_entity": "docs/deploy.md", "relationship_keywords": "STORES_IN", "relationship_description": "The deployment runbook is stored in docs/deploy.md."},
-    {"source_entity": "Project Atlas", "target_entity": "Docker", "relationship_keywords": "USES", "relationship_description": "Project Atlas uses Docker."},
-    {"source_entity": "Project Atlas", "target_entity": "Fly.io", "relationship_keywords": "DEPLOYS_TO", "relationship_description": "Project Atlas deploys to Fly.io."}
-  ]
-}
+}}
 """,
 ]
 
@@ -499,7 +230,7 @@ It was a small transformation, barely perceptible, but one that Alex noted with 
 
 ---Input Text---
 ```
-Dr. Elena Vasquez led a field expedition to the Borneo rainforest to document the population decline of the Bornean orangutan. Using transect sampling — a method where researchers walk predetermined line paths and record every animal sighting within a fixed distance — her team estimated that fewer than 1,500 individuals remained in the surveyed region.
+Dr. Elena Vasquez led a field expedition to the Borneo rainforest to document the population decline of the Bornean orangutan. Using transect sampling -- a method where researchers walk predetermined line paths and record every animal sighting within a fixed distance -- her team estimated that fewer than 1,500 individuals remained in the surveyed region.
 
 The expedition was funded by the Global Wildlife Conservation Institute and produced a landmark report titled "Primate Decline in Insular Southeast Asia." Vasquez attributed the collapse primarily to peat-soil destruction caused by palm oil plantation expansion, which had converted over 40% of the surveyed forest area within a decade.
 ```
@@ -893,32 +624,34 @@ Output:
 ]
 
 
-PROMPTS["agent_tool_protocol_query"] = """Tool use is available.
-If more evidence is needed before answering, you may call exactly one tool by replying with exactly one XML block and nothing else:
+PROMPTS["agent_tool_protocol_query"] = """You have access to tools for retrieving information. Use them to gather evidence before answering.
+
+To call a tool, reply with exactly one XML block and nothing else:
 
 <tool_call>
 {"tool":"tool_name","args":{"key":"value"}}
 </tool_call>
 
 Available tools:
-- search_entities: semantic search over entity embeddings to find relevant entities for a query. Args: query (str), top_k (int, default 10).
-- search_relations: semantic search over relation/edge embeddings to find relevant relationships. Args: query (str), top_k (int, default 10).
-- search_chunks: semantic search over document chunk embeddings to find relevant text passages. Args: query (str), top_k (int, default 10).
-- get_entity_detail: get the full description and metadata for a specific entity. Args: entity_name (str).
-- get_relations_for_entity: get all relationships connected to a given entity, including relation keywords and descriptions. Args: entity_name (str).
+- search_entities(query, top_k=10): semantic search for entities relevant to the query.
+- search_relations(query, top_k=10): semantic search for relationships/edges relevant to the query.
+- search_chunks(query, top_k=10): semantic search for document text chunks relevant to the query.
+- get_entity_detail(entity_name): retrieve full metadata and description for a specific entity.
+- get_relations_for_entity(entity_name): retrieve all relationships connected to a specific entity.
+- web_search(query, num_results=5): search the web using DuckDuckGo for current or external information.
 
 Rules:
-- Use tools only when the provided context seems incomplete or you need more specific evidence.
-- search_entities, search_relations, and search_chunks use semantic similarity — try different phrasings if the first search returns nothing useful.
-- One tool call per turn.
-- After a tool result is returned, either call one more tool or produce the final grounded answer.
-- If you produce a grounded final answer from retrieved context, always end with a `### References` section that cites the exact source entries provided in the context.
-- For URL sources, render the citation as a Markdown link: `[source_url](source_url)`.
-- Final answers must not include tool_call XML."""
+- Use tools when you need specific evidence. search_* tools use semantic similarity -- try different phrasings if initial results are poor.
+- One tool call per turn. After receiving the result, either call another tool or produce the final grounded answer.
+- Web search is available for current events, external facts, or when the knowledge graph lacks sufficient information.
+- Final answers must be grounded in tool results. Always cite sources.
+- For URL sources, render the citation as a Markdown link: `[url](url)`.
+- always end with a `### References` section listing all cited sources.
+- Final answers must not contain tool_call XML blocks."""
 
 
 # ---------------------------------------------------------------------------
-# Top-level convenience aliases — kept in sync with the PROMPTS dict above
+# Top-level convenience aliases -- kept in sync with the PROMPTS dict above
 # Importing these directly (from lightrag.prompt import RAG_RESPONSE) is
 # equivalent to PROMPTS["rag_response"].
 # ---------------------------------------------------------------------------
@@ -1180,4 +913,3 @@ def validate_entity_extraction_prompt_profile_for_mode(
             for example in prompt_profile["entity_extraction_json_examples"]
         ],
     }
-

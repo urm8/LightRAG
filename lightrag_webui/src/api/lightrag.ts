@@ -173,6 +173,7 @@ export type Message = {
   content: string
   thinkingContent?: string
   displayContent?: string
+  toolEvents?: QueryToolEvent[]
   enrichedContent?: string
   enrichmentModel?: string
   enrichmentElapsedMs?: number
@@ -217,6 +218,16 @@ export type QueryRequest = {
   include_debug?: boolean
   /** If True, WebUI receives a slower Granite enrichment result after the fast primary answer. */
   include_enrichment?: boolean
+  /** If True, also runs the optional Apfel fast-query side path. Disabled by default. */
+  use_fast_query?: boolean
+}
+
+export type QueryToolEvent = {
+  phase: 'tool_call' | 'tool_result'
+  round: number
+  tool: string
+  args?: Record<string, unknown>
+  output?: string
 }
 
 export type QueryDebugData = {
@@ -644,7 +655,8 @@ export const queryTextStream = async (
   onError?: (error: string) => void,
   onDebug?: (debug: QueryDebugData) => void,
   onEnrichment?: (enrichment: QueryEnrichmentData) => void,
-  onEnrichmentError?: (error: string) => void
+  onEnrichmentError?: (error: string) => void,
+  onToolEvent?: (event: QueryToolEvent) => void
 ) => {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
@@ -657,6 +669,22 @@ export const queryTextStream = async (
   }
   if (apiKey) {
     headers['X-API-Key'] = apiKey;
+  }
+
+  const handleParsedChunk = (parsed: any) => {
+    if (parsed.response) {
+      onChunk(parsed.response)
+    } else if (parsed.debug) {
+      onDebug?.(parsed.debug)
+    } else if (parsed.enrichment) {
+      onEnrichment?.(parsed.enrichment)
+    } else if (parsed.enrichment_error) {
+      onEnrichmentError?.(parsed.enrichment_error)
+    } else if (parsed.tool_event) {
+      onToolEvent?.(parsed.tool_event)
+    } else if (parsed.error) {
+      onError?.(parsed.error)
+    }
   }
 
   try {
@@ -715,17 +743,7 @@ export const queryTextStream = async (
                 if (line.trim()) {
                   try {
                     const parsed = JSON.parse(line);
-                    if (parsed.response) {
-                      onChunk(parsed.response);
-                    } else if (parsed.debug) {
-                      onDebug?.(parsed.debug);
-                    } else if (parsed.enrichment) {
-                      onEnrichment?.(parsed.enrichment);
-                    } else if (parsed.enrichment_error) {
-                      onEnrichmentError?.(parsed.enrichment_error);
-                    } else if (parsed.error) {
-                      onError?.(parsed.error);
-                    }
+                    handleParsedChunk(parsed)
                   } catch (parseError) {
                     console.error('Failed to parse JSON:', parseError, 'Line:', line);
                     onError?.(`JSON parse error: ${parseError}`);
@@ -738,17 +756,7 @@ export const queryTextStream = async (
             if (buffer.trim()) {
               try {
                 const parsed = JSON.parse(buffer);
-                if (parsed.response) {
-                  onChunk(parsed.response);
-                } else if (parsed.debug) {
-                  onDebug?.(parsed.debug);
-                } else if (parsed.enrichment) {
-                  onEnrichment?.(parsed.enrichment);
-                } else if (parsed.enrichment_error) {
-                  onEnrichmentError?.(parsed.enrichment_error);
-                } else if (parsed.error) {
-                  onError?.(parsed.error);
-                }
+                handleParsedChunk(parsed)
               } catch (parseError) {
                 console.error('Failed to parse final buffer:', parseError);
               }
@@ -810,17 +818,7 @@ export const queryTextStream = async (
         if (line.trim()) {
           try {
             const parsed = JSON.parse(line);
-            if (parsed.response) {
-              onChunk(parsed.response);
-            } else if (parsed.debug) {
-              onDebug?.(parsed.debug);
-            } else if (parsed.enrichment) {
-              onEnrichment?.(parsed.enrichment);
-            } else if (parsed.enrichment_error) {
-              onEnrichmentError?.(parsed.enrichment_error);
-            } else if (parsed.error && onError) {
-              onError(parsed.error);
-            }
+            handleParsedChunk(parsed)
           } catch (error) {
             console.error('Error parsing stream chunk:', line, error);
             if (onError) onError(`Error parsing server response: ${line}`);
@@ -833,17 +831,7 @@ export const queryTextStream = async (
     if (buffer.trim()) {
       try {
         const parsed = JSON.parse(buffer);
-        if (parsed.response) {
-          onChunk(parsed.response);
-        } else if (parsed.debug) {
-          onDebug?.(parsed.debug);
-        } else if (parsed.enrichment) {
-          onEnrichment?.(parsed.enrichment);
-        } else if (parsed.enrichment_error) {
-          onEnrichmentError?.(parsed.enrichment_error);
-        } else if (parsed.error && onError) {
-          onError(parsed.error);
-        }
+        handleParsedChunk(parsed)
       } catch (error) {
         console.error('Error parsing final chunk:', buffer, error);
         if (onError) onError(`Error parsing final server response: ${buffer}`);

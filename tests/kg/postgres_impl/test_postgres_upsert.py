@@ -770,6 +770,21 @@ async def test_kv_delete_splits_by_id_cap():
 
 
 @pytest.mark.asyncio
+async def test_kv_delete_accepts_set_ids():
+    storage = make_storage(NameSpace.KV_STORE_TEXT_CHUNKS)
+    storage._max_delete_records_per_batch = 2
+
+    await storage.delete({"doc-0", "doc-1", "doc-2"})
+
+    assert len(storage._retry_kwargs) == 1
+    assert len(storage._captured_execute) == 2
+    deleted_ids = sorted(
+        doc_id for _, args in storage._captured_execute for doc_id in args[1]
+    )
+    assert deleted_ids == ["doc-0", "doc-1", "doc-2"]
+
+
+@pytest.mark.asyncio
 async def test_kv_delete_chunks_share_one_transaction():
     """All delete chunks run inside a single connection.transaction()."""
     storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)

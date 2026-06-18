@@ -2,6 +2,7 @@ import asyncio
 import configparser
 import hashlib
 import json
+import os
 import uuid
 from dataclasses import dataclass
 from typing import Any, List, final
@@ -469,8 +470,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         self._client = None
         self._max_batch_size = self.global_config["embedding_batch_num"]
         self._max_upsert_payload_bytes = settings.qdrant_upsert_max_payload_bytes
-        self._max_upsert_points_per_batch = settings.qdrant_upsert_max_points_per_batch
-        )
         self._max_upsert_points_per_batch = int(
             os.getenv(
                 "QDRANT_UPSERT_MAX_POINTS_PER_BATCH",
@@ -483,7 +482,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 str(DEFAULT_QDRANT_DELETE_MAX_POINTS_PER_BATCH),
             )
         )
->>>>>>> lightrag/main
         if self._max_upsert_payload_bytes <= 0:
             logger.warning(
                 f"QDRANT_UPSERT_MAX_PAYLOAD_BYTES={self._max_upsert_payload_bytes} is non-positive, disable payload-size splitting"

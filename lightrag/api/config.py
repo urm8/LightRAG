@@ -24,6 +24,8 @@ from lightrag.constants import (
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
     DEFAULT_SUMMARY_CONTEXT_SIZE,
     DEFAULT_RERANK_BINDING,
+    DEFAULT_RERANK_MAX_ASYNC,
+    DEFAULT_RERANK_TIMEOUT,
 )
 
 
@@ -446,6 +448,19 @@ def parse_args() -> argparse.Namespace:
     # File upload size limit (in bytes, None for unlimited)
     # Default: 100MB (104857600 bytes)
     args.max_upload_size = settings.max_upload_size
+
+    # VLM multimodal processing toggle
+    args.vlm_process_enable = (
+        os.getenv("VLM_PROCESS_ENABLE", "false").lower() in ("true", "1", "yes", "t", "on")
+    )
+
+    # LLM/embedding timeout from env (used in health endpoint)
+    args.llm_timeout = settings.llm_timeout
+    args.embedding_timeout = settings.embedding_timeout
+
+    # Rerank configuration from env
+    args.rerank_max_async = DEFAULT_RERANK_MAX_ASYNC
+    args.rerank_timeout = DEFAULT_RERANK_TIMEOUT
 
     # Embedding prefix configuration for context-aware embeddings. Empty prefixes
     # must be explicit via NO_PREFIX so missing config is distinguishable.

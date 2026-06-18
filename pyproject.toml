@@ -104,6 +104,8 @@ api = [
     # Chunking strategies (process_options=R / V); lazy-imported by lightrag.chunker
     "langchain-text-splitters>=0.3,<2",
     "langchain-experimental>=0.3.2,<1",  # >=0.3.2: SemanticChunker gained min_chunk_size
+    # Web search tool dependencies (ddgs has no API key requirements)
+    "ddgs>=9.0.0,<10.0.0",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
@@ -145,6 +147,10 @@ test = [
     "pytest-asyncio>=1.2.0",
     "pre-commit",
     "ruff",
+]
+
+web = [
+    "ddgs>=9.0.0,<10.0.0",
 ]
 
 evaluation = [

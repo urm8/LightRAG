@@ -236,15 +236,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     max_extract_input_tokens: int = field(default=settings.max_extract_input_tokens)
     """Maximum tokens allowed for entity extraction input context."""
     entity_extract_max_records: int = field(
-        default=get_env_value(
-            "MAX_EXTRACTION_RECORDS", DEFAULT_MAX_EXTRACTION_RECORDS, int
+        default=int(
+            os.getenv(
+                "MAX_EXTRACTION_RECORDS", str(DEFAULT_MAX_EXTRACTION_RECORDS)
+            )
         )
     )
     """Per-response cap on total entity+relationship rows/records."""
 
     entity_extract_max_entities: int = field(
-        default=get_env_value(
-            "MAX_EXTRACTION_ENTITIES", DEFAULT_MAX_EXTRACTION_ENTITIES, int
+        default=int(
+            os.getenv(
+                "MAX_EXTRACTION_ENTITIES", str(DEFAULT_MAX_EXTRACTION_ENTITIES)
+            )
         )
     )
     """Per-response cap on entity rows/objects."""
@@ -464,9 +468,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     Independent from LLM_TIMEOUT since reranker calls are much shorter
     than full LLM generation."""
 
-    min_rerank_score: float = field(
-        default=get_env_value("MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float)
-    )
+    min_rerank_score: float = field(default=settings.min_rerank_score)
 
     """Minimum rerank score threshold for filtering chunks after reranking."""
 
@@ -487,8 +489,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """If True, enables the agent tool loop for queries, allowing the LLM to
     interactively search entities, relationships, and chunks via tool calls
     before producing a final answer. Controlled via LIGHTRAG_AGENT_TOOLS env var."""
+
+    web_search: bool = field(default=settings.lightrag_web_search)
+    """If True, adds the web_search tool (DuckDuckGo, no API key required)
+    to the agent tool loop. Requires duckduckgo_search package.
+    Controlled via LIGHTRAG_WEB_SEARCH env var."""
+
+    web_search_max_results: int = field(default=settings.web_search_max_results)
+    """Maximum number of results per web search query (1-20)."""
+
     vlm_process_enable: bool = field(
-        default_factory=lambda: get_env_value("VLM_PROCESS_ENABLE", False, bool)
+        default_factory=lambda: os.getenv("VLM_PROCESS_ENABLE", "false").lower()
+        in ("true", "1", "yes", "t", "on")
     )
     """Master switch for VLM multimodal analysis (i/t/e items).
 
@@ -542,9 +554,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         default=int(os.getenv("QUEUE_SIZE_INSERT", str(DEFAULT_QUEUE_SIZE_INSERT)))
     )
 
-    max_graph_nodes: int = field(
-        default=get_env_value("MAX_GRAPH_NODES", DEFAULT_MAX_GRAPH_NODES, int)
-    )
+    max_graph_nodes: int = field(default=settings.max_graph_nodes)
 
     """Maximum number of graph nodes to return in knowledge graph queries."""
 
@@ -576,6 +586,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             "entity_types": settings.entity_types,
             "relation_labels": settings.relation_labels,
         }
+    )
     addon_params: InitVar[dict[str, Any] | None] = None
     _addon_params: ObservableAddonParams = field(
         default_factory=ObservableAddonParams,
@@ -810,6 +821,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             spec.name: states[spec.name].wrapped if spec.name in states else None
             for spec in ROLES
         }
+        global_config["role_llm_max_async"] = {
+            spec.name: (
+                self._get_effective_role_llm_max_async(spec.name)
+                if spec.name in states
+                else self.llm_model_max_async
+            )
+            for spec in ROLES
+        }
         global_config["llm_cache_identities"] = {
             spec.name: self._build_role_llm_cache_identity(
                 spec.name, states.get(spec.name)
@@ -837,14 +856,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         from lightrag.kg.shared_storage import (
             initialize_share_data,
         )
-
-        # Fail fast if deprecated ENTITY_TYPES env var is set
-        if os.getenv("ENTITY_TYPES") is not None:
-            raise SystemExit(
-                "ERROR: ENTITY_TYPES environment variable is no longer supported. "
-                "Please customize entity type guidance through the prompt template instead. "
-                "Set addon_params={'entity_types_guidance': '...'} or replace the prompt template."
-            )
 
         self._replace_addon_params(addon_params, mark_dirty=False)
         self._apply_chunk_size_overlay()

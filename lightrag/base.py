@@ -138,10 +138,23 @@ class QueryParam:
     Default is True to enable reranking when rerank model is available.
     """
 
+    enable_web_search: bool = False
+    """If True, the web_search tool (DuckDuckGo) is added to the available tools
+    during agent-tool query execution. Requires duckduckgo_search package.
+    """
+
+    web_search_max_results: int = 5
+    """Maximum number of web search results to return per query (1-20)."""
+
     include_references: bool = False
     """If True, includes reference list in the response for supported endpoints.
     This parameter controls whether the API response includes a references field
     containing citation information for the retrieved content.
+    """
+
+    stream_event_callback: Callable[[Dict[str, Any]], Any] | None = None
+    """Optional callback used by streaming query routes to emit intermediate
+    tool-call events to the client UI while a query is running.
     """
 
 
@@ -742,6 +755,8 @@ class DocStatus(str, Enum):
 
     PENDING = "pending"
     PROCESSING = "processing"
+    PARSING = "parsing"
+    ANALYZING = "analyzing"
     PREPROCESSED = "preprocessed"
     PROCESSED = "processed"
     FAILED = "failed"
@@ -765,6 +780,8 @@ class DocProcessingStatus:
     """ISO format timestamp when document was last updated"""
     track_id: str | None = None
     """Tracking ID for monitoring progress"""
+    content_hash: str | None = None
+    """Content hash for duplicate detection"""
     chunks_count: int | None = None
     """Number of chunks after splitting, used for processing"""
     chunks_list: list[str] | None = field(default_factory=list)
@@ -798,6 +815,24 @@ class DocProcessingStatus:
 class DocStatusStorage(BaseKVStorage, ABC):
     """Base class for document status storage"""
 
+    @classmethod
+    def resolve_status_filter_values(
+        cls,
+        *,
+        status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
+    ) -> set[str] | None:
+        """Normalize legacy single-status and multi-status filters.
+
+        `status_filters` takes precedence when provided, matching the API contract
+        for `/documents/paginated`. Returning `None` means "no status filter".
+        """
+        if status_filters:
+            return {status.value for status in status_filters}
+        if status_filter is not None:
+            return {status_filter.value}
+        return None
+
     @abstractmethod
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
@@ -824,6 +859,7 @@ class DocStatusStorage(BaseKVStorage, ABC):
     async def get_docs_paginated(
         self,
         status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
         page: int = 1,
         page_size: int = 50,
         sort_field: str = "updated_at",
@@ -832,7 +868,8 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """Get documents with pagination support
 
         Args:
-            status_filter: Filter by document status, None for all statuses
+            status_filter: Legacy single-status filter, ignored when status_filters is set
+            status_filters: Filter by multiple document statuses, None for all statuses
             page: Page number (1-based)
             page_size: Number of documents per page (10-200)
             sort_field: Field to sort by ('created_at', 'updated_at', 'id')

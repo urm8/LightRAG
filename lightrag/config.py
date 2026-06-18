@@ -930,6 +930,14 @@ class LightRAGSettings(BaseSettings):
         return self._bool("LIGHTRAG_AGENT_TOOLS", False)
 
     @property
+    def lightrag_web_search(self) -> bool:
+        return self._bool("LIGHTRAG_WEB_SEARCH", False)
+
+    @property
+    def web_search_max_results(self) -> int:
+        return max(1, min(20, self._int("WEB_SEARCH_MAX_RESULTS", 5) or 5))
+
+    @property
     def max_parallel_insert(self) -> int:
         return self._int("MAX_PARALLEL_INSERT", DEFAULT_MAX_PARALLEL_INSERT) or DEFAULT_MAX_PARALLEL_INSERT
 
@@ -1349,6 +1357,10 @@ class LightRAGSettings(BaseSettings):
     @property
     def swift_lm_num_mtp_tokens(self) -> int | None:
         return self._int("SWIFT_LM_NUM_MTP_TOKENS", minimum=1)
+
+    @property
+    def swift_lm_watchdog_interval_s(self) -> int:
+        return self._int("SWIFT_LM_WATCHDOG_INTERVAL_S", 15, minimum=5) or 15
 
     @property
     def lightrag_manage_swift_embeddings(self) -> bool:

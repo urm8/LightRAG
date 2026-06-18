@@ -653,6 +653,11 @@ class QueryRequest(BaseModel):
         description="If True, WebUI receives a slower Granite enrichment result after the fast primary answer.",
     )
 
+    use_fast_query: Optional[bool] = Field(
+        default=False,
+        description="If True, also runs the optional Apfel fast-query side path. Disabled by default.",
+    )
+
     query_model: Optional[Literal["default", "granite"]] = Field(
         default=None,
         description="Internal query model profile override. Used by MCP to route query synthesis through Granite.",
@@ -688,6 +693,7 @@ class QueryRequest(BaseModel):
                 "include_chunk_content",
                 "include_debug",
                 "include_enrichment",
+                "use_fast_query",
                 "query_model",
             },
         )
@@ -1106,8 +1112,17 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             # Force stream=False for /query endpoint regardless of include_references setting
             normal_param.stream = False
 
-            fast_param = _make_fast_path_param(normal_param)
-            fast_param.stream = False
+            fast_task = None
+            if request.use_fast_query:
+                fast_param = _make_fast_path_param(normal_param)
+                fast_param.stream = False
+                fast_task = asyncio.create_task(
+                    rag.aquery_llm(
+                        request.query,
+                        param=fast_param,
+                        system_prompt=_get_fast_path_prompt(),
+                    )
+                )
 
             enrichment_task = None
             if request.include_enrichment and settings.webui_query_enrichment_enabled:
@@ -1117,23 +1132,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     )
                 )
 
-            normal_coro = rag.aquery_llm(
+            normal_result = await rag.aquery_llm(
                 request.query,
                 param=normal_param,
                 system_prompt=_get_query_prompt_for_request(request),
             )
-            fast_coro = rag.aquery_llm(
-                request.query,
-                param=fast_param,
-                system_prompt=_get_fast_path_prompt(),
-            )
-
-            results = await asyncio.gather(normal_coro, fast_coro, return_exceptions=True)
-            normal_result = results[0]
-            fast_result = results[1]
-
-            if isinstance(normal_result, Exception):
-                raise normal_result
 
             llm_response = normal_result.get("llm_response", {})
             data = normal_result.get("data", {})
@@ -1177,13 +1180,16 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             else:
                 response = QueryResponse(response=response_content, references=None)
 
-            if not isinstance(fast_result, Exception):
-                fast_llm = fast_result.get("llm_response", {})
-                fast_content = fast_llm.get("content", "")
-                if fast_content:
-                    response.fast_response = fast_content
-            else:
-                response.fast_error = str(fast_result)
+            if fast_task is not None:
+                fast_result = await asyncio.gather(fast_task, return_exceptions=True)
+                fast_outcome = fast_result[0]
+                if not isinstance(fast_outcome, Exception):
+                    fast_llm = fast_outcome.get("llm_response", {})
+                    fast_content = fast_llm.get("content", "")
+                    if fast_content:
+                        response.fast_response = fast_content
+                else:
+                    response.fast_error = str(fast_outcome)
 
             if enrichment_task is not None:
                 try:
@@ -1409,7 +1415,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         try:
             stream_mode = request.stream if request.stream is not None else True
             normal_param = request.to_query_params(stream_mode)
-            fast_param = _make_fast_path_param(normal_param)
 
             from fastapi.responses import StreamingResponse
 
@@ -1421,27 +1426,52 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     )
                 )
 
-            normal_coro = rag.aquery_llm(
-                request.query,
-                param=normal_param,
-                system_prompt=_get_query_prompt_for_request(request),
-            )
-            fast_coro = rag.aquery_llm(
-                request.query,
-                param=fast_param,
-                system_prompt=_get_fast_path_prompt(),
+            tool_event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+            def _stream_event_callback(payload: dict[str, Any]) -> None:
+                tool_event_queue.put_nowait(payload)
+
+            normal_param.stream_event_callback = _stream_event_callback
+            normal_task = asyncio.create_task(
+                rag.aquery_llm(
+                    request.query,
+                    param=normal_param,
+                    system_prompt=_get_query_prompt_for_request(request),
+                )
             )
 
-            results = await asyncio.gather(
-                normal_coro, fast_coro, return_exceptions=True
-            )
-            normal_result = results[0]
-            fast_result = results[1]
-
-            if isinstance(normal_result, Exception):
-                raise normal_result
+            fast_task = None
+            if request.use_fast_query:
+                fast_param = _make_fast_path_param(normal_param)
+                fast_param.stream_event_callback = None
+                fast_task = asyncio.create_task(
+                    rag.aquery_llm(
+                        request.query,
+                        param=fast_param,
+                        system_prompt=_get_fast_path_prompt(),
+                    )
+                )
 
             async def stream_generator():
+                normal_result = None
+                while normal_result is None:
+                    queue_waiter = asyncio.create_task(tool_event_queue.get())
+                    done, pending = await asyncio.wait(
+                        {normal_task, queue_waiter},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for pending_task in pending:
+                        pending_task.cancel()
+
+                    if queue_waiter in done:
+                        yield f"{json.dumps({'tool_event': queue_waiter.result()})}\n"
+
+                    if normal_task in done:
+                        normal_result = normal_task.result()
+
+                while not tool_event_queue.empty():
+                    yield f"{json.dumps({'tool_event': tool_event_queue.get_nowait()})}\n"
+
                 data = normal_result.get("data", {})
                 references = _references_from_query_data(data)
                 llm_response = normal_result.get("llm_response", {})
@@ -1524,11 +1554,16 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                         logger.warning("WebUI query enrichment failed: %s", exc)
                         yield f"{json.dumps({'enrichment_error': str(exc)})}\n"
 
-                if not isinstance(fast_result, Exception):
-                    fast_llm = fast_result.get("llm_response", {})
-                    fast_content = fast_llm.get("content", "")
-                    if fast_content:
-                        yield f"{json.dumps({'fast_response': fast_content})}\n"
+                if fast_task is not None:
+                    fast_result = await asyncio.gather(fast_task, return_exceptions=True)
+                    fast_outcome = fast_result[0]
+                    if not isinstance(fast_outcome, Exception):
+                        fast_llm = fast_outcome.get("llm_response", {})
+                        fast_content = fast_llm.get("content", "")
+                        if fast_content:
+                            yield f"{json.dumps({'fast_response': fast_content})}\n"
+                    else:
+                        yield f"{json.dumps({'fast_error': str(fast_outcome)})}\n"
 
             return StreamingResponse(
                 stream_generator(),

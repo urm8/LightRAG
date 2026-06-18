@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
-import { Message, QueryDebugData } from '@/api/lightrag'
+import { Message, QueryDebugData, QueryToolEvent } from '@/api/lightrag'
 import useTheme from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
 
@@ -33,6 +33,7 @@ export type MessageWithError = Message & {
   isError?: boolean
   isThinking?: boolean // Flag to indicate if the message is in a "thinking" state
   queryDebug?: QueryDebugData
+  toolEvents?: QueryToolEvent[]
   enrichedContent?: string
   enrichmentModel?: string
   enrichmentElapsedMs?: number
@@ -61,6 +62,7 @@ export const ChatMessage = ({
   const { theme } = useTheme()
   const [katexPlugin, setKatexPlugin] = useState<((options?: KaTeXOptions) => any) | null>(null)
   const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(false)
+  const [isToolEventsExpanded, setIsToolEventsExpanded] = useState<boolean>(false)
 
   // Directly use props passed from the parent.
   const { thinkingContent, displayContent, thinkingTime, isThinking } = message
@@ -90,6 +92,7 @@ export const ChatMessage = ({
     : (displayContent !== undefined ? displayContent : (message.content || ''))
 
   const queryDebug = message.queryDebug
+  const toolEvents = message.toolEvents || []
 
   // Load KaTeX rehype plugin dynamically
   // Note: KaTeX extensions (mhchem, copy-tex) are imported statically in main.tsx
@@ -311,6 +314,45 @@ export const ChatMessage = ({
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {message.role === 'assistant' && toolEvents.length > 0 && (
+        <div className="mb-3 rounded-md border border-border/60 bg-background/70 px-3 py-3 text-xs text-foreground">
+          <div
+            className="flex cursor-pointer items-center justify-between gap-3"
+            onClick={() => setIsToolEventsExpanded((value) => !value)}
+          >
+            <div className="font-semibold">Tool Activity</div>
+            <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+              <span>{toolEvents.length} events</span>
+              <ChevronDownIcon className={`size-4 transition-transform ${isToolEventsExpanded ? 'rotate-180' : ''}`} />
+            </div>
+          </div>
+          {isToolEventsExpanded && (
+            <div className="mt-3 space-y-3">
+              {toolEvents.map((event, index) => (
+                <div key={`${event.phase}-${event.round}-${event.tool}-${index}`} className="rounded border border-border/50 bg-background/80 p-2">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="font-medium">{event.tool}</span>
+                    <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      {event.phase === 'tool_call' ? `Call ${event.round}` : `Result ${event.round}`}
+                    </span>
+                  </div>
+                  {event.args && (
+                    <pre className="mb-2 overflow-x-auto whitespace-pre-wrap break-words rounded bg-muted p-2 text-[11px] text-muted-foreground">
+                      {JSON.stringify(event.args, null, 2)}
+                    </pre>
+                  )}
+                  {event.output && (
+                    <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded bg-muted p-2 text-[11px] text-muted-foreground">
+                      {event.output}
+                    </pre>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

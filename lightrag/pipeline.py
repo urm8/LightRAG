@@ -50,6 +50,7 @@ from lightrag.parser.routing import (
     resolve_file_parser_directives,
     resolve_stored_document_parser_engine,
 )
+from lightrag.pipeline_stages import persist_processing_stage
 from lightrag.utils import (
     CacheData,
     _serialize_cache_variant,
@@ -2395,39 +2396,18 @@ class _PipelineMixin:
                 if not chunks:
                     logger.warning("No document chunks to process")
 
-                process_start_time = int(time.time())
-
-                await self._raise_if_cancelled(
-                    ctx.pipeline_status, ctx.pipeline_status_lock
+                process_start_time = await persist_processing_stage(
+                    self,
+                    doc_id=doc_id,
+                    status_doc=status_doc,
+                    file_path=file_path,
+                    chunks=chunks,
+                    extraction_meta=extraction_meta,
+                    pipeline_status=ctx.pipeline_status,
+                    pipeline_status_lock=ctx.pipeline_status_lock,
                 )
-
-                # Stage 1: persist doc_status PROCESSING + chunks in parallel.
-                doc_status_task = asyncio.create_task(
-                    self._upsert_doc_status_transition(
-                        doc_id=doc_id,
-                        status=DocStatus.PROCESSING,
-                        status_doc=status_doc,
-                        file_path=file_path,
-                        extra_fields={
-                            "chunks_count": len(chunks),
-                            "chunks_list": list(chunks.keys()),
-                        },
-                        metadata_extra={
-                            "process_start_time": process_start_time,
-                            **extraction_meta,
-                        },
-                    )
-                )
-                chunks_vdb_task = asyncio.create_task(self.chunks_vdb.upsert(chunks))
-                text_chunks_task = asyncio.create_task(self.text_chunks.upsert(chunks))
-                first_stage_tasks = [
-                    doc_status_task,
-                    chunks_vdb_task,
-                    text_chunks_task,
-                ]
+                first_stage_tasks = []
                 entity_relation_task = None
-
-                await asyncio.gather(*first_stage_tasks)
 
                 # Stage 2: entity/relation extraction (after text_chunks are
                 # saved).  When the user opted out via process_options '!',

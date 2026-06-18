@@ -1,0 +1,32 @@
+diff --git a/Package.swift b/Package.swift
+index 9286564..dbdb175 100644
+--- a/Package.swift
++++ b/Package.swift
+@@ -8,6 +8,7 @@ let package = Package(
+         .library(name: "MLXInferenceCore", targets: ["MLXInferenceCore"]),
+         .library(name: "DFlash", targets: ["DFlash"]),
+         .executable(name: "SwiftLM", targets: ["SwiftLM"]),
++        .executable(name: "NomicEmbeddingsServer", targets: ["NomicEmbeddingsServer"]),
+         .executable(name: "SwiftBuddy", targets: ["SwiftBuddy"]),
+         .executable(name: "DFlashKernelBench", targets: ["DFlashKernelBench"])
+     ],
+@@ -43,6 +44,19 @@ let package = Package(
+             ],
+             path: "Sources/SwiftLM"
+         ),
++        .executableTarget(
++            name: "NomicEmbeddingsServer",
++            dependencies: [
++                .product(name: "MLX", package: "mlx-swift"),
++                .product(name: "MLXEmbedders", package: "mlx-swift-lm"),
++                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
++                .product(name: "Hub", package: "swift-transformers"),
++                .product(name: "Tokenizers", package: "swift-transformers"),
++                .product(name: "Hummingbird", package: "hummingbird"),
++                .product(name: "ArgumentParser", package: "swift-argument-parser"),
++            ],
++            path: "Sources/NomicEmbeddingsServer"
++        ),
+         // ── DFlash Kernel Micro-Benchmark ───────────────────────────
+         .executableTarget(
+             name: "DFlashKernelBench",

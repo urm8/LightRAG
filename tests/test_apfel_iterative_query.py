@@ -1,11 +1,10 @@
 import pytest
 
-from lightrag.operate import (
-    _build_apfel_iterative_portions,
-    _parse_apfel_iterative_response,
+from lightrag.query.apfel import (
     _run_apfel_iterative_answer_generator,
 )
 from lightrag.base import QueryParam
+from lightrag.query.apfel import _build_apfel_iterative_portions, _parse_apfel_iterative_response
 
 
 class WordTokenizer:

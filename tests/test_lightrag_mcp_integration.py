@@ -4,6 +4,7 @@ import pytest
 
 from lightrag.api.mcp_server import (
     AGENTIC_TOOL_DESCRIPTIONS,
+    _to_jsonable,
     create_lightrag_mcp,
     create_lightrag_mcp_http_app,
     mount_lightrag_mcp_http_app,
@@ -125,6 +126,55 @@ def test_lightrag_mcp_query_profile_defaults_to_granite(monkeypatch):
     monkeypatch.delenv("LIGHTRAG_MCP_QUERY_PROFILE", raising=False)
 
     assert _mcp_query_profile() == "granite"
+
+
+def test_to_jsonable_strips_generated_client_unset_values():
+    _ensure_lightrag_mcp_submodule_importable()
+    from lightrag_mcp.client.light_rag_server_api_client.models.doc_status import (
+        DocStatus,
+    )
+    from lightrag_mcp.client.light_rag_server_api_client.models.doc_status_response import (
+        DocStatusResponse,
+    )
+    from lightrag_mcp.client.light_rag_server_api_client.models.docs_statuses_response import (
+        DocsStatusesResponse,
+    )
+    from lightrag_mcp.client.light_rag_server_api_client.models.docs_statuses_response_statuses import (
+        DocsStatusesResponseStatuses,
+    )
+    from lightrag_mcp.client.light_rag_server_api_client.types import UNSET
+
+    doc = DocStatusResponse(
+        id="doc-1",
+        content_summary="summary",
+        content_length=7,
+        status=DocStatus.PROCESSED,
+        created_at="2026-06-05T00:00:00Z",
+        updated_at="2026-06-05T00:00:00Z",
+        file_path="note.txt",
+        chunks_count=UNSET,
+        error=UNSET,
+        metadata=UNSET,
+    )
+    statuses = DocsStatusesResponseStatuses()
+    statuses.additional_properties = {"processed": [doc]}
+    response = DocsStatusesResponse(statuses=statuses)
+
+    assert _to_jsonable(response) == {
+        "statuses": {
+            "processed": [
+                {
+                    "id": "doc-1",
+                    "content_summary": "summary",
+                    "content_length": 7,
+                    "status": "processed",
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "updated_at": "2026-06-05T00:00:00Z",
+                    "file_path": "note.txt",
+                }
+            ]
+        }
+    }
 
 
 @pytest.mark.asyncio

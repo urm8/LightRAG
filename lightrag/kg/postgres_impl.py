@@ -3117,6 +3117,8 @@ class PGKVStorage(BaseKVStorage):
         """
         if not ids:
             return
+        if isinstance(ids, set):
+            ids = list(ids)
 
         table_name = namespace_to_table_name(self.namespace)
         if not table_name:

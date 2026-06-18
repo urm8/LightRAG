@@ -1,0 +1,275 @@
+diff --git a/Libraries/MLXEmbedders/Models/NomicBert.swift b/Libraries/MLXEmbedders/Models/NomicBert.swift
+index 417145b..1822166 100644
+--- a/Libraries/MLXEmbedders/Models/NomicBert.swift
++++ b/Libraries/MLXEmbedders/Models/NomicBert.swift
+@@ -109,67 +109,97 @@ class NomicEmbedding: Module {
+ 
+ // MARK: - MLP
+ 
+-/// A Multi-Layer Perceptron (MLP) implementing the SwiGLU activation mechanism.
+-///
+-/// This layer serves as the feed-forward block in the transformer architecture.
+-/// Unlike traditional MLPs (Linear -> ReLU -> Linear), this implementation uses a Gated Linear Unit
+-/// with the SiLU (Swish) activation function.
+-///
+-/// The forward pass corresponds to:
+-/// $$ Output = \text{Down}(\text{Up}(x) \odot \text{SiLU}(\text{Gate}(x))) $$
+ private class MLP: Module, UnaryLayer {
+-
+-    /// The "up" projection layer (creates the values).
+-    /// Projects from `embedDim` to `hiddenFeatures`.
+-    @ModuleInfo(key: "fc11") var up: Linear
+-
+-    /// The "gate" projection layer (creates the attention mask/filter).
+-    /// Projects from `embedDim` to `hiddenFeatures`.
+-    @ModuleInfo(key: "fc12") var gate: Linear
+-
+-    /// The "down" projection layer.
+-    /// Projects from `hiddenFeatures` back to `embedDim`.
++    @ModuleInfo(key: "fc1") var up: Linear
+     @ModuleInfo(key: "fc2") var down: Linear
+ 
+-    /// Calculates the hidden dimension size, ensuring it is a multiple of 256.
+-    ///
+-    /// This rounding strategy is often used to optimize memory alignment and
+-    /// tensor core utilization on GPUs/NPUs.
+-    ///
+-    /// - Parameter config: The model configuration.
+-    /// - Returns: The hidden dimension rounded up to the nearest multiple of 256.
+-    private static func scaledHiddenFeatures(config: NomicBertConfiguration) -> Int {
+-        let multipleOf = 256
+-        let hiddenFeatures: Int = config.MLPDim
+-        // Formula: ceil(hidden / 256) * 256
+-        return (hiddenFeatures + multipleOf - 1) / multipleOf * multipleOf
+-    }
+-
+-    /// Initializes the MLP layer.
+-    ///
+-    /// - Parameter config: Configuration defining embedding dimensions and bias settings.
+     init(_ config: NomicBertConfiguration) {
+-        let hiddenFeatures = MLP.scaledHiddenFeatures(config: config)
+-
+         _up.wrappedValue = Linear(
+-            config.embedDim, hiddenFeatures, bias: config.mlpFc1Bias)
+-
+-        _gate.wrappedValue = Linear(
+-            config.embedDim, hiddenFeatures, bias: config.mlpFc1Bias)
+-
++            config.embedDim, config.MLPDim, bias: config.mlpFc1Bias)
+         _down.wrappedValue = Linear(
+-            hiddenFeatures, config.embedDim, bias: config.mlpFc2Bias)
++            config.MLPDim, config.embedDim, bias: config.mlpFc2Bias)
+     }
+ 
+-    /// Performs the SwiGLU forward pass.
+-    ///
+-    /// 1. Project input `x` through `up` layer.
+-    /// 2. Project input `x` through `gate` layer and apply SiLU activation.
+-    /// 3. Multiply the results element-wise (Hadamard product).
+-    /// 4. Project the result through `down` layer.
+     func callAsFunction(_ inputs: MLXArray) -> MLXArray {
+-        let activations = up(inputs) * silu(gate(inputs))
+-        return down(activations)
++        down(gelu(up(inputs)))
++    }
++}
++
++private class NomicExpertMLP: Module {
++    @ModuleInfo(key: "w1") var up: SwitchLinear
++    @ModuleInfo(key: "w2") var down: SwitchLinear
++
++    init(_ config: NomicBertConfiguration) {
++        _up.wrappedValue = SwitchLinear(
++            inputDims: config.embedDim, outputDims: config.MLPDim,
++            numExperts: config.numExperts, bias: false)
++        _down.wrappedValue = SwitchLinear(
++            inputDims: config.MLPDim, outputDims: config.embedDim,
++            numExperts: config.numExperts, bias: false)
++    }
++
++    func callAsFunction(_ inputs: MLXArray, indices: MLXArray) -> MLXArray {
++        var x = MLX.expandedDimensions(inputs, axes: [-2, -3])
++        let doSort = indices.size >= 64
++        var sortedIndices = indices
++        var inverseOrder = MLXArray()
++        if doSort {
++            (x, sortedIndices, inverseOrder) = gatherSort(x: x, indices: indices)
++        }
++        x = down(gelu(up(x, sortedIndices, sortedIndices: doSort)), sortedIndices, sortedIndices: doSort)
++        if doSort {
++            x = scatterUnsort(x: x, invOrder: inverseOrder, shape: indices.shape)
++        }
++        return MLX.squeezed(x, axis: -2)
++    }
++}
++
++private class NomicExperts: Module {
++    @ModuleInfo(key: "mlp") var mlp: NomicExpertMLP
++    @ModuleInfo(key: "bias") var bias: MLXArray
++
++    init(_ config: NomicBertConfiguration) {
++        _mlp.wrappedValue = NomicExpertMLP(config)
++        _bias.wrappedValue = MLXArray.zeros([config.embedDim])
++    }
++
++    func callAsFunction(
++        _ inputs: MLXArray, indices: MLXArray, weights: MLXArray
++    ) -> MLXArray {
++        let outputs = mlp(inputs, indices: indices)
++        return (outputs * weights[.ellipsis, .newAxis]).sum(axis: -2) + bias
++    }
++}
++
++private class NomicRouter: Module, UnaryLayer {
++    @ModuleInfo(key: "layer") var layer: Linear
++
++    init(_ config: NomicBertConfiguration) {
++        _layer.wrappedValue = Linear(config.embedDim, config.numExperts, bias: false)
++    }
++
++    func callAsFunction(_ inputs: MLXArray) -> MLXArray {
++        layer(inputs)
++    }
++}
++
++private class NomicMoELayer: Module, UnaryLayer {
++    @ModuleInfo(key: "router") var router: NomicRouter
++    @ModuleInfo(key: "experts") var experts: NomicExperts
++    let topK: Int
++
++    init(_ config: NomicBertConfiguration) {
++        _router.wrappedValue = NomicRouter(config)
++        _experts.wrappedValue = NomicExperts(config)
++        topK = config.moeTopK
++    }
++
++    func callAsFunction(_ inputs: MLXArray) -> MLXArray {
++        let probabilities = MLX.softmax(router(inputs), axis: -1, precise: true)
++        let indices = MLX.argPartition(-probabilities, kth: topK - 1, axis: -1)[
++            .ellipsis, ..<topK]
++        let weights = MLX.takeAlong(probabilities, indices, axis: -1)
++        return experts(inputs, indices: indices, weights: weights)
+     }
+ }
+ 
+@@ -502,15 +532,19 @@ private class TransformerBlock: Module {
+     /// Layer Normalization applied after the MLP block.
+     @ModuleInfo(key: "norm2") var outputLayerNorm: LayerNorm
+ 
+-    /// The Feed-Forward Network (SwiGLU).
+-    @ModuleInfo(key: "mlp") var mlp: MLP
++    /// The Feed-Forward Network.
++    fileprivate let mlp: UnaryLayer
+ 
+     /// Initializes the Transformer block.
+     ///
+     /// - Parameter config: Configuration defining dimensions and layer properties.
+-    init(_ config: NomicBertConfiguration) {
++    init(_ config: NomicBertConfiguration, layerIndex: Int) {
+         _attention.wrappedValue = Attention(config)
+-        _mlp.wrappedValue = MLP(config)
++        if config.moeEveryNLayers > 0 && layerIndex % config.moeEveryNLayers == 1 {
++            mlp = NomicMoELayer(config)
++        } else {
++            mlp = MLP(config)
++        }
+ 
+         // Initialize LayerNorms with embedding dimension and epsilon
+         _outputLayerNorm.wrappedValue = LayerNorm(
+@@ -626,7 +660,7 @@ private class Encoder: Module {
+         // Initialize the specified number of transformer blocks.
+         // The array order corresponds to the vertical depth of the network (Layer 0 -> Layer N).
+         layers = (0 ..< config.numLayers).map {
+-            _ in TransformerBlock(config)
++            TransformerBlock(config, layerIndex: $0)
+         }
+     }
+ 
+@@ -678,6 +712,8 @@ public class NomicBertModel: Module, EmbeddingModel {
+ 
+     /// The size of the vocabulary.
+     public var vocabularySize: Int
++    private let numExperts: Int
++    private let expertHiddenSize: Int
+ 
+     /// Initializes the Nomic BERT model.
+     ///
+@@ -691,6 +727,8 @@ public class NomicBertModel: Module, EmbeddingModel {
+     ) {
+         precondition(config.vocabularySize > 0)
+         vocabularySize = config.vocabularySize
++        numExperts = config.numExperts
++        expertHiddenSize = config.MLPDim
+         encoder = Encoder(config)
+         _embedder.wrappedValue = NomicEmbedding(config)
+ 
+@@ -780,7 +818,7 @@ public class NomicBertModel: Module, EmbeddingModel {
+     /// - Returns: A new dictionary with keys renamed to match this Swift class structure.
+     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+         weights.reduce(into: [:]) { result, item in
+-            let key = item.key
++            var key = item.key
+                 .replacingOccurrences(of: "emb_ln", with: "embeddings.norm")
+                 .replacingOccurrences(of: "bert.", with: "")  // Remove namespace prefix
+                 // Remap LM Head keys
+@@ -794,7 +832,15 @@ public class NomicBertModel: Module, EmbeddingModel {
+                 // Remap Pooler keys
+                 .replacingOccurrences(of: "pooler.dense.", with: "pooler.")
+ 
+-            result[key] = item.value
++            var value = item.value
++            if key.hasSuffix(".experts.mlp.w1") {
++                key += ".weight"
++                value = value.reshaped(numExperts, expertHiddenSize, -1)
++            } else if key.hasSuffix(".experts.mlp.w2") {
++                key += ".weight"
++                value = value.reshaped(numExperts, expertHiddenSize, -1).swappedAxes(-1, -2)
++            }
++            result[key] = value
+         }
+     }
+ }
+@@ -843,6 +889,11 @@ public struct NomicBertConfiguration: Decodable, Sendable {
+     /// The number of hidden layers in the Transformer encoder.
+     var numLayers: Int = 12
+ 
++    /// Sparse expert routing. Zero disables MoE layers.
++    var moeEveryNLayers: Int = 0
++    var moeTopK: Int = 0
++    var numExperts: Int = 0
++
+     // MARK: - Rotary Embeddings (RoPE)
+ 
+     /// The base frequency ($\theta$) used for computing Rotary Positional Embeddings.
+@@ -892,6 +943,9 @@ public struct NomicBertConfiguration: Decodable, Sendable {
+         case numHeads = "n_head"
+         case MLPDim = "n_inner"
+         case numLayers = "n_layer"
++        case moeEveryNLayers = "moe_every_n_layers"
++        case moeTopK = "moe_top_k"
++        case numExperts = "num_experts"
+         case qkvProjBias = "qkv_proj_bias"
+         case rotaryEmbBase = "rotary_emb_base"
+         case rotaryEmbFraction = "rotary_emb_fraction"
+@@ -960,6 +1014,21 @@ public struct NomicBertConfiguration: Decodable, Sendable {
+                 Int.self,
+                 forKey: NomicBertConfiguration.CodingKeys.numLayers.self) ?? 12
+ 
++        moeEveryNLayers =
++            try container.decodeIfPresent(
++                Int.self,
++                forKey: NomicBertConfiguration.CodingKeys.moeEveryNLayers.self) ?? 0
++
++        moeTopK =
++            try container.decodeIfPresent(
++                Int.self,
++                forKey: NomicBertConfiguration.CodingKeys.moeTopK.self) ?? 0
++
++        numExperts =
++            try container.decodeIfPresent(
++                Int.self,
++                forKey: NomicBertConfiguration.CodingKeys.numExperts.self) ?? 0
++
+         qkvProjBias =
+             try container.decodeIfPresent(
+                 Bool.self,

@@ -100,6 +100,7 @@ def test_query_request_granite_profile_bypasses_apfel_fast_defaults(monkeypatch)
     monkeypatch.setenv("WEBUI_QUERY_ENRICHMENT_MAX_RELATION_TOKENS", "2200")
     monkeypatch.setenv("WEBUI_QUERY_ENRICHMENT_MAX_COMPLETION_TOKENS", "1024")
     monkeypatch.setenv("WEBUI_QUERY_ENRICHMENT_ENABLE_RERANK", "true")
+    monkeypatch.setenv("LIGHTRAG_RERANK_ENABLED", "true")
 
     QueryRequest = _query_request_cls(monkeypatch)
     param = QueryRequest(
