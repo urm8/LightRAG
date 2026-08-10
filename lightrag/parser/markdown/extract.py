@@ -86,8 +86,8 @@ class ResolvedImage:
       * ``"local"`` — bytes available; ``asset_ref`` is a stable identity used
         to deduplicate (same identity ⇒ one on-disk asset shared by every
         occurrence). ``data`` / ``suggested_name`` / ``fmt`` describe it.
-      * ``"external"`` — keep as an external link; ``url`` is rendered verbatim
-        into the drawing's ``path_override`` (no bytes materialized).
+      * ``"external"`` — keep as an external link; ``url`` is carried in the
+        drawing's ``src`` while ``path`` stays empty (no bytes materialized).
       * ``"skip"`` — drop the image (resolver already logged / counted it).
     """
 
@@ -282,7 +282,8 @@ def extract_markdown(
             level = len(heading_match.group(1))
             raw = heading_match.group(2)
             clean = _clean_heading(raw)
-            heading_stack[:] = heading_stack[: max(level - 1, 0)]
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
             parents = [h for _, h in heading_stack if h]
             heading_stack.append((level, clean))
             _flush()

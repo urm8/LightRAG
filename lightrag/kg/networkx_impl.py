@@ -1,6 +1,7 @@
 import os
 from collections import deque
 from dataclasses import dataclass
+from operator import itemgetter
 from typing import final
 
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
@@ -230,7 +231,11 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         graph = await self._get_graph()
-        return graph.nodes.get(node_id)
+        node = graph.nodes.get(node_id)
+        # Shallow-copy so callers cannot mutate the live NetworkX attr dict
+        # (same class as JsonKV/JsonDocStatus copy-on-read). get_all_nodes
+        # already copies; get_node/get_edge must match.
+        return dict(node) if node is not None else None
 
     async def node_degree(self, node_id: str) -> int:
         graph = await self._get_graph()
@@ -248,7 +253,8 @@ class NetworkXStorage(BaseGraphStorage):
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
         graph = await self._get_graph()
-        return graph.edges.get((source_node_id, target_node_id))
+        edge = graph.edges.get((source_node_id, target_node_id))
+        return dict(edge) if edge is not None else None
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         graph = await self._get_graph()
@@ -412,13 +418,25 @@ class NetworkXStorage(BaseGraphStorage):
             limit: Maximum number of labels to return
 
         Returns:
-            List of labels sorted by degree (highest first)
+            List of labels sorted by degree (highest first), ties broken on the
+            label ascending
         """
         graph = await self._get_graph()
 
-        # Get degrees of all nodes and sort by degree descending
+        # Degree descending, then label ascending. The tie-break is not
+        # cosmetic: `sorted(..., key=degree, reverse=True)` is stable, so ties
+        # used to come back in node INSERTION order, and when more labels share
+        # the cutoff degree than fit in `limit` that decided which ones the
+        # caller never sees — a graph that happened to insert "Zeta" before
+        # "Alpha" returned Zeta and dropped Alpha. Every other backend orders
+        # ties by label (SQL `ORDER BY degree DESC, label ASC` / COLLATE "C",
+        # Cypher `ORDER BY degree DESC, label ASC`), and this is the default
+        # backend the contract in BaseGraphStorage points at. Comparing on
+        # str() gives the same code-point order as COLLATE "C".
         degrees = dict(graph.degree())
-        sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
+        sorted_nodes = sorted(
+            degrees.items(), key=lambda item: (-item[1], str(item[0]))
+        )
 
         # Return top labels limited by the specified limit
         popular_labels = [str(node) for node, _ in sorted_nodes[:limit]]
@@ -518,8 +536,20 @@ class NetworkXStorage(BaseGraphStorage):
         if node_label == "*":
             # Get degrees of all nodes
             degrees = dict(graph.degree())
-            # Sort nodes by degree in descending order and take top max_nodes
-            sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
+            # Degree descending, then label ascending — same contract as
+            # get_popular_labels / BaseGraphStorage. Stable degree-only sort
+            # kept insertion order on ties, so max_nodes truncation dropped
+            # different isolates depending on insert order.
+            #
+            # Two stable passes rather than one `(-degree, label)` tuple key:
+            # this ranks EVERY node in the graph, and building a tuple per node
+            # costs about 3x the sort (measured 56ms -> 189ms at 500k nodes,
+            # against 74ms for the two passes). The label pass runs FIRST and
+            # the degree pass second — `list.sort` is stable, so equal degrees
+            # keep the label order established by the first pass. Swapping them
+            # silently restores the insertion-order bug.
+            sorted_nodes = sorted(degrees.items(), key=lambda item: str(item[0]))
+            sorted_nodes.sort(key=itemgetter(1), reverse=True)
 
             # Check if graph is truncated
             if len(sorted_nodes) > max_nodes:
@@ -547,6 +577,7 @@ class NetworkXStorage(BaseGraphStorage):
 
             # Flag to track if there are unexplored neighbors due to depth limit
             has_unexplored_neighbors = False
+            has_unprocessed_level_nodes = False
 
             # Modified breadth-first search with degree-based prioritization
             while queue and len(bfs_nodes) < max_nodes:
@@ -558,11 +589,18 @@ class NetworkXStorage(BaseGraphStorage):
                 while queue and queue[0][1] == current_depth:
                     current_level_nodes.append(queue.popleft())
 
-                # Sort nodes at current depth by degree (highest first)
-                current_level_nodes.sort(key=lambda x: x[2], reverse=True)
+                # Degree descending, then label ascending — matches '*' mode
+                # and get_popular_labels. Degree-only reverse sort is stable and
+                # kept neighbor insertion order on ties at the max_nodes cutoff.
+                # Plain tuple key here, unlike '*' mode: this sorts one depth
+                # level, not the whole graph, so the tuple allocation does not
+                # pay for the two-pass idiom's dependence on sort stability.
+                current_level_nodes.sort(key=lambda x: (-x[2], str(x[0])))
 
                 # Process all nodes at current depth in order of degree
-                for current_node, depth, degree in current_level_nodes:
+                for idx, (current_node, depth, degree) in enumerate(
+                    current_level_nodes
+                ):
                     if current_node not in visited:
                         visited.add(current_node)
                         bfs_nodes.append(current_node)
@@ -590,11 +628,22 @@ class NetworkXStorage(BaseGraphStorage):
 
                     # Check if we've reached max_nodes
                     if len(bfs_nodes) >= max_nodes:
+                        if any(
+                            n not in visited
+                            for n, _, _ in current_level_nodes[idx + 1 :]
+                        ):
+                            has_unprocessed_level_nodes = True
                         break
 
             # Check if graph is truncated - either due to max_nodes limit or depth limit
-            if (queue and len(bfs_nodes) >= max_nodes) or has_unexplored_neighbors:
-                if len(bfs_nodes) >= max_nodes:
+            has_unvisited_in_queue = any(n not in visited for n, _, _ in queue)
+            has_max_nodes_truncation = len(bfs_nodes) >= max_nodes and (
+                has_unvisited_in_queue
+                or has_unprocessed_level_nodes
+                or has_unexplored_neighbors
+            )
+            if has_max_nodes_truncation or has_unexplored_neighbors:
+                if has_max_nodes_truncation:
                     result.is_truncated = True
                     logger.info(
                         f"[{self.workspace}] Graph truncated: max_nodes limit {max_nodes} reached"
@@ -603,7 +652,6 @@ class NetworkXStorage(BaseGraphStorage):
                     logger.info(
                         f"[{self.workspace}] Graph truncated: found {len(bfs_nodes)} nodes within max_depth {max_depth}"
                     )
-
             # Create subgraph with BFS discovered nodes
             subgraph = graph.subgraph(bfs_nodes)
 

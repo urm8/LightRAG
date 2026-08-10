@@ -921,7 +921,9 @@ class Neo4JStorage(BaseGraphStorage):
 
         Returns:
             list[tuple[str, str]]: List of (source_label, target_label) tuples representing edges
-            None: If no edges found
+            None: If the node does not exist. An existing node with no relations
+                returns ``[]`` — the BaseGraphStorage contract, as implemented by
+                NetworkXStorage. A query error is neither value: it propagates.
 
         Raises:
             ValueError: If source_node_id is invalid
@@ -941,7 +943,14 @@ class Neo4JStorage(BaseGraphStorage):
                     results = await session.run(query, entity_id=source_node_id)
 
                     edges = []
+                    # Any row at all means the anchor MATCH bound n, i.e. the
+                    # node exists: an isolated node still yields exactly one row
+                    # (via OPTIONAL MATCH) carrying a NULL connected node. Zero
+                    # rows is the only "no such node" signal, and it must not be
+                    # reported as an empty edge list.
+                    node_matched = False
                     async for record in results:
+                        node_matched = True
                         source_node = record["n"]
                         connected_node = record["connected"]
 
@@ -964,7 +973,7 @@ class Neo4JStorage(BaseGraphStorage):
                             edges.append((source_label, target_label))
 
                     await results.consume()  # Ensure results are consumed
-                    return edges
+                    return edges if node_matched else None
                 except Exception as e:
                     logger.error(
                         f"[{self.workspace}] Error getting edges for node {source_node_id}: {str(e)}"
@@ -1337,12 +1346,16 @@ class Neo4JStorage(BaseGraphStorage):
                         if count_result:
                             await count_result.consume()
 
-                    # Run main query to get nodes with highest degree
+                    # Run main query to get nodes with highest degree.
+                    # Degree descending, then entity_id ascending: the tie-break
+                    # is the BaseGraphStorage contract, and without it the
+                    # LIMIT cut an unordered band of equal-degree entities, so
+                    # the same graph returned different nodes run to run.
                     main_query = f"""
                     MATCH (n:`{workspace_label}`)
                     OPTIONAL MATCH (n)-[r]-()
                     WITH n, COALESCE(count(r), 0) AS degree
-                    ORDER BY degree DESC
+                    ORDER BY degree DESC, n.entity_id ASC
                     LIMIT $max_nodes
                     WITH collect({{node: n}}) AS filtered_nodes
                     UNWIND filtered_nodes AS node_info
@@ -1551,7 +1564,7 @@ class Neo4JStorage(BaseGraphStorage):
         queue = deque([(start_node, None, 0)])
 
         # True BFS implementation using a queue
-        while queue and len(visited_nodes) < max_nodes:
+        while queue:
             # Dequeue the next node to process
             current_node, current_edge, current_depth = queue.popleft()
 
@@ -1565,6 +1578,19 @@ class Neo4JStorage(BaseGraphStorage):
                 )
                 continue
 
+            # This is a real, not-yet-visited, in-depth-limit node that cannot
+            # be added because the cap is already full -- that's the only
+            # condition that proves truncation. Checking the cap here (rather
+            # than after appending, or via the while-loop condition) means a
+            # queue that runs dry exactly at max_nodes never reaches this
+            # check and is never falsely reported as truncated.
+            if len(visited_nodes) >= max_nodes:
+                result.is_truncated = True
+                logger.info(
+                    f"[{self.workspace}] Graph truncated: breadth-first search limited to: {max_nodes} nodes"
+                )
+                break
+
             # Add current node to result
             result.nodes.append(current_node)
             visited_nodes.add(current_node.id)
@@ -1573,14 +1599,6 @@ class Neo4JStorage(BaseGraphStorage):
             if current_edge and current_edge.id not in visited_edges:
                 result.edges.append(current_edge)
                 visited_edges.add(current_edge.id)
-
-            # Stop if we've reached the node limit
-            if len(visited_nodes) >= max_nodes:
-                result.is_truncated = True
-                logger.info(
-                    f"[{self.workspace}] Graph truncated: breadth-first search limited to: {max_nodes} nodes"
-                )
-                break
 
             # Get all edges and target nodes for the current node (even at max_depth)
             async with self._driver.session(

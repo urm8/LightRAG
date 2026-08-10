@@ -95,11 +95,20 @@ def _extract_pptx(file_bytes: bytes) -> str:
 
 
 def _extract_xlsx(file_bytes: bytes) -> str:
-    """Extract XLSX content in tab-delimited format with sheet separators."""
+    """Extract XLSX content in tab-delimited format with sheet separators.
+
+    Formula cells are indexed by their cached calculated value when the workbook
+    carries one, falling back to the formula text when it does not. openpyxl
+    fixes ``data_only`` at load time, so the workbook is deliberately loaded
+    twice -- ``data_only=True`` for values, ``data_only=False`` for formulas.
+    This doubles peak memory/parse cost but is required to have both views;
+    ``read_only=True`` is not a safe optimization here because it can report
+    ``max_row``/``max_column`` as ``None`` and collapse the iteration range.
+    """
     from openpyxl import load_workbook  # type: ignore
 
-    xlsx_file = BytesIO(file_bytes)
-    wb = load_workbook(xlsx_file)
+    wb_values = load_workbook(BytesIO(file_bytes), data_only=True)
+    wb_formulas = load_workbook(BytesIO(file_bytes), data_only=False)
 
     def escape_cell(cell_value: str | int | float | None) -> str:
         if cell_value is None:
@@ -119,20 +128,31 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     content_parts: list[str] = []
     sheet_separator = "=" * 20
 
-    for idx, sheet in enumerate(wb):
+    for idx, sheet in enumerate(wb_values):
         if idx > 0:
             content_parts.append("")
         safe_title = escape_sheet_title(sheet.title)
         content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
-        max_columns = sheet.max_column if sheet.max_column else 0
-        for row in sheet.iter_rows(values_only=True):
+        formula_sheet = wb_formulas[sheet.title]
+        max_rows = max(sheet.max_row or 0, formula_sheet.max_row or 0)
+        max_columns = max(sheet.max_column or 0, formula_sheet.max_column or 0)
+        value_rows = sheet.iter_rows(
+            min_row=1, max_row=max_rows, max_col=max_columns, values_only=True
+        )
+        formula_rows = formula_sheet.iter_rows(
+            min_row=1, max_row=max_rows, max_col=max_columns, values_only=True
+        )
+        for value_row, formula_row in zip(value_rows, formula_rows):
             row_parts = []
-            for col_idx in range(max_columns):
-                if col_idx < len(row):
-                    row_parts.append(escape_cell(row[col_idx]))
-                else:
-                    row_parts.append("")
-            if all(part == "" for part in row_parts):
+            row_has_content = False
+            for cell_value, formula_value in zip(value_row, formula_row):
+                if cell_value is None:
+                    cell_value = formula_value
+                cell_text = escape_cell(cell_value)
+                row_parts.append(cell_text)
+                if cell_text:
+                    row_has_content = True
+            if not row_has_content:
                 content_parts.append("")
             else:
                 content_parts.append("\t".join(row_parts))
@@ -147,6 +167,14 @@ _BINARY_EXTRACTORS = {
     "pptx": _extract_pptx,
     "xlsx": _extract_xlsx,
 }
+
+# OPC/OOXML formats — all ZIP archives, all parsed locally by a library that
+# materializes the uncompressed parts (python-docx / python-pptx / openpyxl).
+# They share the decompression budget: guarding only .docx leaves .pptx and
+# .xlsx (registered above, reachable by default routing) exposed to the same
+# zip-bomb class (GHSA-2wpj-ffvv-2pq8) — .xlsx worse, since _extract_xlsx
+# deliberately load_workbook()s the bytes twice.
+_ZIP_OFFICE_SUFFIXES = frozenset({"docx", "pptx", "xlsx"})
 
 
 def _decode_text(file_bytes: bytes) -> str:
@@ -168,15 +196,35 @@ def _decode_text(file_bytes: bytes) -> str:
 
 
 def extract_text(
-    file_bytes: bytes, suffix: str, *, pdf_password: str | None = None
+    file_bytes: bytes,
+    suffix: str,
+    *,
+    pdf_password: str | None = None,
+    file_path: str | None = None,
 ) -> str:
     """Extract plain text from ``file_bytes`` based on ``suffix`` (no dot).
 
     Synchronous; callers run it in a thread.  Raises
     :class:`LegacyExtractionError` (or the extractor's own exception) on
     failure.
+
+    ``file_path`` names the source in the decompression-budget error message;
+    it falls back to the suffix so a direct caller that omits it still gets a
+    usable message.
     """
     suffix = suffix.lower().lstrip(".")
+
+    # Decompression budget for the OPC/OOXML formats, enforced BEFORE the
+    # extractor library opens the archive (GHSA-2wpj-ffvv-2pq8). The native
+    # engine guards .docx; the default routing (``*:native-teP,*:legacy-R``)
+    # falls back here and reaches .pptx/.xlsx too, which native never handles,
+    # so the guard belongs at this dispatcher rather than in one per-format
+    # branch. Reads the ZIP central directory once and decompresses nothing.
+    if suffix in _ZIP_OFFICE_SUFFIXES:
+        from lightrag.parser.docx.zip_budget import enforce_docx_decompression_budget
+
+        enforce_docx_decompression_budget(file_bytes, file_path or suffix)
+
     extractor = _BINARY_EXTRACTORS.get(suffix)
     if extractor is _extract_pdf_pypdf:
         return _extract_pdf_pypdf(file_bytes, pdf_password)

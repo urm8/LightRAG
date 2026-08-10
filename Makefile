@@ -1,5 +1,6 @@
 SHELL := /bin/bash
 SETUP_SCRIPT := scripts/setup/setup.sh
+APPLE_SCRIPT := scripts/setup/apple-container.sh
 SETUP_BASH ?= $(or $(firstword $(wildcard /opt/homebrew/bin/bash /usr/local/bin/bash /opt/local/bin/bash)),$(shell command -v bash 2>/dev/null),bash)
 SETUP_OPTS ?=
 APFEL_LAUNCHD_LABEL ?= homebrew.mxcl.apfel
@@ -53,7 +54,7 @@ COLOR_GREEN :=
 COLOR_YELLOW :=
 endif
 
-.PHONY: help dev test-prompt test-prompt-results promptfoo-apfel promptfoo-capture-logs extract-prompt-issues improve-prompts rl-enhance-prompts prompt-enhancement-report lightrag-start lightrag-restart lightrag-stop lightrag-status lightrag-logs lightrag-clear-db clear-db lightrag-reindex reindex lightrag-rebuild-vdb vscode-bridge-health copilot-api-health bridge-health copilot-api-start copilot-api-restart copilot-api-stop copilot-api-status copilot-api-logs mlx-openai-health mlx-openai-logs mlx-model-install mlx-model-start mlx-model-restart mlx-model-stop mlx-model-status mlx-model-logs mlx-model-health mlx-embeddings-install mlx-embeddings-start mlx-embeddings-restart mlx-embeddings-stop mlx-embeddings-status mlx-embeddings-logs mlx-embeddings-health swiftlm-install mlx-agentcpm-install mlx-agentcpm-convert mlx-agentcpm-start mlx-agentcpm-restart mlx-agentcpm-stop mlx-agentcpm-status mlx-agentcpm-logs mlx-chat mlx-chat-native mlx-chat-test hn-front-page-load embedding-candidates-bench modernbert-embed-bench use-deepseek use-mlx configure env-base env-storage env-server env-validate env-backup env-security-check env-base-rewrite env-storage-rewrite env base storage server validate backup security security-check base-rewrite storage-rewrite
+.PHONY: help dev test-prompt test-prompt-results promptfoo-apfel promptfoo-capture-logs extract-prompt-issues improve-prompts rl-enhance-prompts prompt-enhancement-report lightrag-start lightrag-restart lightrag-stop lightrag-status lightrag-logs lightrag-clear-db clear-db lightrag-reindex reindex lightrag-rebuild-vdb vscode-bridge-health copilot-api-health bridge-health copilot-api-start copilot-api-restart copilot-api-stop copilot-api-status copilot-api-logs mlx-openai-health mlx-openai-logs mlx-model-install mlx-model-start mlx-model-restart mlx-model-stop mlx-model-status mlx-model-logs mlx-model-health mlx-embeddings-install mlx-embeddings-start mlx-embeddings-restart mlx-embeddings-stop mlx-embeddings-status mlx-embeddings-logs mlx-embeddings-health swiftlm-install mlx-agentcpm-install mlx-agentcpm-convert mlx-agentcpm-start mlx-agentcpm-restart mlx-agentcpm-stop mlx-agentcpm-status mlx-agentcpm-logs mlx-chat mlx-chat-native mlx-chat-test hn-front-page-load embedding-candidates-bench modernbert-embed-bench use-deepseek use-mlx configure env-base env-storage env-server env-validate env-backup env-security-check env-base-rewrite env-storage-rewrite env base storage server validate backup security security-check base-rewrite storage-rewrite apple-up apple-down apple-status apple-logs apple-restart apple-pull
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
@@ -126,6 +127,13 @@ help:
 	@printf "$(COLOR_BOLD)Compose Output$(COLOR_RESET)\n"
 	@printf "  Bundled service images are defined in scripts/setup/templates/*.yml.\n"
 	@printf "  Compose file output: docker-compose.final.yml\n"
+	@printf "\n"
+	@printf "$(COLOR_BOLD)Apple container stack (macOS 26, Apple Silicon; no Docker)$(COLOR_RESET)\n"
+	@printf "  $(COLOR_GREEN)make apple-up$(COLOR_RESET)                Start Postgres/Neo4j/Milvus + LightRAG on Apple 'container'\n"
+	@printf "  $(COLOR_GREEN)make apple-down$(COLOR_RESET)              Stop and remove the stack (SETUP_OPTS=--purge also deletes data)\n"
+	@printf "  $(COLOR_GREEN)make apple-status$(COLOR_RESET)            Show stack containers, volumes, and networks\n"
+	@printf "  $(COLOR_GREEN)make apple-logs SVC=lightrag$(COLOR_RESET) Tail a service's logs\n"
+	@printf "  See docs/AppleContainerSetup.md for details.\n"
 
 dev:
 	@if ! command -v uv >/dev/null 2>&1; then \
@@ -536,3 +544,25 @@ env-security-check security security-check:
 
 env-backup backup:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --backup $(SETUP_OPTS)
+
+# Apple 'container' stack (macOS 26 + Apple Silicon). SETUP_BASH resolves a
+# bash 4+ interpreter, which apple-container.sh requires. Pass flags via
+# SETUP_OPTS (e.g. make apple-up SETUP_OPTS=--no-lightrag) and a service name
+# via SVC (e.g. make apple-logs SVC=lightrag).
+apple-up:
+	@$(SETUP_BASH) $(APPLE_SCRIPT) up $(SETUP_OPTS)
+
+apple-down:
+	@$(SETUP_BASH) $(APPLE_SCRIPT) down $(SETUP_OPTS)
+
+apple-status:
+	@$(SETUP_BASH) $(APPLE_SCRIPT) status
+
+apple-logs:
+	@$(SETUP_BASH) $(APPLE_SCRIPT) logs $(SVC) $(SETUP_OPTS)
+
+apple-restart:
+	@$(SETUP_BASH) $(APPLE_SCRIPT) restart $(SVC)
+
+apple-pull:
+	@$(SETUP_BASH) $(APPLE_SCRIPT) pull
