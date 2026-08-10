@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import platform
 import subprocess
 import sys
@@ -19,9 +20,14 @@ from pydantic import BaseModel, Field
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from lightrag.config import settings
-
 logger = logging.getLogger(__name__)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 AGENTIC_TOOL_DESCRIPTIONS = {
     "query_document": (
@@ -125,10 +131,6 @@ def _load_lightrag_client_class() -> type[Any]:
     from lightrag_mcp.lightrag_client import LightRAGClient
 
     return LightRAGClient
-
-
-def _mcp_query_profile() -> str:
-    return settings.lightrag_mcp_query_profile
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -256,7 +258,7 @@ async def _execute_lightrag_operation(
 
 
 def _default_api_base_url(args: Any) -> str:
-    explicit = settings.lightrag_mcp_api_base_url
+    explicit = os.getenv("LIGHTRAG_MCP_API_BASE_URL", "").strip()
     if explicit:
         return explicit
     port = int(getattr(args, "port", 9621))
@@ -264,7 +266,7 @@ def _default_api_base_url(args: Any) -> str:
 
 
 def _default_api_key(api_key: str | None) -> str:
-    return settings.lightrag_mcp_api_key or api_key or ""
+    return os.getenv("LIGHTRAG_MCP_API_KEY", "").strip() or api_key or ""
 
 
 def _run_command_output(command: list[str], timeout_s: float = 5.0) -> dict[str, Any]:
@@ -411,11 +413,10 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         client = client_class(base_url=base_url, api_key=resolved_api_key)
         _configure_lightrag_client_auth(client, resolved_api_key)
         logger.info(
-            "Integrated LightRAG MCP server started base_url=%s api_key_configured=%s query_profile=%s transport=%s",
+            "Integrated LightRAG MCP server started base_url=%s api_key_configured=%s transport=%s",
             base_url,
             bool(resolved_api_key),
-            _mcp_query_profile(),
-            settings.lightrag_mcp_transport,
+            os.getenv("LIGHTRAG_MCP_TRANSPORT", "streamable-http"),
         )
         try:
             yield {"lightrag_client": client}
@@ -424,7 +425,7 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             logger.info("Integrated LightRAG MCP server stopped")
 
     mcp = FastMCP(
-        name=settings.lightrag_mcp_name,
+        name=os.getenv("LIGHTRAG_MCP_NAME", "LightRAG"),
         lifespan=lifespan,
     )
 
@@ -488,7 +489,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                 hl_keywords=hl_keywords,
                 ll_keywords=ll_keywords,
                 history_turns=history_turns,
-                query_model=_mcp_query_profile(),
             )
 
         return await _execute_lightrag_operation(
@@ -1004,10 +1004,10 @@ def create_lightrag_mcp_http_app(args: Any, api_key: str | None) -> Any:
         path="/",
         transport=cast(
             Literal["http", "streamable-http", "sse"],
-            settings.lightrag_mcp_transport,
+            os.getenv("LIGHTRAG_MCP_TRANSPORT", "streamable-http"),
         ),
-        json_response=settings.lightrag_mcp_json_response,
-        stateless_http=settings.lightrag_mcp_stateless_http,
+        json_response=_env_bool("LIGHTRAG_MCP_JSON_RESPONSE", False),
+        stateless_http=_env_bool("LIGHTRAG_MCP_STATELESS_HTTP", False),
     )
 
 

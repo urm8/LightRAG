@@ -42,6 +42,7 @@ import asyncio
 import csv
 import json
 import math
+import os
 import sys
 import time
 import warnings
@@ -50,7 +51,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import httpx
-from lightrag.config import settings
+from dotenv import load_dotenv
 from lightrag.utils import logger
 
 # Suppress LangchainLLMWrapper deprecation warning
@@ -72,6 +73,11 @@ warnings.filterwarnings(
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 # Conditional imports - will raise ImportError if dependencies not installed
 try:
@@ -138,7 +144,9 @@ class RAGEvaluator:
             )
 
         # Configure evaluation LLM (for RAGAS scoring)
-        eval_llm_api_key = settings.eval_llm_binding_api_key or settings.openai_api_key
+        eval_llm_api_key = os.getenv("EVAL_LLM_BINDING_API_KEY") or os.getenv(
+            "OPENAI_API_KEY"
+        )
         if not eval_llm_api_key:
             raise EnvironmentError(
                 "EVAL_LLM_BINDING_API_KEY or OPENAI_API_KEY is required for evaluation. "
@@ -146,26 +154,30 @@ class RAGEvaluator:
                 "or ensure OPENAI_API_KEY is set."
             )
 
-        eval_model = settings.eval_llm_model
-        eval_llm_base_url = settings.eval_llm_binding_host
+        eval_model = os.getenv("EVAL_LLM_MODEL", "gpt-4o-mini")
+        eval_llm_base_url = os.getenv("EVAL_LLM_BINDING_HOST")
 
         # Configure evaluation embeddings (for RAGAS scoring)
         # Fallback chain: EVAL_EMBEDDING_BINDING_API_KEY -> EVAL_LLM_BINDING_API_KEY -> OPENAI_API_KEY
         eval_embedding_api_key = (
-            settings.eval_embedding_binding_api_key
-            or settings.eval_llm_binding_api_key
-            or settings.openai_api_key
+            os.getenv("EVAL_EMBEDDING_BINDING_API_KEY")
+            or os.getenv("EVAL_LLM_BINDING_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
         )
-        eval_embedding_model = settings.eval_embedding_model
+        eval_embedding_model = os.getenv(
+            "EVAL_EMBEDDING_MODEL", "text-embedding-3-large"
+        )
         # Fallback chain: EVAL_EMBEDDING_BINDING_HOST -> EVAL_LLM_BINDING_HOST -> None
-        eval_embedding_base_url = settings.eval_embedding_binding_host or settings.eval_llm_binding_host
+        eval_embedding_base_url = os.getenv("EVAL_EMBEDDING_BINDING_HOST") or os.getenv(
+            "EVAL_LLM_BINDING_HOST"
+        )
 
         # Create LLM and Embeddings instances for RAGAS
         llm_kwargs = {
             "model": eval_model,
             "api_key": eval_llm_api_key,
-            "max_retries": settings.eval_llm_max_retries,
-            "request_timeout": settings.eval_llm_timeout,
+            "max_retries": int(os.getenv("EVAL_LLM_MAX_RETRIES", "5")),
+            "request_timeout": int(os.getenv("EVAL_LLM_TIMEOUT", "180")),
         }
         embedding_kwargs = {
             "model": eval_embedding_model,
@@ -203,7 +215,7 @@ class RAGEvaluator:
             test_dataset_path = Path(__file__).parent / "sample_dataset.json"
 
         if rag_api_url is None:
-            rag_api_url = settings.lightrag_api_url
+            rag_api_url = os.getenv("LIGHTRAG_API_URL", "http://localhost:9621")
 
         self.test_dataset_path = Path(test_dataset_path)
         self.rag_api_url = rag_api_url.rstrip("/")
@@ -254,7 +266,7 @@ class RAGEvaluator:
             logger.info("  • Embedding Endpoint:   OpenAI Official API")
 
         logger.info("Concurrency & Rate Limiting:")
-        query_top_k = settings.eval_query_top_k
+        query_top_k = int(os.getenv("EVAL_QUERY_TOP_K", "10"))
         logger.info("  • Query Top-K:          %s Entities/Relations", query_top_k)
         logger.info("  • LLM Max Retries:      %s", self.eval_max_retries)
         logger.info("  • LLM Timeout:          %s seconds", self.eval_timeout)
@@ -301,11 +313,11 @@ class RAGEvaluator:
                 "include_references": True,
                 "include_chunk_content": True,  # NEW: Request chunk content in references
                 "response_type": "Multiple Paragraphs",
-                "top_k": settings.eval_query_top_k,
+                "top_k": int(os.getenv("EVAL_QUERY_TOP_K", "10")),
             }
 
             # Get API key from environment for authentication
-            api_key = settings.lightrag_api_key
+            api_key = os.getenv("LIGHTRAG_API_KEY")
 
             # Prepare headers with optional authentication
             headers = {}
@@ -549,7 +561,7 @@ class RAGEvaluator:
             List of evaluation results with metrics
         """
         # Get evaluation concurrency from environment (default to 2 for parallel evaluation)
-        max_async = settings.eval_max_concurrent
+        max_async = int(os.getenv("EVAL_MAX_CONCURRENT", "2"))
 
         logger.info("%s", "=" * 70)
         logger.info("🚀 Starting RAGAS Evaluation of LightRAG System")

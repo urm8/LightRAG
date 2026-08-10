@@ -57,7 +57,7 @@ type StatusDisplayConfig = {
   className: string
 }
 
-const STATUS_BUCKETS: StatusBucket[] = ['pending', 'completed', 'parse', 'analyze', 'process', 'failed']
+const STATUS_BUCKETS: StatusBucket[] = ['completed', 'parse', 'analyze', 'process', 'failed']
 
 // Utility functions defined outside component for better performance and to avoid dependency issues
 const getCountValue = (counts: Record<string, number>, ...keys: string[]): number => {
@@ -435,7 +435,6 @@ export default function DocumentManager() {
   // State to store page number for each status filter
   const [pageByStatus, setPageByStatus] = useState<Record<StatusFilter, number>>({
     all: 1,
-    pending: 1,
     completed: 1,
     parse: 1,
     analyze: 1,
@@ -515,7 +514,6 @@ export default function DocumentManager() {
     // Reset all status filters' page memory since sorting affects all
     setPageByStatus({
       all: 1,
-      pending: 1,
       completed: 1,
       parse: 1,
       analyze: 1,
@@ -698,7 +696,6 @@ export default function DocumentManager() {
   }, [docs]);
 
   const completedCount = getCountValue(statusCounts, 'PROCESSED', 'processed') || documentCounts.completed || 0;
-  const pendingCount = getCountValue(statusCounts, 'PENDING', 'pending') || documentCounts.pending || 0;
   const parseCount = getCountValue(statusCounts, 'PARSING', 'parsing') || documentCounts.parse || 0;
   const analyzeCount = getCountValue(statusCounts, 'ANALYZING', 'analyzing') || documentCounts.analyze || 0;
   const processCount = getCountValue(statusCounts, 'PROCESSING', 'processing') || documentCounts.process || 0;
@@ -843,7 +840,6 @@ export default function DocumentManager() {
     // Reset all status filters to page 1 when page size changes
     setPageByStatus({
       all: 1,
-      pending: 1,
       completed: 1,
       parse: 1,
       analyze: 1,
@@ -1470,18 +1466,6 @@ export default function DocumentManager() {
                     )}
                   >
                     {t('documentPanel.documentManager.filters.all')} ({statusCounts.all || documentCounts.all})
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('pending')}
-                    disabled={isRefreshing}
-                    className={cn(
-                      pendingCount > 0 ? 'text-yellow-600' : 'text-gray-500',
-                      statusFilter === 'pending' && 'bg-yellow-100 dark:bg-yellow-900/30 font-medium border border-yellow-400 dark:border-yellow-600 shadow-sm'
-                    )}
-                  >
-                    {t('documentPanel.documentManager.status.pending')} ({pendingCount})
                   </Button>
                   <Button
                     size="sm"

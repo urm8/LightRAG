@@ -2,30 +2,48 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
+import os
+from dotenv import load_dotenv
 from dataclasses import dataclass, field
 from typing import (
     Any,
     Literal,
     TypedDict,
     TypeVar,
-    Callable,
     Optional,
     Dict,
     List,
     AsyncIterator,
 )
-from .config import settings
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
 from .constants import (
+    DEFAULT_TOP_K,
+    DEFAULT_CHUNK_TOP_K,
+    DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_RELATION_TOKENS,
+    DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_OLLAMA_MODEL_NAME,
+    DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_OLLAMA_MODEL_SIZE,
     DEFAULT_OLLAMA_CREATED_AT,
     DEFAULT_OLLAMA_DIGEST,
 )
+
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
+
+
 class OllamaServerInfos:
     def __init__(self, name=None, tag=None):
-        self._lightrag_name = name or settings.ollama_emulating_model_name
-        self._lightrag_tag = tag or settings.ollama_emulating_model_tag
+        self._lightrag_name = name or os.getenv(
+            "OLLAMA_EMULATING_MODEL_NAME", DEFAULT_OLLAMA_MODEL_NAME
+        )
+        self._lightrag_tag = tag or os.getenv(
+            "OLLAMA_EMULATING_MODEL_TAG", DEFAULT_OLLAMA_MODEL_TAG
+        )
         self.LIGHTRAG_SIZE = DEFAULT_OLLAMA_MODEL_SIZE
         self.LIGHTRAG_CREATED_AT = DEFAULT_OLLAMA_CREATED_AT
         self.LIGHTRAG_DIGEST = DEFAULT_OLLAMA_DIGEST
@@ -86,21 +104,27 @@ class QueryParam:
     stream: bool = False
     """If True, enables streaming output for real-time responses."""
 
-    top_k: int = settings.top_k
+    top_k: int = int(os.getenv("TOP_K", str(DEFAULT_TOP_K)))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
-    chunk_top_k: int = settings.chunk_top_k
+    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", str(DEFAULT_CHUNK_TOP_K)))
     """Number of text chunks to retrieve initially from vector search and keep after reranking.
     If None, defaults to top_k value.
     """
 
-    max_entity_tokens: int = settings.max_entity_tokens
+    max_entity_tokens: int = int(
+        os.getenv("MAX_ENTITY_TOKENS", str(DEFAULT_MAX_ENTITY_TOKENS))
+    )
     """Maximum number of tokens allocated for entity context in unified token control system."""
 
-    max_relation_tokens: int = settings.max_relation_tokens
+    max_relation_tokens: int = int(
+        os.getenv("MAX_RELATION_TOKENS", str(DEFAULT_MAX_RELATION_TOKENS))
+    )
     """Maximum number of tokens allocated for relationship context in unified token control system."""
 
-    max_total_tokens: int = settings.max_total_tokens
+    max_total_tokens: int = int(
+        os.getenv("MAX_TOTAL_TOKENS", str(DEFAULT_MAX_TOTAL_TOKENS))
+    )
     """Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)."""
 
     hl_keywords: list[str] = field(default_factory=list)
@@ -115,46 +139,21 @@ class QueryParam:
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
-    # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM
-    history_turns: int = settings.history_turns
-    """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
-
-    model_func: Callable[..., object] | None = None
-    """Optional override for the LLM model function to use for this specific query.
-    If provided, this will be used instead of the global model function.
-    This allows using different models for different query modes.
-    """
-
     user_prompt: str | None = None
     """User-provided prompt for the query.
     Addition instructions for LLM. If provided, this will be inject into the prompt template.
     It's purpose is the let user customize the way LLM generate the response.
     """
 
-    enable_rerank: bool = (
-        settings.lightrag_rerank_enabled and settings.rerank_by_default
-    )
+    enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
     """
-
-    enable_web_search: bool = False
-    """If True, the web_search tool (DuckDuckGo) is added to the available tools
-    during agent-tool query execution. Requires duckduckgo_search package.
-    """
-
-    web_search_max_results: int = 5
-    """Maximum number of web search results to return per query (1-20)."""
 
     include_references: bool = False
     """If True, includes reference list in the response for supported endpoints.
     This parameter controls whether the API response includes a references field
     containing citation information for the retrieved content.
-    """
-
-    stream_event_callback: Callable[[Dict[str, Any]], Any] | None = None
-    """Optional callback used by streaming query routes to emit intermediate
-    tool-call events to the client UI while a query is running.
     """
 
 
@@ -175,6 +174,20 @@ class StorageNameSpace(ABC):
     @abstractmethod
     async def index_done_callback(self) -> None:
         """Commit the storage operations after indexing"""
+
+    async def drop_pending_index_ops(self) -> None:
+        """Discard any not-yet-flushed buffered index ops.
+
+        Backends that defer writes to ``index_done_callback`` (via an
+        in-memory ``_pending_*`` buffer) override this to clear that buffer.
+        The pipeline calls it when a batch is aborting on an internal error:
+        every still-buffered record belongs to a document that is being
+        marked FAILED and fully reprocessed on the next run, so dropping the
+        buffer is safe and prevents the poisoned/stale records from being
+        re-flushed by the remaining in-flight documents or carried over to
+        the next batch. Immediate-write backends keep the default no-op.
+        """
+        return None
 
     @abstractmethod
     async def drop(self) -> dict[str, str]:
@@ -230,14 +243,9 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         Return suffix if model_name exists in embedding_func, otherwise return None.
         Note: embedding_func is guaranteed to exist (validated in __post_init__).
 
-        The suffix is safe_model_name_{dim}d, capped to 40 chars to leave room
-        for PostgreSQL's 63-char identifier limit when prefixed (e.g. LIGHTRAG_VDB_ENTITY_).
-        Long suffixes are replaced with a stable 8-char hash.
-
         Returns:
             str | None: Suffix string e.g. "text_embedding_3_large_3072d", or None if model_name not available
         """
-        import hashlib
         import re
 
         # Check if model_name exists (model_name is optional in EmbeddingFunc)
@@ -254,14 +262,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
         # Generate suffix: clean model name and append dimension
         safe_model_name = re.sub(r"[^a-zA-Z0-9_]", "_", model_name.lower())
-        suffix = f"{safe_model_name}_{embedding_dim}d"
-
-        # Cap suffix length to leave room for base table prefix (up to ~63 chars PG limit)
-        if len(suffix) > 40:
-            short_hash = hashlib.md5(suffix.encode()).hexdigest()[:8]
-            suffix = f"emb_{short_hash}_{embedding_dim}d"
-
-        return suffix
+        return f"{safe_model_name}_{embedding_dim}d"
 
     @abstractmethod
     async def query(
@@ -284,6 +285,16 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
+
+        Multi-worker note:
+            Backends that buffer writes in process memory (e.g.
+            OpenSearchVectorDBStorage as of #3043) keep the buffer
+            process-local. In a multi-worker deployment (e.g.
+            lightrag-gunicorn) other workers will not observe these writes
+            until the writing worker has called index_done_callback().
+            Callers that depend on cross-worker read-after-write visibility
+            must explicitly await index_done_callback() before relying on
+            reads from another worker.
         """
 
     @abstractmethod
@@ -294,6 +305,9 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
+
+        Multi-worker note: see ``upsert`` -- buffered tombstones are
+        process-local until index_done_callback() runs.
         """
 
     @abstractmethod
@@ -304,6 +318,11 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
+
+        Multi-worker note: see ``upsert`` -- backends may prune their
+        in-process buffer in addition to issuing a server-side delete,
+        so cross-worker visibility still follows the index_done_callback
+        contract.
         """
 
     @abstractmethod
@@ -338,6 +357,9 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
+
+        Multi-worker note: see ``upsert`` -- buffered tombstones are
+        process-local until index_done_callback() runs.
 
         Args:
             ids: List of vector IDs to be deleted
@@ -380,6 +402,17 @@ class BaseKVStorage(StorageNameSpace, ABC):
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
+
+        Multi-worker note:
+            Backends that buffer writes in process memory (e.g.
+            OpenSearchKVStorage as of the KV-batching change derived from
+            #2822) keep the buffer process-local. In a multi-worker
+            deployment (e.g. lightrag-gunicorn) other workers will not
+            observe these writes until the writing worker has called
+            index_done_callback(). Callers that depend on cross-worker
+            read-after-write visibility must explicitly await
+            index_done_callback() before relying on reads from another
+            worker.
         """
 
     @abstractmethod
@@ -389,6 +422,9 @@ class BaseKVStorage(StorageNameSpace, ABC):
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
+
+        Multi-worker note: see ``upsert`` -- buffered tombstones are
+        process-local until index_done_callback() runs.
 
         Args:
             ids (list[str]): List of document IDs to be deleted from storage
@@ -755,13 +791,16 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
 
 class DocStatus(str, Enum):
-    """Document processing status"""
+    """Document processing status.
+    Pipeline order: PENDING -> PARSING -> ANALYZING (optional) -> PROCESSING -> PROCESSED | FAILED.
+    PREPROCESSED is deprecated, kept for backward compatibility.
+    """
 
     PENDING = "pending"
-    PROCESSING = "processing"
-    PARSING = "parsing"
-    ANALYZING = "analyzing"
-    PREPROCESSED = "preprocessed"
+    PARSING = "parsing"  # Phase 1: content extraction (parse_native/mineru/docling)
+    ANALYZING = "analyzing"  # Phase 2: multimodal analysis (VLM)
+    PROCESSING = "processing"  # Phase 3: entity/relation extraction
+    PREPROCESSED = "preprocessed"  # Deprecated: use ANALYZING in new pipeline
     PROCESSED = "processed"
     FAILED = "failed"
 
@@ -775,7 +814,13 @@ class DocProcessingStatus:
     content_length: int
     """Total length of document"""
     file_path: str
-    """File path of the document"""
+    """Canonical basename of the document.
+
+    Always a hint-stripped basename (e.g. ``abc.docx``) or the literal
+    ``"unknown_source"`` sentinel; never carries directory components or
+    parser ``[hint]`` segments. UI display, filename-based dedup, and
+    citation paths all share this value.
+    """
     status: DocStatus
     """Current processing status"""
     created_at: str
@@ -784,8 +829,6 @@ class DocProcessingStatus:
     """ISO format timestamp when document was last updated"""
     track_id: str | None = None
     """Tracking ID for monitoring progress"""
-    content_hash: str | None = None
-    """Content hash for duplicate detection"""
     chunks_count: int | None = None
     """Number of chunks after splitting, used for processing"""
     chunks_list: list[str] | None = field(default_factory=list)
@@ -795,6 +838,12 @@ class DocProcessingStatus:
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional metadata"""
     multimodal_processed: bool | None = field(default=None, repr=False)
+    content_hash: str | None = None
+    """MD5 hash of the underlying document content (raw text or source file).
+
+    Used together with file_path basename for duplicate detection. Empty for
+    pending_parse records whose content has not been extracted yet.
+    """
     """Internal field: indicates if multimodal processing is complete. Not shown in repr() but accessible for debugging."""
 
     def __post_init__(self):
@@ -819,17 +868,15 @@ class DocProcessingStatus:
 class DocStatusStorage(BaseKVStorage, ABC):
     """Base class for document status storage"""
 
-    @classmethod
+    @staticmethod
     def resolve_status_filter_values(
-        cls,
-        *,
         status_filter: DocStatus | None = None,
         status_filters: list[DocStatus] | None = None,
     ) -> set[str] | None:
-        """Normalize legacy single-status and multi-status filters.
+        """Normalize single- and multi-status filters into comparable values.
 
-        `status_filters` takes precedence when provided, matching the API contract
-        for `/documents/paginated`. Returning `None` means "no status filter".
+        `status_filters` takes precedence over `status_filter`. Empty multi-status
+        filters are treated as no filter for backward-compatible request handling.
         """
         if status_filters:
             return {status.value for status in status_filters}
@@ -901,6 +948,38 @@ class DocStatusStorage(BaseKVStorage, ABC):
         Returns:
             dict[str, Any] | None: Document data if found, None otherwise
             Returns the same format as get_by_ids method
+        """
+
+    @abstractmethod
+    async def get_doc_by_file_basename(
+        self, basename: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Get document by canonical file basename.
+
+        Used for filename-based deduplication. Callers must pass the canonical
+        basename; storage implementations only compare against the canonical
+        ``file_path`` persisted by the business layer.
+
+        Args:
+            basename: The filename basename to search for (e.g. "report.pdf").
+
+        Returns:
+            (doc_id, doc_data) when a matching record exists, otherwise None.
+        """
+
+    @abstractmethod
+    async def get_doc_by_content_hash(
+        self, content_hash: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Get document by content_hash field.
+
+        Used for content-hash deduplication of full documents.
+
+        Args:
+            content_hash: The content hash value to search for.
+
+        Returns:
+            (doc_id, doc_data) when a matching record exists, otherwise None.
         """
 
 

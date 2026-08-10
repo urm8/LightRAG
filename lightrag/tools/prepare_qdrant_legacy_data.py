@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import pipmaster as pm
+from dotenv import load_dotenv
 from qdrant_client import QdrantClient, models  # type: ignore
 
 # Add project root to path for imports
@@ -53,11 +54,12 @@ sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 
+# Load environment variables
+load_dotenv(dotenv_path=".env", override=False)
+
 # Ensure qdrant-client is installed
 if not pm.is_installed("qdrant-client"):
     pm.install("qdrant-client")
-
-from lightrag.config import settings
 
 # Collection namespace mapping: new collection pattern -> legacy suffix
 # Legacy collection will be named as: {workspace}_{suffix}
@@ -149,9 +151,12 @@ class QdrantLegacyDataPreparationTool:
             config.read("config.ini", "utf-8")
 
             self._client = QdrantClient(
-                url=settings.qdrant_url(config.get("qdrant", "uri", fallback=None)),
-                api_key=settings.qdrant_api_key(
-                    config.get("qdrant", "apikey", fallback=None)
+                url=os.environ.get(
+                    "QDRANT_URL", config.get("qdrant", "uri", fallback=None)
+                ),
+                api_key=os.environ.get(
+                    "QDRANT_API_KEY",
+                    config.get("qdrant", "apikey", fallback=None),
                 ),
             )
         return self._client

@@ -7,11 +7,10 @@ import os
 import sys
 import platform
 import pipmaster as pm
-from lightrag.config import settings
-from lightrag.api.utils_api import display_splash_screen, check_env_file
-from lightrag.api.config import global_args
-from lightrag.kg.shared_storage import initialize_share_data
 
+# Capture this before importing LightRAG modules, because those imports load .env.
+# On macOS, libobjc needs this value in the inherited process environment.
+_PROCESS_START_OBJC_FORK_SAFETY = os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY")
 
 
 def check_and_install_dependencies():
@@ -30,10 +29,47 @@ def check_and_install_dependencies():
             print(f"{package} installed successfully")
 
 
-def main():
-    # Explicitly initialize configuration for Gunicorn mode
-    from lightrag.api.config import initialize_config
+def _build_global_concurrency_limits(args) -> dict:
+    """Derive cross-worker concurrency limits from the MAX_ASYNC settings.
 
+    Under gunicorn multi-worker, every MAX_ASYNC value keeps its documented
+    meaning — the maximum number of concurrent provider calls — by acting
+    BOTH as each worker's local limit and as the cross-worker global cap
+    (without the gate the real total would be ~ MAX_ASYNC x workers).
+    Group names must match the ``concurrency_group`` values passed to
+    ``priority_limit_async_func_call``: ``llm:{role}`` for the LLM roles,
+    plus ``embedding`` and ``rerank``. Role fallbacks mirror the runtime
+    resolution in ``_get_effective_role_llm_max_async``.
+    """
+    from lightrag.llm_roles import ROLES
+
+    limits = {}
+    for spec in ROLES:
+        role_limit = getattr(args, f"{spec.name}_llm_max_async", None)
+        if role_limit is None:
+            role_limit = args.max_async
+        if role_limit is not None and role_limit > 0:
+            limits[f"llm:{spec.name}"] = role_limit
+    embedding_limit = getattr(args, "embedding_func_max_async", None)
+    if embedding_limit is not None and embedding_limit > 0:
+        limits["embedding"] = embedding_limit
+    rerank_limit = getattr(args, "rerank_max_async", None)
+    if rerank_limit is not None and rerank_limit > 0:
+        limits["rerank"] = rerank_limit
+    return limits
+
+
+def main():
+    from lightrag.api.utils_api import display_splash_screen, check_env_file
+    from lightrag.api.config import global_args, initialize_config
+    from lightrag.utils import get_env_value
+    from lightrag.kg.shared_storage import initialize_share_data
+    from lightrag.constants import (
+        DEFAULT_WOKERS,
+        DEFAULT_TIMEOUT,
+    )
+
+    # Explicitly initialize configuration for Gunicorn mode
     initialize_config()
 
     # Set Gunicorn mode flag for lifespan cleanup detection
@@ -43,41 +79,13 @@ def main():
     if not check_env_file():
         sys.exit(1)
 
-    # Check DOCLING compatibility with Gunicorn multi-worker mode on macOS
-    if (
-        platform.system() == "Darwin"
-        and global_args.document_loading_engine == "DOCLING"
-        and global_args.workers > 1
-    ):
-        print("\n" + "=" * 80)
-        print("❌ ERROR: Incompatible configuration detected!")
-        print("=" * 80)
-        print(
-            "\nDOCLING engine with Gunicorn multi-worker mode is not supported on macOS"
-        )
-        print("\nReason:")
-        print("  PyTorch (required by DOCLING) has known compatibility issues with")
-        print("  fork-based multiprocessing on macOS, which can cause crashes or")
-        print("  unexpected behavior when using Gunicorn with multiple workers.")
-        print("\nCurrent configuration:")
-        print("  - Operating System: macOS (Darwin)")
-        print(f"  - Document Engine: {global_args.document_loading_engine}")
-        print(f"  - Workers: {global_args.workers}")
-        print("\nPossible solutions:")
-        print("  1. Use single worker mode:")
-        print("     --workers 1")
-        print("\n  2. Change document loading engine in .env:")
-        print("     DOCUMENT_LOADING_ENGINE=DEFAULT")
-        print("\n  3. Deploy on Linux where multi-worker mode is fully supported")
-        print("=" * 80 + "\n")
-        sys.exit(1)
-
     # Check macOS fork safety environment variable for multi-worker mode
     if (
         platform.system() == "Darwin"
         and global_args.workers > 1
-        and settings.objc_disable_initialize_fork_safety != "YES"
+        and _PROCESS_START_OBJC_FORK_SAFETY != "YES"
     ):
+        current_objc_fork_safety = os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY")
         print("\n" + "=" * 80)
         print("❌ ERROR: Missing required environment variable on macOS!")
         print("=" * 80)
@@ -91,8 +99,17 @@ def main():
         print("  - Operating System: macOS (Darwin)")
         print(f"  - Workers: {global_args.workers}")
         print(
-            f"  - Environment Variable: {settings.objc_disable_initialize_fork_safety or 'NOT SET'}"
+            "  - Process Environment at Startup: "
+            f"{_PROCESS_START_OBJC_FORK_SAFETY or 'NOT SET'}"
         )
+        print(
+            f"  - Environment After .env Load: {current_objc_fork_safety or 'NOT SET'}"
+        )
+        if current_objc_fork_safety == "YES":
+            print("\nNote:")
+            print("  OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES was loaded from .env,")
+            print("  but that is too late for the macOS Objective-C runtime.")
+            print("  Export it before starting lightrag-gunicorn.")
         print("\nHow to fix:")
         print("  Option 1 - Set environment variable before starting (recommended):")
         print("     export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES")
@@ -179,19 +196,19 @@ def main():
             gunicorn_config.workers = (
                 global_args.workers
                 if global_args.workers
-                else settings.workers
+                else get_env_value("WORKERS", DEFAULT_WOKERS, int)
             )
 
             # Bind configuration prioritizes command line arguments
             host = (
                 global_args.host
                 if global_args.host != "0.0.0.0"
-                else settings.host
+                else os.getenv("HOST", "0.0.0.0")
             )
             port = (
                 global_args.port
                 if global_args.port != 9621
-                else settings.port
+                else get_env_value("PORT", 9621, int)
             )
             gunicorn_config.bind = f"{host}:{port}"
 
@@ -199,30 +216,38 @@ def main():
             gunicorn_config.loglevel = (
                 global_args.log_level.lower()
                 if global_args.log_level
-                else settings.log_level.lower()
+                else os.getenv("LOG_LEVEL", "info")
             )
 
             # Timeout configuration prioritizes command line arguments
             gunicorn_config.timeout = (
                 global_args.timeout + 30
                 if global_args.timeout is not None
-                else None if settings.timeout is None else settings.timeout + 30
+                else get_env_value(
+                    "TIMEOUT", DEFAULT_TIMEOUT + 30, int, special_none=True
+                )
             )
 
             # Keepalive configuration
-            gunicorn_config.keepalive = settings.keepalive
+            gunicorn_config.keepalive = get_env_value("KEEPALIVE", 5, int)
 
             # SSL configuration prioritizes command line arguments
-            if global_args.ssl or settings.ssl:
+            if global_args.ssl or os.getenv("SSL", "").lower() in (
+                "true",
+                "1",
+                "yes",
+                "t",
+                "on",
+            ):
                 gunicorn_config.certfile = (
                     global_args.ssl_certfile
                     if global_args.ssl_certfile
-                    else settings.ssl_certfile
+                    else os.getenv("SSL_CERTFILE")
                 )
                 gunicorn_config.keyfile = (
                     global_args.ssl_keyfile
                     if global_args.ssl_keyfile
-                    else settings.ssl_keyfile
+                    else os.getenv("SSL_KEYFILE")
                 )
 
             # Set configuration options from the module
@@ -257,7 +282,14 @@ def main():
     if workers_count > 1:
         # Set a flag to indicate we're in the main process
         os.environ["LIGHTRAG_MAIN_PROCESS"] = "1"
-        initialize_share_data(workers_count)
+        # Cross-worker global concurrency limits derived from MAX_ASYNC
+        # (read-only after this point; forked workers inherit them as
+        # module globals). Single-worker mode needs no cross-process gate —
+        # the per-process max_async already IS the total limit there.
+        initialize_share_data(
+            workers_count,
+            global_concurrency_limits=_build_global_concurrency_limits(global_args),
+        )
     else:
         initialize_share_data(1)
 

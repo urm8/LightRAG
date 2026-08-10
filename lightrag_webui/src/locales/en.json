@@ -99,7 +99,7 @@
         "error": "Some files failed to upload"
       },
       "generalError": "Upload Failed\n{{error}}",
-      "fileTypes": "Supported types: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Supported types: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Cannot upload more than 1 file at a time",
         "maxFilesLimit": "Cannot upload more than {{count}} files",
@@ -201,6 +201,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "Graph data is truncated to Max Nodes",
+    "fetchRetriesExhausted": "Failed to load graph data. Use refresh to try again.",
+    "graphBuildFailed": "Failed to render graph data. Use refresh to retry.",
     "statusDialog": {
       "title": "LightRAG Server Settings",
       "description": "View current system status and connection information"
@@ -226,7 +228,6 @@
       "data": "Data",
       "artifact": "Artifact",
       "concept": "Concept",
-      "project": "Project",
       "naturalobject": "Natural Object",
       "method": "Method",
       "creature": "Creature",
@@ -234,15 +235,10 @@
       "disease": "Disease",
       "drug": "Drug",
       "food": "Food",
-      "other": "Other",
-      "repository": "Repository",
-      "framework": "Framework",
-      "agent": "Agent",
-      "api": "API",
-      "workflow": "Workflow",
-      "license": "License",
-      "tool": "Tool",
-      "programminglanguage": "Programming Language"
+      "table": "Table",
+      "drawing": "Drawing",
+      "equation": "Equation",
+      "other": "Other"
     },
     "sideBar": {
       "settings": {
@@ -255,13 +251,14 @@
         "showEdgeLabel": "Show Edge Label",
         "hideUnselectedEdges": "Hide Unselected Edges",
         "edgeEvents": "Edge Events",
+        "edgeEventsDisabledHint": "Disabled for graphs with more than {{count}} edges",
         "maxQueryDepth": "Max Query Depth",
         "maxNodes": "Max Nodes",
-        "maxLayoutIterations": "Max Layout Iterations",
         "resetToDefault": "Reset to default",
         "edgeSizeRange": "Edge Size Range",
         "depth": "D",
-        "max": "Max",
+        "node": "node",
+        "edge": "edge",
         "degree": "Degree",
         "apiKey": "API Key",
         "enterYourAPIkey": "Enter your API key",
@@ -419,6 +416,8 @@
       "startPrompt": "Start a retrieval by typing your query below",
       "clear": "Clear",
       "send": "Send",
+      "stop": "Stop",
+      "userTerminated": "User terminated — response may be incomplete",
       "placeholder": "Enter your query (Support prefix: /<Query Mode>)",
       "error": "Error: Failed to get response",
       "queryModeError": "Only supports the following query modes: {{modes}}",
@@ -429,6 +428,7 @@
       "parametersDescription": "Configure your query parameters",
       "queryMode": "Query Mode",
       "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Traditional text chunk vector retrieval\n• Local: Focus on entity retrieval\n• Global: Focus on relationship retrieval\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Skip retrieval, send conversation history and current question to LLM",
+      "queryModeWarning": "May reduce retrieval quality",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

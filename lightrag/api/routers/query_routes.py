@@ -2,555 +2,13 @@
 This module contains all query-related routes for the LightRAG API.
 """
 
-import asyncio
-import copy
-import inspect
 import json
-import re
-import time
 from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
-from lightrag.config import settings
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
-from lightrag.prompt import PROMPTS
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
-
-router = APIRouter(tags=["query"])
-
-_REFERENCES_SECTION_RE = re.compile(
-    r"(?:\n|^)\s*(?:#{1,6}\s*)?References\b[\s\S]*\Z",
-    re.IGNORECASE | re.MULTILINE,
-)
-def _rerank_enabled_globally() -> bool:
-    return settings.lightrag_rerank_enabled
-
-
-def _get_query_prompt_template(
-    prompt_key: str | None, default_key: str = "rag_response"
-) -> str:
-    prompt_key = str(prompt_key or "").strip()
-    if prompt_key:
-        if prompt_key in PROMPTS:
-            return PROMPTS[prompt_key]
-        logger.warning("Ignoring unknown query prompt key %r", prompt_key)
-    return PROMPTS[default_key]
-
-
-def _get_query_prompt_for_request(request: "QueryRequest") -> str:
-    """Return the normal-path (deep) query prompt."""
-    if request.query_model == "granite":
-        return _get_query_prompt_template(
-            settings.webui_query_enrichment_prompt,
-            "rag_response",
-        )
-    return PROMPTS["rag_response"]
-
-
-def _get_fast_path_prompt() -> str:
-    """Return the fast-path (shallow, 4K-window) query prompt."""
-    return _get_query_prompt_template(
-        settings.lightrag_query_fast_prompt, "apfel_rag_response"
-    )
-
-
-def _query_model_name() -> str:
-    return str(settings.llm_model_configured or "").strip().lower()
-
-
-async def _await_query_call(result: Any) -> Any:
-    if inspect.isawaitable(result):
-        return await result
-    return result
-
-
-def _query_binding_host() -> str:
-    return str(settings.llm_binding_host or "").strip().lower()
-
-
-def _is_apfel_query_model() -> bool:
-    model = _query_model_name()
-    host = _query_binding_host()
-    return (
-        "apple-foundationmodel" in model
-        or "apfel" in model
-        or "127.0.0.1:11435" in host
-        or "localhost:11435" in host
-    )
-
-
-def _fast_query_context_length() -> int | None:
-    if _is_apfel_query_model():
-        explicit = settings.lightrag_query_fast_context_length
-        if explicit:
-            return explicit
-        return settings.apfel_context_length
-    return (
-        settings.mlx_openai_server_retrieval_context_length_configured
-        or settings.llm_context_length
-    )
-
-
-def _truncate_conversation_history_for_fast_query(param: QueryParam) -> None:
-    if not getattr(param, "conversation_history", None):
-        return
-
-    history_turns = settings.lightrag_query_fast_history_turns
-    if history_turns is None:
-        history_turns = 0 if _is_apfel_query_model() else param.history_turns
-
-    if history_turns <= 0:
-        removed_count = len(param.conversation_history)
-        param.conversation_history = []
-        if removed_count:
-            logger.info(
-                "Dropped %s conversation history messages for fast query context",
-                removed_count,
-            )
-        return
-
-    max_messages = history_turns * 2
-    if len(param.conversation_history) > max_messages:
-        param.conversation_history = param.conversation_history[-max_messages:]
-
-    max_chars = settings.lightrag_query_fast_history_max_chars
-    used_chars = 0
-    kept_messages: list[dict[str, Any]] = []
-    for message in reversed(param.conversation_history):
-        content = str(message.get("content", ""))
-        remaining = max_chars - used_chars
-        if remaining <= 0:
-            break
-        clipped = content[-remaining:]
-        used_chars += len(clipped)
-        next_message = dict(message)
-        next_message["content"] = clipped
-        kept_messages.append(next_message)
-    param.conversation_history = list(reversed(kept_messages))
-
-
-def _apply_fast_query_defaults(param: QueryParam) -> None:
-    if not _is_apfel_query_model():
-        return
-
-    param.top_k = min(param.top_k, settings.lightrag_query_fast_top_k)
-    if param.chunk_top_k:
-        param.chunk_top_k = min(
-            param.chunk_top_k, settings.lightrag_query_fast_chunk_top_k
-        )
-    else:
-        param.chunk_top_k = settings.lightrag_query_fast_chunk_top_k
-
-    fast_total = settings.lightrag_query_fast_max_total_tokens
-    fast_entities = settings.lightrag_query_fast_max_entity_tokens
-    fast_relations = settings.lightrag_query_fast_max_relation_tokens
-
-    param.max_total_tokens = min(param.max_total_tokens, fast_total)
-    param.max_entity_tokens = min(param.max_entity_tokens, fast_entities)
-    param.max_relation_tokens = min(param.max_relation_tokens, fast_relations)
-    param.response_type = settings.lightrag_query_fast_response_type
-
-    if not settings.lightrag_query_fast_enable_rerank:
-        param.enable_rerank = False
-
-    # Apfel has a 4k window and weak tool-following for this use case. Keep the
-    # fast answer path as plain RAG; slower enrichment can use richer prompts.
-    param.enable_agent_tools = False
-    param.max_completion_tokens = settings.lightrag_query_fast_max_completion_tokens
-    _truncate_conversation_history_for_fast_query(param)
-
-
-def _make_fast_path_param(param: QueryParam) -> QueryParam:
-    """Create a fast-path param by applying 4K window settings unconditionally.
-
-    The normal path uses the full model context window (e.g. 16K for Hermes-4).
-    This clones the normal param and clamps budgets to the fast / apfel-compatible
-    4K profile so both query paths can be launched in parallel.
-    """
-    fast_param = copy.deepcopy(param)
-
-    fast_param.top_k = min(
-        fast_param.top_k, settings.lightrag_query_fast_top_k
-    )
-    if fast_param.chunk_top_k:
-        fast_param.chunk_top_k = min(
-            fast_param.chunk_top_k, settings.lightrag_query_fast_chunk_top_k
-        )
-    else:
-        fast_param.chunk_top_k = settings.lightrag_query_fast_chunk_top_k
-
-    fast_param.max_total_tokens = min(
-        fast_param.max_total_tokens,
-        settings.lightrag_query_fast_max_total_tokens,
-    )
-    fast_param.max_entity_tokens = min(
-        fast_param.max_entity_tokens,
-        settings.lightrag_query_fast_max_entity_tokens,
-    )
-    fast_param.max_relation_tokens = min(
-        fast_param.max_relation_tokens,
-        settings.lightrag_query_fast_max_relation_tokens,
-    )
-    fast_param.max_completion_tokens = (
-        settings.lightrag_query_fast_max_completion_tokens
-    )
-    fast_param.response_type = settings.lightrag_query_fast_response_type
-
-    if not settings.lightrag_query_fast_enable_rerank:
-        fast_param.enable_rerank = False
-
-    fast_param.enable_agent_tools = False
-    _truncate_conversation_history_for_fast_query(fast_param)
-
-    return fast_param
-
-
-def _build_openai_query_model_func(
-    *,
-    model: str,
-    base_url: str,
-    api_key: str,
-    timeout: int,
-):
-    async def _model_func(
-        prompt,
-        system_prompt=None,
-        history_messages=None,
-        keyword_extraction=False,
-        **kwargs,
-    ) -> str:
-        from lightrag.llm.openai import openai_complete_if_cache
-
-        kwargs.pop("_priority", None)
-        kwargs["timeout"] = timeout
-        if history_messages is None:
-            history_messages = []
-        return await openai_complete_if_cache(
-            model,
-            prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            base_url=base_url,
-            api_key=api_key,
-            keyword_extraction=keyword_extraction,
-            **kwargs,
-        )
-
-    return _model_func
-
-
-def _build_webui_enrichment_model_func():
-    model = str(settings.webui_query_enrichment_model or "").strip()
-    base_url = str(settings.webui_query_enrichment_binding_host or "").strip()
-    api_key = settings.webui_query_enrichment_binding_api_key
-    timeout = settings.webui_query_enrichment_timeout
-    if not model or not base_url:
-        return None
-    return _build_openai_query_model_func(
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
-        timeout=timeout,
-    )
-
-
-def _build_granite_query_model_func():
-    model = (
-        str(settings.lightrag_granite_query_model or "").strip()
-        or str(settings.webui_query_enrichment_model or "").strip()
-    )
-    base_url = (
-        str(settings.lightrag_granite_query_binding_host or "").strip()
-        or str(settings.webui_query_enrichment_binding_host or "").strip()
-    )
-    api_key = (
-        settings.lightrag_granite_query_binding_api_key
-        or settings.webui_query_enrichment_binding_api_key
-    )
-    timeout = (
-        settings.lightrag_granite_query_timeout
-        or settings.webui_query_enrichment_timeout
-    )
-    if not model or not base_url:
-        return None
-    return _build_openai_query_model_func(
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
-        timeout=timeout,
-    )
-
-
-def _apply_granite_query_defaults(param: QueryParam) -> QueryParam:
-    model_func = _build_granite_query_model_func()
-    if model_func is None:
-        logger.warning(
-            "Granite query profile requested but LIGHTRAG_GRANITE_QUERY_MODEL/HOST "
-            "or WEBUI_QUERY_ENRICHMENT_MODEL/HOST is not configured"
-        )
-        return _clamp_query_param_for_local_context(param)
-
-    param.model_func = model_func
-    param.top_k = min(param.top_k, settings.webui_query_enrichment_top_k)
-    if param.chunk_top_k:
-        param.chunk_top_k = min(
-            param.chunk_top_k, settings.webui_query_enrichment_chunk_top_k
-        )
-    else:
-        param.chunk_top_k = settings.webui_query_enrichment_chunk_top_k
-    param.max_total_tokens = min(
-        param.max_total_tokens,
-        settings.webui_query_enrichment_max_total_tokens,
-    )
-    param.max_entity_tokens = min(
-        param.max_entity_tokens,
-        settings.webui_query_enrichment_max_entity_tokens,
-    )
-    param.max_relation_tokens = min(
-        param.max_relation_tokens,
-        settings.webui_query_enrichment_max_relation_tokens,
-    )
-    param.max_completion_tokens = settings.webui_query_enrichment_max_completion_tokens
-    param.enable_agent_tools = settings.webui_query_enrichment_agent_tools
-    param.enable_rerank = _rerank_enabled_globally() and settings.webui_query_enrichment_enable_rerank
-    return param
-
-
-def _clamp_query_param_for_local_context(param: QueryParam) -> QueryParam:
-    """Keep query prompts inside the managed local retrieval model window.
-
-    Browser settings are persisted client-side and older sessions can still
-    submit budgets such as 30k tokens. The local MLX retrieval model may be
-    configured with a much smaller context, so clamp API query budgets here
-    before retrieval context construction.
-    """
-    _apply_fast_query_defaults(param)
-
-    context_length = _fast_query_context_length()
-    if not context_length:
-        return param
-
-    completion_tokens = getattr(param, "max_completion_tokens", None)
-    if completion_tokens is None and _is_apfel_query_model():
-        completion_tokens = settings.lightrag_query_fast_max_completion_tokens
-    completion_tokens = (
-        completion_tokens
-        or settings.openai_llm_max_completion_tokens
-        or settings.mlx_openai_server_retrieval_max_tokens_configured
-        or 1024
-    )
-    # Keep the prompt comfortably below the model window and leave room for
-    # completion tokens even when users override server defaults from the UI.
-    prompt_cap = max(1024, int(context_length * 0.8))
-    if context_length > completion_tokens + 512:
-        prompt_cap = min(prompt_cap, context_length - completion_tokens - 512)
-
-    original_total = param.max_total_tokens
-    if param.max_total_tokens > prompt_cap:
-        param.max_total_tokens = prompt_cap
-
-    kg_cap = max(512, int(param.max_total_tokens * 0.6))
-    entity_tokens = max(1, param.max_entity_tokens)
-    relation_tokens = max(1, param.max_relation_tokens)
-    if entity_tokens + relation_tokens > kg_cap:
-        total = entity_tokens + relation_tokens
-        param.max_entity_tokens = max(256, int(kg_cap * entity_tokens / total))
-        param.max_relation_tokens = max(
-            256, kg_cap - param.max_entity_tokens
-        )
-
-    if original_total != param.max_total_tokens:
-        logger.info(
-            "Clamped query token budget for local retrieval model: "
-            "requested_total=%s effective_total=%s context_length=%s completion_tokens=%s "
-            "top_k=%s chunk_top_k=%s entity_tokens=%s relation_tokens=%s",
-            original_total,
-            param.max_total_tokens,
-            context_length,
-            completion_tokens,
-            param.top_k,
-            param.chunk_top_k,
-            param.max_entity_tokens,
-            param.max_relation_tokens,
-        )
-    return param
-
-
-def _format_reference_source(source: str) -> str:
-    source = (source or "").strip()
-    if not source:
-        return ""
-    if source.startswith(("http://", "https://")):
-        return f"[{source}]({source})"
-    return source
-
-
-def _iter_reference_sources(data: dict[str, Any]):
-    for ref in data.get("references", []) or []:
-        yield ref.get("reference_id"), ref.get("file_path")
-
-    for chunk in data.get("chunks", []) or []:
-        yield chunk.get("reference_id"), chunk.get("file_path")
-
-    for key in ("entities", "relationships"):
-        for item in data.get(key, []) or []:
-            file_path = str(item.get("file_path", "")).strip()
-            for source in file_path.split("<SEP>"):
-                source = source.strip()
-                if source and source != "unknown_source":
-                    yield None, source
-
-
-def _dedupe_reference_pairs(
-    pairs, max_references: int = 5
-) -> list[dict[str, Any]]:
-    references: list[dict[str, Any]] = []
-    seen_sources: set[str] = set()
-    seen_ids: set[str] = set()
-    next_id = 1
-
-    for reference_id, file_path in pairs:
-        source = str(file_path or "").strip()
-        if not source or source in seen_sources:
-            continue
-        seen_sources.add(source)
-
-        rendered_id = str(reference_id or "").strip()
-        if not rendered_id:
-            while str(next_id) in seen_ids:
-                next_id += 1
-            rendered_id = str(next_id)
-            next_id += 1
-        seen_ids.add(rendered_id)
-
-        references.append({"reference_id": rendered_id, "file_path": source})
-        if len(references) >= max_references:
-            break
-
-    return references
-
-
-def _references_from_query_data(data: dict[str, Any], max_references: int = 5):
-    chunk_pairs = [
-        (chunk.get("reference_id"), chunk.get("file_path"))
-        for chunk in data.get("chunks", []) or []
-    ]
-    chunk_references = _dedupe_reference_pairs(chunk_pairs, max_references)
-    if chunk_references:
-        return chunk_references
-
-    return _dedupe_reference_pairs(_iter_reference_sources(data), max_references)
-
-
-def _build_canonical_references_section(
-    references: list[dict[str, Any]], max_references: int = 5
-) -> str:
-    lines: list[str] = []
-    seen: set[tuple[str, str]] = set()
-
-    for ref in references:
-        reference_id = str(ref.get("reference_id", "")).strip()
-        file_path = str(ref.get("file_path", "")).strip()
-        key = (reference_id, file_path)
-        if not reference_id or not file_path or key in seen:
-            continue
-        seen.add(key)
-        rendered_source = _format_reference_source(file_path)
-        if not rendered_source:
-            continue
-        lines.append(f"- [{reference_id}] {rendered_source}")
-        if len(lines) >= max_references:
-            break
-
-    if not lines:
-        return ""
-
-    return "### References\n\n" + "\n".join(lines)
-
-
-def _ensure_response_has_canonical_references(
-    response_content: str, references: list[dict[str, Any]]
-) -> str:
-    canonical_section = _build_canonical_references_section(references)
-    if not canonical_section:
-        return response_content
-
-    base_content = _REFERENCES_SECTION_RE.sub("", response_content or "").rstrip()
-    if not base_content:
-        return canonical_section
-    return f"{base_content}\n\n{canonical_section}"
-
-
-def _response_content_with_references(
-    llm_response: dict[str, Any],
-    references: list[dict[str, Any]],
-    *,
-    include_references: bool,
-) -> str:
-    response_content = llm_response.get("content", "")
-    if not response_content:
-        return "No relevant context found for the query."
-    if include_references:
-        return _ensure_response_has_canonical_references(response_content, references)
-    return response_content
-
-
-def _make_enrichment_param(request_param: QueryParam) -> QueryParam:
-    enrich_param = copy.deepcopy(request_param)
-    enrich_param.stream = False
-    enrich_param.model_func = _build_webui_enrichment_model_func()
-    enrich_param.top_k = settings.webui_query_enrichment_top_k
-    enrich_param.chunk_top_k = settings.webui_query_enrichment_chunk_top_k
-    enrich_param.max_total_tokens = settings.webui_query_enrichment_max_total_tokens
-    enrich_param.max_entity_tokens = settings.webui_query_enrichment_max_entity_tokens
-    enrich_param.max_relation_tokens = settings.webui_query_enrichment_max_relation_tokens
-    enrich_param.max_completion_tokens = (
-        settings.webui_query_enrichment_max_completion_tokens
-    )
-    enrich_param.enable_agent_tools = settings.webui_query_enrichment_agent_tools
-    enrich_param.enable_rerank = (
-        _rerank_enabled_globally() and settings.webui_query_enrichment_enable_rerank
-    )
-    marker = "Granite enrichment pass for WebUI. Improve completeness and source grounding."
-    enrich_param.user_prompt = (
-        f"{request_param.user_prompt}\n\n{marker}"
-        if request_param.user_prompt
-        else marker
-    )
-    return enrich_param
-
-
-async def _run_enrichment_query(
-    rag,
-    request: "QueryRequest",
-    param: QueryParam,
-) -> dict[str, Any]:
-    started = time.perf_counter()
-    if param.model_func is None:
-        raise RuntimeError("WEBUI_QUERY_ENRICHMENT_MODEL/HOST is not configured")
-    result = await rag.aquery_llm(
-        request.query,
-        param=param,
-        system_prompt=_get_query_prompt_template(
-            settings.webui_query_enrichment_prompt,
-            "rag_response",
-        ),
-    )
-    elapsed_ms = int((time.perf_counter() - started) * 1000)
-    data = result.get("data", {})
-    references = _references_from_query_data(data)
-    response = _response_content_with_references(
-        result.get("llm_response", {}),
-        references,
-        include_references=bool(request.include_references),
-    )
-    return {
-        "response": response,
-        "elapsed_ms": elapsed_ms,
-        "model": settings.webui_query_enrichment_model or "",
-        "references": references,
-    }
 
 
 class QueryRequest(BaseModel):
@@ -646,28 +104,8 @@ class QueryRequest(BaseModel):
     )
 
     stream: Optional[bool] = Field(
-        default=True,
-        description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
-    )
-
-    include_debug: Optional[bool] = Field(
-        default=False,
-        description="If True, includes structured retrieval debug information in /query/stream responses.",
-    )
-
-    include_enrichment: Optional[bool] = Field(
-        default=False,
-        description="If True, WebUI receives a slower Granite enrichment result after the fast primary answer.",
-    )
-
-    use_fast_query: Optional[bool] = Field(
-        default=False,
-        description="If True, also runs the optional Apfel fast-query side path. Disabled by default.",
-    )
-
-    query_model: Optional[Literal["default", "granite"]] = Field(
         default=None,
-        description="Internal query model profile override. Used by MCP to route query synthesis through Granite.",
+        description="If True, enables streaming output. Defaults to False for /query, True for /query/stream.",
     )
 
     @field_validator("query", mode="after")
@@ -694,26 +132,12 @@ class QueryRequest(BaseModel):
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
         # Exclude API-level parameters that don't belong in QueryParam
         request_data = self.model_dump(
-            exclude_none=True,
-            exclude={
-                "query",
-                "include_chunk_content",
-                "include_debug",
-                "include_enrichment",
-                "use_fast_query",
-                "query_model",
-            },
+            exclude_none=True, exclude={"query", "include_chunk_content"}
         )
 
         # Ensure `mode` and `stream` are set explicitly
         param = QueryParam(**request_data)
         param.stream = is_stream
-        if self.query_model == "granite":
-            param = _apply_granite_query_defaults(param)
-        else:
-            param = _clamp_query_param_for_local_context(param)
-        if not _rerank_enabled_globally():
-            param.enable_rerank = False
         return param
 
 
@@ -735,35 +159,6 @@ class QueryResponse(BaseModel):
     references: Optional[List[ReferenceItem]] = Field(
         default=None,
         description="Reference list (Disabled when include_references=False, /query/data always includes references.)",
-    )
-    enrichment_response: Optional[str] = Field(
-        default=None,
-        description="Slower WebUI enrichment answer generated by the configured enrichment model.",
-    )
-    enrichment_model: Optional[str] = Field(
-        default=None,
-        description="Model name used for WebUI enrichment.",
-    )
-    enrichment_elapsed_ms: Optional[int] = Field(
-        default=None,
-        description="Elapsed time for WebUI enrichment in milliseconds.",
-    )
-    enrichment_error: Optional[str] = Field(
-        default=None,
-        description="Enrichment error if the primary fast answer succeeded but enrichment failed.",
-    )
-
-    fast_response: Optional[str] = Field(
-        default=None,
-        description="Fast-path (4K window) answer generated in parallel with the primary response.",
-    )
-    fast_elapsed_ms: Optional[int] = Field(
-        default=None,
-        description="Elapsed time for the fast-path query in milliseconds.",
-    )
-    fast_error: Optional[str] = Field(
-        default=None,
-        description="Fast-path error if the normal path succeeded but the fast path failed.",
     )
 
 
@@ -791,117 +186,15 @@ class StreamChunkResponse(BaseModel):
     error: Optional[str] = Field(
         default=None, description="Error message if processing fails"
     )
-    debug: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Structured retrieval debug payload for frontend progress panels",
-    )
-
-
-def _build_stream_debug_payload(
-    request: QueryRequest, result: Dict[str, Any]
-) -> Dict[str, Any]:
-    data = result.get("data", {}) or {}
-    metadata = result.get("metadata", {}) or {}
-    processing_info = metadata.get("processing_info", {}) or {}
-    keywords = metadata.get("keywords", {}) or {}
-
-    entities = data.get("entities", []) or []
-    relationships = data.get("relationships", []) or []
-    chunks = data.get("chunks", []) or []
-    references = data.get("references", []) or []
-
-    def chunk_preview(chunk: Dict[str, Any]) -> Dict[str, Any]:
-        content = (chunk.get("content") or "").strip().replace("\n", " ")
-        return {
-            "reference_id": chunk.get("reference_id"),
-            "file_path": chunk.get("file_path"),
-            "chunk_id": chunk.get("chunk_id"),
-            "preview": content[:220],
-        }
-
-    def entity_preview(entity: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "entity_name": entity.get("entity_name"),
-            "entity_type": entity.get("entity_type"),
-            "file_path": entity.get("file_path"),
-            "reference_id": entity.get("reference_id"),
-        }
-
-    def relationship_preview(relationship: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "src_id": relationship.get("src_id"),
-            "tgt_id": relationship.get("tgt_id"),
-            "weight": relationship.get("weight"),
-            "file_path": relationship.get("file_path"),
-            "reference_id": relationship.get("reference_id"),
-        }
-
-    retrieval_steps = [
-        {
-            "label": "Mode",
-            "detail": f"{metadata.get('query_mode', request.mode)} retrieval pipeline selected",
-        },
-        {
-            "label": "Keywords",
-            "detail": (
-                f"HL={len(keywords.get('high_level', []) or [])}, "
-                f"LL={len(keywords.get('low_level', []) or [])}"
-            ),
-        },
-        {
-            "label": "Knowledge Graph",
-            "detail": (
-                f"entities={len(entities)}, relationships={len(relationships)}"
-            ),
-        },
-        {
-            "label": "Vector Search",
-            "detail": (
-                f"chunks={len(chunks)}, references={len(references)}"
-            ),
-        },
-        {
-            "label": "Rerank",
-            "detail": "enabled"
-            if _rerank_enabled_globally() and request.enable_rerank is not False
-            else "disabled",
-        },
-    ]
-
-    payload = {
-        "query": request.query,
-        "mode": metadata.get("query_mode", request.mode),
-        "keywords": {
-            "high_level": keywords.get("high_level", []) or [],
-            "low_level": keywords.get("low_level", []) or [],
-        },
-        "processing_info": processing_info,
-        "capabilities": {
-            "rerank_enabled": _rerank_enabled_globally()
-            and request.enable_rerank is not False,
-            "tool_calls_visible": False,
-            "cosine_scores_visible": False,
-        },
-        "notes": [
-            "This panel reflects real retrieval data returned by LightRAG before answer generation.",
-            "Per-item cosine scores and agent tool-call traces are not exposed by this query endpoint yet.",
-        ],
-        "retrieval_steps": retrieval_steps,
-        "samples": {
-            "entities": [entity_preview(entity) for entity in entities[:5]],
-            "relationships": [
-                relationship_preview(relationship) for relationship in relationships[:5]
-            ],
-            "chunks": [chunk_preview(chunk) for chunk in chunks[:5]],
-            "references": references[:5],
-        },
-    }
-    if metadata.get("apfel_iterative"):
-        payload["iterative"] = metadata.get("apfel_iterative")
-    return payload
 
 
 def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+    # Fresh router per call. A module-level instance would accumulate
+    # duplicate routes when the factory is invoked more than once in the
+    # same process (e.g. across tests), which triggers FastAPI's
+    # "Duplicate Operation ID" warnings.
+    router = APIRouter(tags=["query"])
+
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post(
@@ -1037,9 +330,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         """
         Comprehensive RAG query endpoint with non-streaming response. Parameter "stream" is ignored.
 
-        This endpoint performs Retrieval-Augmented Generation (RAG) queries using various modes
-        to provide intelligent responses based on your knowledge base.
-
         **Query Modes:**
         - **local**: Focuses on specific entities and their direct relationships
         - **global**: Analyzes broader patterns and relationships across the knowledge graph
@@ -1113,50 +403,23 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
         try:
-            normal_param = request.to_query_params(
+            param = request.to_query_params(
                 False
             )  # Ensure stream=False for non-streaming endpoint
             # Force stream=False for /query endpoint regardless of include_references setting
-            normal_param.stream = False
+            param.stream = False
+            # Unified approach: always use aquery_llm for both cases
+            result = await rag.aquery_llm(request.query, param=param)
 
-            fast_task = None
-            if request.use_fast_query:
-                fast_param = _make_fast_path_param(normal_param)
-                fast_param.stream = False
-                fast_task = asyncio.create_task(
-                    rag.aquery_llm(
-                        request.query,
-                        param=fast_param,
-                        system_prompt=_get_fast_path_prompt(),
-                    )
-                )
-
-            enrichment_task = None
-            if request.include_enrichment and settings.webui_query_enrichment_enabled:
-                enrichment_task = asyncio.create_task(
-                    _run_enrichment_query(
-                        rag, request, _make_enrichment_param(normal_param)
-                    )
-                )
-
-            normal_result = await rag.aquery_llm(
-                request.query,
-                param=normal_param,
-                system_prompt=_get_query_prompt_for_request(request),
-            )
-
-            llm_response = normal_result.get("llm_response", {})
-            data = normal_result.get("data", {})
-            references = _references_from_query_data(data)
+            # Extract LLM response and references from unified result
+            llm_response = result.get("llm_response", {})
+            data = result.get("data", {})
+            references = data.get("references", [])
 
             # Get the non-streaming response content
             response_content = llm_response.get("content", "")
             if not response_content:
                 response_content = "No relevant context found for the query."
-            elif request.include_references:
-                response_content = _ensure_response_has_canonical_references(
-                    response_content, references
-                )
 
             # Enrich references with chunk content if requested
             if request.include_references and request.include_chunk_content:
@@ -1183,35 +446,76 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             # Return response with or without references based on request
             if request.include_references:
-                response = QueryResponse(response=response_content, references=references)
+                return QueryResponse(response=response_content, references=references)
             else:
-                response = QueryResponse(response=response_content, references=None)
-
-            if fast_task is not None:
-                fast_result = await asyncio.gather(fast_task, return_exceptions=True)
-                fast_outcome = fast_result[0]
-                if not isinstance(fast_outcome, Exception):
-                    fast_llm = fast_outcome.get("llm_response", {})
-                    fast_content = fast_llm.get("content", "")
-                    if fast_content:
-                        response.fast_response = fast_content
-                else:
-                    response.fast_error = str(fast_outcome)
-
-            if enrichment_task is not None:
-                try:
-                    enrichment = await enrichment_task
-                    response.enrichment_response = enrichment.get("response")
-                    response.enrichment_elapsed_ms = enrichment.get("elapsed_ms")
-                    response.enrichment_model = enrichment.get("model")
-                except Exception as exc:
-                    logger.warning("WebUI query enrichment failed: %s", exc)
-                    response.enrichment_error = str(exc)
-
-            return response
+                return QueryResponse(response=response_content, references=None)
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
+
+    def _build_stream_generator(
+        *,
+        result: dict[str, Any],
+        include_references: bool,
+        include_chunk_content: bool,
+    ):
+        """Shared async generator that yields NDJSON lines for streaming responses.
+
+        Used by ``/query/stream`` to format NDJSON output with consistent
+        error-handling behaviour.
+        """
+
+        async def _generate():
+            references = result.get("data", {}).get("references", [])
+            llm_response = result.get("llm_response", {})
+
+            # Enrich references with chunk content if requested
+            if include_references and include_chunk_content:
+                data = result.get("data", {})
+                chunks = data.get("chunks", [])
+                ref_id_to_content: dict[str, list[str]] = {}
+                for chunk in chunks:
+                    ref_id = chunk.get("reference_id", "")
+                    content = chunk.get("content", "")
+                    if ref_id and content:
+                        ref_id_to_content.setdefault(ref_id, []).append(content)
+
+                enriched_references = []
+                for ref in references:
+                    ref_copy = ref.copy()
+                    ref_id = ref.get("reference_id", "")
+                    if ref_id in ref_id_to_content:
+                        ref_copy["content"] = ref_id_to_content[ref_id]
+                    enriched_references.append(ref_copy)
+                references = enriched_references
+
+            if llm_response.get("is_streaming"):
+                # Streaming: references first, then response chunks
+                if include_references:
+                    yield f"{json.dumps({'references': references})}\n"
+
+                response_stream = llm_response.get("response_iterator")
+                if response_stream:
+                    try:
+                        async for chunk in response_stream:
+                            if chunk:
+                                yield f"{json.dumps({'response': chunk})}\n"
+                    except Exception as e:
+                        logger.error(f"Streaming error: {str(e)}")
+                        yield f"{json.dumps({'error': str(e)})}\n"
+            else:
+                # Non-streaming: complete response in one message
+                response_content = llm_response.get("content", "")
+                if not response_content:
+                    response_content = "No relevant context found for the query."
+
+                complete_response = {"response": response_content}
+                if include_references:
+                    complete_response["references"] = references
+
+                yield f"{json.dumps(complete_response)}\n"
+
+        return _generate
 
     @router.post(
         "/query/stream",
@@ -1420,164 +724,22 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             Use streaming mode for real-time interfaces and non-streaming for batch processing.
         """
         try:
+            # Use the stream parameter from the request, defaulting to True if not specified
             stream_mode = request.stream if request.stream is not None else True
-            normal_param = request.to_query_params(stream_mode)
+            param = request.to_query_params(stream_mode)
 
             from fastapi.responses import StreamingResponse
 
-            enrichment_task = None
-            if request.include_enrichment and settings.webui_query_enrichment_enabled:
-                enrichment_task = asyncio.create_task(
-                    _run_enrichment_query(
-                        rag, request, _make_enrichment_param(normal_param)
-                    )
-                )
-
-            tool_event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-            def _stream_event_callback(payload: dict[str, Any]) -> None:
-                tool_event_queue.put_nowait(payload)
-
-            normal_param.stream_event_callback = _stream_event_callback
-            normal_task = asyncio.create_task(
-                _await_query_call(
-                    rag.aquery_llm(
-                        request.query,
-                        param=normal_param,
-                        system_prompt=_get_query_prompt_for_request(request),
-                    )
-                )
+            # Unified approach: always use aquery_llm for all cases
+            result = await rag.aquery_llm(request.query, param=param)
+            stream_gen = _build_stream_generator(
+                result=result,
+                include_references=request.include_references,
+                include_chunk_content=request.include_chunk_content,
             )
 
-            fast_task = None
-            if request.use_fast_query:
-                fast_param = _make_fast_path_param(normal_param)
-                fast_param.stream_event_callback = None
-                fast_task = asyncio.create_task(
-                    _await_query_call(
-                        rag.aquery_llm(
-                            request.query,
-                            param=fast_param,
-                            system_prompt=_get_fast_path_prompt(),
-                        )
-                    )
-                )
-
-            async def stream_generator():
-                normal_result = None
-                while normal_result is None:
-                    queue_waiter = asyncio.create_task(tool_event_queue.get())
-                    done, pending = await asyncio.wait(
-                        {normal_task, queue_waiter},
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for pending_task in pending:
-                        pending_task.cancel()
-
-                    if queue_waiter in done:
-                        yield f"{json.dumps({'tool_event': queue_waiter.result()})}\n"
-
-                    if normal_task in done:
-                        normal_result = normal_task.result()
-
-                while not tool_event_queue.empty():
-                    yield f"{json.dumps({'tool_event': tool_event_queue.get_nowait()})}\n"
-
-                data = normal_result.get("data", {})
-                references = _references_from_query_data(data)
-                llm_response = normal_result.get("llm_response", {})
-
-                # Enrich references with chunk content if requested
-                if request.include_references and request.include_chunk_content:
-                    chunks = data.get("chunks", [])
-                    # Create a mapping from reference_id to chunk content
-                    ref_id_to_content = {}
-                    for chunk in chunks:
-                        ref_id = chunk.get("reference_id", "")
-                        content = chunk.get("content", "")
-                        if ref_id and content:
-                            # Collect chunk content
-                            ref_id_to_content.setdefault(ref_id, []).append(content)
-
-                    # Add content to references
-                    enriched_references = []
-                    for ref in references:
-                        ref_copy = ref.copy()
-                        ref_id = ref.get("reference_id", "")
-                        if ref_id in ref_id_to_content:
-                            # Keep content as a list of chunks (one file may have multiple chunks)
-                            ref_copy["content"] = ref_id_to_content[ref_id]
-                        enriched_references.append(ref_copy)
-                    references = enriched_references
-
-                if llm_response.get("is_streaming"):
-                    # Streaming mode: optionally send debug info, then references, then response chunks
-                    if request.include_debug:
-                        yield f"{json.dumps({'debug': _build_stream_debug_payload(request, normal_result)})}\n"
-
-                    if request.include_references:
-                        yield f"{json.dumps({'references': references})}\n"
-
-                    response_stream = llm_response.get("response_iterator")
-                    if response_stream:
-                        try:
-                            async for chunk in response_stream:
-                                if chunk:  # Only send non-empty content
-                                    yield f"{json.dumps({'response': chunk})}\n"
-                            if request.include_references:
-                                canonical_references = (
-                                    _build_canonical_references_section(references)
-                                )
-                                if canonical_references:
-                                    trailing_references = (
-                                        f"\n\n{canonical_references}"
-                                    )
-                                    yield f"{json.dumps({'response': trailing_references})}\n"
-                        except Exception as e:
-                            logger.error(f"Streaming error: {str(e)}")
-                            yield f"{json.dumps({'error': str(e)})}\n"
-                else:
-                    # Non-streaming mode: send complete response in one message
-                    response_content = llm_response.get("content", "")
-                    if not response_content:
-                        response_content = "No relevant context found for the query."
-                    elif request.include_references:
-                        response_content = _ensure_response_has_canonical_references(
-                            response_content, references
-                        )
-
-                    # Create complete response object
-                    complete_response = {"response": response_content}
-                    if request.include_debug:
-                        complete_response["debug"] = _build_stream_debug_payload(
-                            request, normal_result
-                        )
-                    if request.include_references:
-                        complete_response["references"] = references
-
-                    yield f"{json.dumps(complete_response)}\n"
-
-                if enrichment_task is not None:
-                    try:
-                        enrichment = await enrichment_task
-                        yield f"{json.dumps({'enrichment': enrichment})}\n"
-                    except Exception as exc:
-                        logger.warning("WebUI query enrichment failed: %s", exc)
-                        yield f"{json.dumps({'enrichment_error': str(exc)})}\n"
-
-                if fast_task is not None:
-                    fast_result = await asyncio.gather(fast_task, return_exceptions=True)
-                    fast_outcome = fast_result[0]
-                    if not isinstance(fast_outcome, Exception):
-                        fast_llm = fast_outcome.get("llm_response", {})
-                        fast_content = fast_llm.get("content", "")
-                        if fast_content:
-                            yield f"{json.dumps({'fast_response': fast_content})}\n"
-                    else:
-                        yield f"{json.dumps({'fast_error': str(fast_outcome)})}\n"
-
             return StreamingResponse(
-                stream_generator(),
+                stream_gen(),
                 media_type="application/x-ndjson",
                 headers={
                     "Cache-Control": "no-cache",

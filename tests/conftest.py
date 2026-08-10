@@ -6,8 +6,6 @@ This file provides command-line options and fixtures for test configuration.
 
 import pytest
 
-from lightrag.config import settings
-
 
 @pytest.fixture(autouse=True)
 def _hermetic_mineru_env(monkeypatch):
@@ -131,12 +129,14 @@ def keep_test_artifacts(request):
 
     Priority: CLI option > Environment variable > Default (False)
     """
+    import os
+
     # Check CLI option first
     if request.config.getoption("--keep-artifacts"):
         return True
 
     # Fall back to environment variable
-    return settings.lightrag_keep_artifacts
+    return os.getenv("LIGHTRAG_KEEP_ARTIFACTS", "false").lower() == "true"
 
 
 @pytest.fixture(scope="session")
@@ -146,12 +146,14 @@ def stress_test_mode(request):
 
     Priority: CLI option > Environment variable > Default (False)
     """
+    import os
+
     # Check CLI option first
     if request.config.getoption("--stress-test"):
         return True
 
     # Fall back to environment variable
-    return settings.lightrag_stress_test
+    return os.getenv("LIGHTRAG_STRESS_TEST", "false").lower() == "true"
 
 
 @pytest.fixture(scope="session")
@@ -161,13 +163,15 @@ def parallel_workers(request):
 
     Priority: CLI option > Environment variable > Default (3)
     """
+    import os
+
     # Check CLI option first
     cli_workers = request.config.getoption("--test-workers")
     if cli_workers != 3:  # Non-default value provided
         return cli_workers
 
     # Fall back to environment variable
-    return settings.lightrag_test_workers
+    return int(os.getenv("LIGHTRAG_TEST_WORKERS", "3"))
 
 
 @pytest.fixture(scope="session")
@@ -177,9 +181,11 @@ def run_integration_tests(request):
 
     Priority: CLI option > Environment variable > Default (False)
     """
+    import os
+
     # Check CLI option first
     if request.config.getoption("--run-integration"):
         return True
 
     # Fall back to environment variable
-    return settings.lightrag_run_integration
+    return os.getenv("LIGHTRAG_RUN_INTEGRATION", "false").lower() == "true"

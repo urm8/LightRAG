@@ -6,9 +6,11 @@ import os
 import re
 import argparse
 import logging
-from lightrag.config import NO_PREFIX_SENTINEL, settings
-from lightrag.utils import logger
+from dotenv import load_dotenv
+from lightrag import ROLES
+from lightrag.utils import get_env_value, logger
 from lightrag.llm.binding_options import (
+    BedrockLLMOptions,
     GeminiEmbeddingOptions,
     GeminiLLMOptions,
     OllamaEmbeddingOptions,
@@ -19,18 +21,42 @@ from lightrag.base import OllamaServerInfos
 import sys
 
 from lightrag.constants import (
+    DEFAULT_WOKERS,
+    DEFAULT_TIMEOUT,
+    DEFAULT_TOP_K,
+    DEFAULT_CHUNK_TOP_K,
+    DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_RELATION_TOKENS,
+    DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_COSINE_THRESHOLD,
+    DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_MIN_RERANK_SCORE,
+    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
     DEFAULT_MAX_ASYNC,
+    DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
     DEFAULT_SUMMARY_CONTEXT_SIZE,
+    DEFAULT_SUMMARY_LANGUAGE,
+    DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
+    DEFAULT_EMBEDDING_BATCH_NUM,
+    DEFAULT_OLLAMA_MODEL_NAME,
+    DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_RERANK_BINDING,
-    DEFAULT_RERANK_MAX_ASYNC,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_EMBEDDING_TIMEOUT,
     DEFAULT_RERANK_TIMEOUT,
 )
+
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 
 ollama_server_infos = OllamaServerInfos()
 DEFAULT_TOKEN_SECRET = "lightrag-jwt-default-secret-key!"
+NO_PREFIX_SENTINEL = "NO_PREFIX"
 PROVIDER_ASYMMETRIC_EMBEDDING_BINDINGS = {"gemini", "jina", "voyageai"}
 PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS = {"azure_openai", "ollama", "openai"}
 
@@ -43,7 +69,21 @@ class DefaultRAGStorageConfig:
 
 
 def get_default_host(binding_type: str) -> str:
-    return settings.default_host_for_binding(binding_type)
+    default_hosts = {
+        "ollama": os.getenv("LLM_BINDING_HOST", "http://localhost:11434"),
+        "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
+        "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
+        "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
+        # Let boto3 select the regional Bedrock endpoint unless the user
+        # explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
+        "bedrock": os.getenv("LLM_BINDING_HOST", "DEFAULT_BEDROCK_ENDPOINT"),
+        # Let google-genai pick the correct default endpoint/version unless the
+        # user explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
+        "gemini": os.getenv("LLM_BINDING_HOST", "DEFAULT_GEMINI_ENDPOINT"),
+    }
+    return default_hosts.get(
+        binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
+    )  # fallback to ollama if unknown
 
 
 def resolve_asymmetric_embedding_opt_in(
@@ -97,6 +137,25 @@ def resolve_asymmetric_embedding_opt_in(
         f"EMBEDDING_ASYMMETRIC=true is not supported for {binding} embeddings."
     )
 
+
+def get_embedding_prefix_config(env_key: str) -> tuple[str | None, bool]:
+    """Read an embedding prefix and whether it was explicitly configured."""
+    if env_key not in os.environ:
+        return None, False
+
+    value = os.environ[env_key]
+    if value == "None":
+        return None, False
+    if value == NO_PREFIX_SENTINEL:
+        return "", True
+    if value == "":
+        raise ValueError(
+            f"{env_key} is empty. Use {NO_PREFIX_SENTINEL} to explicitly request "
+            "no prefix, or remove the variable to leave it unconfigured."
+        )
+    return value, True
+
+
 def validate_auth_configuration(args: argparse.Namespace) -> None:
     """Reject insecure JWT auth settings before the API starts."""
     auth_accounts = (getattr(args, "auth_accounts", "") or "").strip()
@@ -106,6 +165,77 @@ def validate_auth_configuration(args: argparse.Namespace) -> None:
         raise ValueError(
             "TOKEN_SECRET must be explicitly set to a non-default value when AUTH_ACCOUNTS is configured."
         )
+
+
+def _is_set(value: str | None) -> bool:
+    return bool((value or "").strip())
+
+
+def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
+    """Reject Bedrock configuration with no explicit supported auth source."""
+    bearer_token = os.getenv("AWS_BEARER_TOKEN_BEDROCK")
+
+    def has_valid_auth(prefix: str | None = None) -> bool:
+        if _is_set(bearer_token):
+            return True
+
+        if prefix:
+            role_access_key = getattr(args, f"{prefix}_aws_access_key_id", None)
+            role_secret_key = getattr(args, f"{prefix}_aws_secret_access_key", None)
+            if _is_set(role_access_key) or _is_set(role_secret_key):
+                return _is_set(role_access_key) and _is_set(role_secret_key)
+
+        access_key = getattr(args, "aws_access_key_id", None)
+        secret_key = getattr(args, "aws_secret_access_key", None)
+        return _is_set(access_key) and _is_set(secret_key)
+
+    if getattr(args, "llm_binding", None) == "bedrock":
+        if not has_valid_auth():
+            raise ValueError(
+                "Bedrock LLM binding requires AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+            )
+        if _is_set(getattr(args, "llm_binding_api_key", None)):
+            logging.warning(
+                "LLM_BINDING_API_KEY is set but ignored for Bedrock LLM binding. "
+                "Use SigV4 AWS_* variables or process-level AWS_BEARER_TOKEN_BEDROCK instead."
+            )
+
+    if getattr(args, "embedding_binding", None) == "bedrock":
+        if not has_valid_auth():
+            raise ValueError(
+                "Bedrock embedding binding requires AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+            )
+        if _is_set(getattr(args, "embedding_binding_api_key", None)):
+            logging.warning(
+                "EMBEDDING_BINDING_API_KEY is set but ignored for Bedrock embedding binding. "
+                "Use SigV4 AWS_* variables or process-level AWS_BEARER_TOKEN_BEDROCK instead."
+            )
+
+    for spec in ROLES:
+        role = spec.name
+        if getattr(
+            args, f"{role}_llm_binding", None
+        ) == "bedrock" and not has_valid_auth(role):
+            raise ValueError(
+                f"Bedrock role '{role}' requires {spec.env_prefix}_AWS_ACCESS_KEY_ID "
+                f"and {spec.env_prefix}_AWS_SECRET_ACCESS_KEY, global "
+                "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or process-level "
+                "AWS_BEARER_TOKEN_BEDROCK."
+            )
+
+
+def normalize_binding_name(binding: str | None) -> str | None:
+    """Normalize environment-provided binding aliases to canonical names."""
+    if binding == "aws_bedrock":
+        return "bedrock"
+    return binding
+
+
+def get_binding_env_value(env_key: str, default: str) -> str:
+    """Read a binding env var and normalize legacy aliases."""
+    return normalize_binding_name(get_env_value(env_key, default)) or default
 
 
 def parse_args() -> argparse.Namespace:
@@ -124,31 +254,31 @@ def parse_args() -> argparse.Namespace:
     # Server configuration
     parser.add_argument(
         "--host",
-        default=settings.host,
+        default=get_env_value("HOST", "0.0.0.0"),
         help="Server host (default: from env or 0.0.0.0)",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=settings.port,
+        default=get_env_value("PORT", 9621, int),
         help="Server port (default: from env or 9621)",
     )
 
     # Directory configuration
     parser.add_argument(
         "--working-dir",
-        default=settings.working_dir,
+        default=get_env_value("WORKING_DIR", "./rag_storage"),
         help="Working directory for RAG storage (default: from env or ./rag_storage)",
     )
     parser.add_argument(
         "--input-dir",
-        default=settings.input_dir,
+        default=get_env_value("INPUT_DIR", "./inputs"),
         help="Directory containing input documents (default: from env or ./inputs)",
     )
 
     parser.add_argument(
         "--timeout",
-        default=settings.timeout,
+        default=get_env_value("TIMEOUT", DEFAULT_TIMEOUT, int, special_none=True),
         type=int,
         help="Timeout in seconds (useful when using slow AI). Use None for infinite timeout",
     )
@@ -157,46 +287,52 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-async",
         type=int,
-        default=settings.max_async,
+        default=get_env_value(
+            "MAX_ASYNC_LLM", get_env_value("MAX_ASYNC", DEFAULT_MAX_ASYNC, int), int
+        ),
         help=f"Maximum async operations (default: from env or {DEFAULT_MAX_ASYNC})",
     )
     parser.add_argument(
         "--summary-max-tokens",
         type=int,
-        default=settings.summary_max_tokens,
+        default=get_env_value("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS, int),
         help=f"Maximum token size for entity/relation summary(default: from env or {DEFAULT_SUMMARY_MAX_TOKENS})",
     )
     parser.add_argument(
         "--summary-context-size",
         type=int,
-        default=settings.summary_context_size,
+        default=get_env_value(
+            "SUMMARY_CONTEXT_SIZE", DEFAULT_SUMMARY_CONTEXT_SIZE, int
+        ),
         help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_CONTEXT_SIZE})",
     )
     parser.add_argument(
         "--summary-length-recommended",
         type=int,
-        default=settings.summary_length_recommended,
+        default=get_env_value(
+            "SUMMARY_LENGTH_RECOMMENDED", DEFAULT_SUMMARY_LENGTH_RECOMMENDED, int
+        ),
         help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_LENGTH_RECOMMENDED})",
     )
 
     # Logging configuration
     parser.add_argument(
         "--log-level",
-        default=settings.log_level,
+        default=get_env_value("LOG_LEVEL", "INFO"),
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Logging level (default: from env or INFO)",
     )
     parser.add_argument(
         "--verbose",
         action="store_true",
-        default=settings.verbose,
+        default=get_env_value("VERBOSE", False, bool),
         help="Enable verbose debug output(only valid for DEBUG log-level)",
     )
 
     parser.add_argument(
         "--key",
         type=str,
-        default=settings.lightrag_api_key,
+        default=get_env_value("LIGHTRAG_API_KEY", None),
         help="API key for authentication. This protects lightrag server against unauthorized access",
     )
 
@@ -204,17 +340,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ssl",
         action="store_true",
-        default=settings.ssl,
+        default=get_env_value("SSL", False, bool),
         help="Enable HTTPS (default: from env or False)",
     )
     parser.add_argument(
         "--ssl-certfile",
-        default=settings.ssl_certfile,
+        default=get_env_value("SSL_CERTFILE", None),
         help="Path to SSL certificate file (required if --ssl is enabled)",
     )
     parser.add_argument(
         "--ssl-keyfile",
-        default=settings.ssl_keyfile,
+        default=get_env_value("SSL_KEYFILE", None),
         help="Path to SSL private key file (required if --ssl is enabled)",
     )
 
@@ -222,14 +358,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--simulated-model-name",
         type=str,
-        default=settings.ollama_emulating_model_name,
+        default=get_env_value("OLLAMA_EMULATING_MODEL_NAME", DEFAULT_OLLAMA_MODEL_NAME),
         help="Name for the simulated Ollama model (default: from env or lightrag)",
     )
 
     parser.add_argument(
         "--simulated-model-tag",
         type=str,
-        default=settings.ollama_emulating_model_tag,
+        default=get_env_value("OLLAMA_EMULATING_MODEL_TAG", DEFAULT_OLLAMA_MODEL_TAG),
         help="Tag for the simulated Ollama model (default: from env or latest)",
     )
 
@@ -237,15 +373,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workspace",
         type=str,
-        default=settings.workspace,
+        default=get_env_value("WORKSPACE", ""),
         help="Default workspace for all storage",
+    )
+
+    # Path prefix configuration
+    parser.add_argument(
+        "--api-prefix",
+        type=str,
+        default=get_env_value("LIGHTRAG_API_PREFIX", ""),
+        help="API path prefix (e.g., /api/v1). Prepended to all API routes. Default: none (root).",
     )
 
     # Server workers configuration
     parser.add_argument(
         "--workers",
         type=int,
-        default=settings.workers,
+        default=get_env_value("WORKERS", DEFAULT_WOKERS, int),
         help="Number of worker processes (default: from env or 1)",
     )
 
@@ -253,14 +397,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--llm-binding",
         type=str,
-        default=settings.llm_binding,
+        default=get_binding_env_value("LLM_BINDING", "ollama"),
         choices=[
             "lollms",
             "ollama",
             "openai",
             "openai-ollama",
             "azure_openai",
-            "aws_bedrock",
+            "bedrock",
             "gemini",
         ],
         help="LLM binding type (default: from env or ollama)",
@@ -268,13 +412,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--embedding-binding",
         type=str,
-        default=settings.embedding_binding,
+        default=get_binding_env_value("EMBEDDING_BINDING", "ollama"),
         choices=[
             "lollms",
             "ollama",
             "openai",
             "azure_openai",
-            "aws_bedrock",
+            "bedrock",
             "jina",
             "gemini",
             "voyageai",
@@ -284,17 +428,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rerank-binding",
         type=str,
-        default=settings.rerank_binding,
+        default=get_env_value("RERANK_BINDING", DEFAULT_RERANK_BINDING),
         choices=["null", "cohere", "jina", "aliyun"],
         help=f"Rerank binding type (default: from env or {DEFAULT_RERANK_BINDING})",
-    )
-
-    # Document loading engine configuration
-    parser.add_argument(
-        "--docling",
-        action="store_true",
-        default=False,
-        help="Enable DOCLING document loading engine (default: from env or DEFAULT)",
     )
 
     # Conditionally add binding-specific options (Ollama, OpenAI, Azure OpenAI, Gemini)
@@ -313,7 +449,7 @@ def parse_args() -> argparse.Namespace:
 
     # Fall back to environment variable using same function as argparse default
     if llm_binding_value is None:
-        llm_binding_value = settings.llm_binding
+        llm_binding_value = get_binding_env_value("LLM_BINDING", "ollama")
 
     # Add LLM binding options based on determined value
     if llm_binding_value == "ollama":
@@ -322,6 +458,8 @@ def parse_args() -> argparse.Namespace:
         OpenAILLMOptions.add_args(parser)
     elif llm_binding_value == "gemini":
         GeminiLLMOptions.add_args(parser)
+    elif llm_binding_value == "bedrock":
+        BedrockLLMOptions.add_args(parser)
 
     # Determine embedding binding value consistently from command line or environment
     embedding_binding_value = None
@@ -335,7 +473,7 @@ def parse_args() -> argparse.Namespace:
 
     # Fall back to environment variable using same function as argparse default
     if embedding_binding_value is None:
-        embedding_binding_value = settings.embedding_binding
+        embedding_binding_value = get_binding_env_value("EMBEDDING_BINDING", "ollama")
 
     # Add embedding binding options based on determined value
     if embedding_binding_value == "ollama":
@@ -350,131 +488,250 @@ def parse_args() -> argparse.Namespace:
     args.input_dir = os.path.abspath(args.input_dir)
 
     # Inject storage configuration from environment variables
-    args.kv_storage = settings.lightrag_kv_storage
-    args.doc_status_storage = settings.lightrag_doc_status_storage
-    args.graph_storage = settings.lightrag_graph_storage
-    args.vector_storage = settings.lightrag_vector_storage
+    args.kv_storage = get_env_value(
+        "LIGHTRAG_KV_STORAGE", DefaultRAGStorageConfig.KV_STORAGE
+    )
+    args.doc_status_storage = get_env_value(
+        "LIGHTRAG_DOC_STATUS_STORAGE", DefaultRAGStorageConfig.DOC_STATUS_STORAGE
+    )
+    args.graph_storage = get_env_value(
+        "LIGHTRAG_GRAPH_STORAGE", DefaultRAGStorageConfig.GRAPH_STORAGE
+    )
+    args.vector_storage = get_env_value(
+        "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
+    )
 
     # Get MAX_PARALLEL_INSERT from environment
-    args.max_parallel_insert = settings.max_parallel_insert
+    args.max_parallel_insert = get_env_value(
+        "MAX_PARALLEL_INSERT", DEFAULT_MAX_PARALLEL_INSERT, int
+    )
 
     # Get MAX_GRAPH_NODES from environment
-    args.max_graph_nodes = settings.max_graph_nodes
+    args.max_graph_nodes = get_env_value("MAX_GRAPH_NODES", 1000, int)
 
     # Handle openai-ollama special case
     if args.llm_binding == "openai-ollama":
         args.llm_binding = "openai"
         args.embedding_binding = "ollama"
 
-    args.llm_binding_host = settings.effective_llm_binding_host(args.llm_binding)
-    args.embedding_binding_host = settings.effective_embedding_binding_host(
-        args.embedding_binding
+    args.llm_binding_host = get_env_value(
+        "LLM_BINDING_HOST", get_default_host(args.llm_binding)
     )
-    args.llm_binding_api_key = settings.llm_binding_api_key
-    args.embedding_binding_api_key = settings.embedding_binding_api_key or ""
+    args.embedding_binding_host = get_env_value(
+        "EMBEDDING_BINDING_HOST", get_default_host(args.embedding_binding)
+    )
+    args.llm_binding_api_key = get_env_value("LLM_BINDING_API_KEY", None)
+    args.embedding_binding_api_key = get_env_value("EMBEDDING_BINDING_API_KEY", "")
+
+    args.aws_region = get_env_value("AWS_REGION", None, special_none=True)
+    args.aws_access_key_id = get_env_value("AWS_ACCESS_KEY_ID", None, special_none=True)
+    args.aws_secret_access_key = get_env_value(
+        "AWS_SECRET_ACCESS_KEY", None, special_none=True
+    )
+    args.aws_session_token = get_env_value("AWS_SESSION_TOKEN", None, special_none=True)
 
     # Inject model configuration
-    args.llm_model = settings.llm_model
+    args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
     # EMBEDDING_MODEL defaults to None - each binding will use its own default model
     # e.g., OpenAI uses "text-embedding-3-small", Jina uses "jina-embeddings-v4"
-    args.embedding_model = settings.embedding_model
+    args.embedding_model = get_env_value("EMBEDDING_MODEL", None, special_none=True)
     # EMBEDDING_DIM defaults to None - each binding will use its own default dimension
     # Value is inherited from provider defaults via wrap_embedding_func_with_attrs decorator
-    args.embedding_dim = settings.embedding_dim
-    args.embedding_send_dim = settings.embedding_send_dim
+    args.embedding_dim = get_env_value("EMBEDDING_DIM", None, int, special_none=True)
+    args.embedding_send_dim = get_env_value("EMBEDDING_SEND_DIM", False, bool)
 
     # Inject chunk configuration
-    args.chunk_size = settings.chunk_size
-    args.chunk_overlap_size = settings.chunk_overlap_size
+    args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
+    args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
 
     # Inject LLM cache configuration
-    args.enable_llm_cache_for_extract = settings.enable_llm_cache_for_extract
-    args.enable_llm_cache = settings.enable_llm_cache
+    # Should not be disabled； LLM cache is required for entity/realtion rebuild after file deletion.
+    args.enable_llm_cache_for_extract = get_env_value(
+        "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
+    )
+    args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
 
-    # Set document_loading_engine from --docling flag
-    if args.docling:
-        args.document_loading_engine = "DOCLING"
-    else:
-        args.document_loading_engine = settings.document_loading_engine
+    # --- Per-role LLM configuration (driven by lightrag.ROLES registry) ---
+    for spec in ROLES:
+        prefix = spec.env_prefix
+        attr_prefix = spec.name
+        binding_key = f"{prefix}_LLM_BINDING"
+        model_key = f"{prefix}_LLM_MODEL"
+        host_key = f"{prefix}_LLM_BINDING_HOST"
+        apikey_key = f"{prefix}_LLM_BINDING_API_KEY"
+        max_async_key = f"{prefix}_MAX_ASYNC_LLM"
+        timeout_key = f"{prefix}_LLM_TIMEOUT"
 
-    # PDF decryption password
-    args.pdf_decrypt_password = settings.pdf_decrypt_password
+        role_binding = normalize_binding_name(
+            get_env_value(binding_key, None, special_none=True)
+        )
+        role_model = get_env_value(model_key, None, special_none=True)
+        role_host = get_env_value(host_key, None, special_none=True)
+        role_apikey = get_env_value(apikey_key, None, special_none=True)
+        role_max_async = get_env_value(max_async_key, None, int, special_none=True)
+        role_timeout = get_env_value(timeout_key, None, int, special_none=True)
+        role_aws_region = get_env_value(f"{prefix}_AWS_REGION", None, special_none=True)
+        role_aws_access_key_id = get_env_value(
+            f"{prefix}_AWS_ACCESS_KEY_ID", None, special_none=True
+        )
+        role_aws_secret_access_key = get_env_value(
+            f"{prefix}_AWS_SECRET_ACCESS_KEY", None, special_none=True
+        )
+        role_aws_session_token = get_env_value(
+            f"{prefix}_AWS_SESSION_TOKEN", None, special_none=True
+        )
+
+        setattr(args, f"{attr_prefix}_llm_binding", role_binding)
+        setattr(args, f"{attr_prefix}_llm_model", role_model)
+        setattr(args, f"{attr_prefix}_llm_binding_host", role_host)
+        setattr(args, f"{attr_prefix}_llm_binding_api_key", role_apikey)
+        setattr(args, f"{attr_prefix}_llm_max_async", role_max_async)
+        setattr(args, f"{attr_prefix}_llm_timeout", role_timeout)
+        setattr(args, f"{attr_prefix}_aws_region", role_aws_region)
+        setattr(args, f"{attr_prefix}_aws_access_key_id", role_aws_access_key_id)
+        setattr(
+            args, f"{attr_prefix}_aws_secret_access_key", role_aws_secret_access_key
+        )
+        setattr(args, f"{attr_prefix}_aws_session_token", role_aws_session_token)
+
+        if role_binding == "bedrock" and role_apikey:
+            raise SystemExit(
+                f"Bedrock role '{spec.name}' does not support {apikey_key}; use "
+                "role-specific SigV4 AWS_* variables or process-level "
+                "AWS_BEARER_TOKEN_BEDROCK."
+            )
+
+        # Cross-provider validation
+        if role_binding and role_binding != args.llm_binding:
+            missing = []
+            if not role_model:
+                missing.append(model_key)
+            if not role_host:
+                role_host = get_default_host(role_binding)
+                setattr(args, f"{attr_prefix}_llm_binding_host", role_host)
+            if role_binding != "bedrock" and not role_apikey:
+                missing.append(apikey_key)
+            if missing:
+                raise SystemExit(
+                    f"Cross-provider error for role '{spec.name}': "
+                    f"binding={role_binding} differs from base={args.llm_binding}, "
+                    f"but required env vars are missing: {', '.join(missing)}"
+                )
+
+    # VLM multimodal master switch — when off, the pipeline emits a warning
+    # and skips every i/t/e item without touching the VLM. When on, the
+    # effective VLM binding must support image inputs.
+    args.vlm_process_enable = get_env_value("VLM_PROCESS_ENABLE", False, bool)
+    if args.vlm_process_enable:
+        effective_vlm_binding = (
+            getattr(args, "vlm_llm_binding", None) or args.llm_binding
+        )
+        vlm_incompatible = {"lollms"}
+        if effective_vlm_binding in vlm_incompatible:
+            raise SystemExit(
+                f"VLM_PROCESS_ENABLE=true but the effective VLM binding "
+                f"'{effective_vlm_binding}' does not support image inputs. "
+                "Configure VLM_LLM_BINDING (or LLM_BINDING) to one of: "
+                "openai, azure_openai, gemini, bedrock, ollama."
+            )
 
     # Add environment variables that were previously read directly
-    args.cors_origins = settings.cors_origins
-    args.summary_language = settings.summary_language
-    args.entity_types = settings.entity_types
-    args.relation_labels = settings.relation_labels
-    args.whitelist_paths = settings.whitelist_paths
+    args.cors_origins = get_env_value("CORS_ORIGINS", "*")
+    args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
+    args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
     # For JWT Auth
-    args.auth_accounts = settings.auth_accounts
-    args.token_secret = settings.token_secret
-    args.token_expire_hours = settings.token_expire_hours
-    args.guest_token_expire_hours = settings.guest_token_expire_hours
-    args.jwt_algorithm = settings.jwt_algorithm
+    args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
+    args.token_secret = get_env_value("TOKEN_SECRET", None)
+    args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, float)
+    args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, float)
+    args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
 
     # Token auto-renewal configuration (sliding window expiration)
-    args.token_auto_renew = settings.token_auto_renew
-    args.token_renew_threshold = settings.token_renew_threshold
+    args.token_auto_renew = get_env_value("TOKEN_AUTO_RENEW", True, bool)
+    args.token_renew_threshold = get_env_value("TOKEN_RENEW_THRESHOLD", 0.5, float)
 
     # Rerank model configuration
-    args.rerank_model = settings.rerank_model
-    args.rerank_binding_host = settings.rerank_binding_host
-    args.rerank_binding_api_key = settings.rerank_binding_api_key
+    args.rerank_model = get_env_value("RERANK_MODEL", None)
+    args.rerank_binding_host = get_env_value("RERANK_BINDING_HOST", None)
+    args.rerank_binding_api_key = get_env_value("RERANK_BINDING_API_KEY", None)
     # Note: rerank_binding is already set by argparse, no need to override from env
 
     # Min rerank score configuration
-    args.min_rerank_score = settings.min_rerank_score
+    args.min_rerank_score = get_env_value(
+        "MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float
+    )
+
+    # LLM / Embedding request timeouts
+    args.llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
+    args.embedding_timeout = get_env_value(
+        "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
+    )
+
+    # Rerank async/timeout configuration (independent from base LLM)
+    # rerank_max_async falls back to MAX_ASYNC_LLM; rerank_timeout has its own default.
+    args.rerank_max_async = get_env_value("MAX_ASYNC_RERANK", args.max_async, int)
+    args.rerank_timeout = get_env_value("RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT, int)
 
     # Query configuration
-    args.history_turns = settings.history_turns
-    args.top_k = settings.top_k
-    args.chunk_top_k = settings.chunk_top_k
-    args.max_entity_tokens = settings.max_entity_tokens
-    args.max_relation_tokens = settings.max_relation_tokens
-    args.max_total_tokens = settings.max_total_tokens
-    args.cosine_threshold = settings.cosine_threshold
-    args.related_chunk_number = settings.related_chunk_number
+    args.top_k = get_env_value("TOP_K", DEFAULT_TOP_K, int)
+    args.chunk_top_k = get_env_value("CHUNK_TOP_K", DEFAULT_CHUNK_TOP_K, int)
+    args.max_entity_tokens = get_env_value(
+        "MAX_ENTITY_TOKENS", DEFAULT_MAX_ENTITY_TOKENS, int
+    )
+    args.max_relation_tokens = get_env_value(
+        "MAX_RELATION_TOKENS", DEFAULT_MAX_RELATION_TOKENS, int
+    )
+    args.max_total_tokens = get_env_value(
+        "MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS, int
+    )
+    args.cosine_threshold = get_env_value(
+        "COSINE_THRESHOLD", DEFAULT_COSINE_THRESHOLD, float
+    )
+    args.related_chunk_number = get_env_value(
+        "RELATED_CHUNK_NUMBER", DEFAULT_RELATED_CHUNK_NUMBER, int
+    )
 
     # Add missing environment variables for health endpoint
-    args.force_llm_summary_on_merge = settings.force_llm_summary_on_merge
-    args.embedding_func_max_async = settings.embedding_func_max_async
-    args.embedding_batch_num = settings.embedding_batch_num
+    args.force_llm_summary_on_merge = get_env_value(
+        "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
+    )
+    args.embedding_func_max_async = get_env_value(
+        "EMBEDDING_FUNC_MAX_ASYNC", DEFAULT_EMBEDDING_FUNC_MAX_ASYNC, int
+    )
+    args.embedding_batch_num = get_env_value(
+        "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
+    )
 
     # Embedding token limit configuration
-    args.embedding_token_limit = settings.embedding_token_limit
+    args.embedding_token_limit = get_env_value(
+        "EMBEDDING_TOKEN_LIMIT", None, int, special_none=True
+    )
 
     # File upload size limit (in bytes, None for unlimited)
     # Default: 100MB (104857600 bytes)
-    args.max_upload_size = settings.max_upload_size
-
-    # VLM multimodal processing toggle
-    args.vlm_process_enable = (
-        os.getenv("VLM_PROCESS_ENABLE", "false").lower() in ("true", "1", "yes", "t", "on")
+    args.max_upload_size = get_env_value(
+        "MAX_UPLOAD_SIZE", 104857600, int, special_none=True
     )
-
-    # LLM/embedding timeout from env (used in health endpoint)
-    args.llm_timeout = settings.llm_timeout
-    args.embedding_timeout = settings.embedding_timeout
-
-    # Rerank configuration from env
-    args.rerank_max_async = DEFAULT_RERANK_MAX_ASYNC
-    args.rerank_timeout = DEFAULT_RERANK_TIMEOUT
 
     # Embedding prefix configuration for context-aware embeddings. Empty prefixes
     # must be explicit via NO_PREFIX so missing config is distinguishable.
-    args.embedding_document_prefix = settings.embedding_document_prefix
-    args.embedding_document_prefix_configured = (
-        settings.embedding_document_prefix_configured
-    )
-    args.embedding_query_prefix = settings.embedding_query_prefix
-    args.embedding_query_prefix_configured = settings.embedding_query_prefix_configured
+    (
+        args.embedding_document_prefix,
+        args.embedding_document_prefix_configured,
+    ) = get_embedding_prefix_config("EMBEDDING_DOCUMENT_PREFIX")
+    (
+        args.embedding_query_prefix,
+        args.embedding_query_prefix_configured,
+    ) = get_embedding_prefix_config("EMBEDDING_QUERY_PREFIX")
     args.embedding_prefix_no_prefix_sentinel = NO_PREFIX_SENTINEL
-    args.embedding_prefixes_configured = settings.embedding_prefixes_configured
+    args.embedding_prefixes_configured = (
+        args.embedding_document_prefix_configured
+        or args.embedding_query_prefix_configured
+    )
     # Asymmetric embedding behavior toggle
-    args.embedding_asymmetric_configured = settings.embedding_asymmetric_configured
-    args.embedding_asymmetric = settings.embedding_asymmetric
+    args.embedding_asymmetric_configured = "EMBEDDING_ASYMMETRIC" in os.environ
+    args.embedding_asymmetric = get_env_value("EMBEDDING_ASYMMETRIC", False, bool)
 
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
@@ -491,6 +748,7 @@ def parse_args() -> argparse.Namespace:
             args.workspace = sanitized
 
     validate_auth_configuration(args)
+    validate_bedrock_auth_configuration(args)
     return args
 
 
@@ -544,6 +802,7 @@ def initialize_config(args=None, force=False):
 
     resolved_args = args if args is not None else parse_args()
     validate_auth_configuration(resolved_args)
+    validate_bedrock_auth_configuration(resolved_args)
     _global_args = resolved_args
     _initialized = True
     return _global_args

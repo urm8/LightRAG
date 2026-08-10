@@ -12,11 +12,11 @@ Prerequisites:
 
 import pytest
 import asyncio
+import os
 import time
 from dotenv import load_dotenv
 from unittest.mock import patch
 from lightrag.kg.postgres_impl import PostgreSQLDB
-from lightrag.config import settings
 
 asyncpg = pytest.importorskip("asyncpg")
 
@@ -39,30 +39,33 @@ class TestPostgresRetryIntegration:
         - 30.0s max backoff (up from 5.0s)
         """
         return {
-            "host": settings.postgres_host("localhost"),
-            "port": settings.postgres_port(5432),
-            "user": settings.postgres_user("postgres"),
-            "password": settings.postgres_password("") or "",
-            "database": settings.postgres_database("postgres"),
-            "workspace": settings.postgres_workspace_name("test_retry") or "test_retry",
-            "max_connections": settings.postgres_max_connections(10),
+            "host": os.getenv("POSTGRES_HOST", "localhost"),
+            "port": int(os.getenv("POSTGRES_PORT", "5432")),
+            "user": os.getenv("POSTGRES_USER", "postgres"),
+            "password": os.getenv("POSTGRES_PASSWORD", ""),
+            "database": os.getenv("POSTGRES_DATABASE", "postgres"),
+            "workspace": os.getenv("POSTGRES_WORKSPACE", "test_retry"),
+            "max_connections": int(os.getenv("POSTGRES_MAX_CONNECTIONS", "10")),
             # Connection retry configuration - mirrors postgres_impl.py ClientManager.get_config()
             # NEW DEFAULTS optimized for HA deployments
             "connection_retry_attempts": min(
                 100,
-                settings.postgres_connection_retries(10),  # 3 → 10
+                int(os.getenv("POSTGRES_CONNECTION_RETRIES", "10")),  # 3 → 10
             ),
             "connection_retry_backoff": min(
                 300.0,
-                settings.postgres_connection_retry_backoff(3.0),  # 0.5 → 3.0
+                float(
+                    os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF", "3.0")
+                ),  # 0.5 → 3.0
             ),
             "connection_retry_backoff_max": min(
                 600.0,
-                settings.postgres_connection_retry_backoff_max(30.0),  # 5.0 → 30.0
+                float(
+                    os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF_MAX", "30.0")
+                ),  # 5.0 → 30.0
             ),
             "pool_close_timeout": min(
-                30.0,
-                settings.postgres_pool_close_timeout(5.0),
+                30.0, float(os.getenv("POSTGRES_POOL_CLOSE_TIMEOUT", "5.0"))
             ),
         }
 
@@ -323,7 +326,7 @@ def run_integration_tests():
     print("=" * 80)
 
     # Check if database configuration exists
-    if not settings.postgres_host_configured:
+    if not os.getenv("POSTGRES_HOST"):
         print("\n⚠️  WARNING: No POSTGRES_HOST in .env file")
         print("Please ensure .env file exists with PostgreSQL configuration.")
         return

@@ -461,27 +461,6 @@ export default function QuerySettings() {
                   onCheckedChange={(checked) => handleChange('stream', checked)}
                 />
               </div>
-
-              <div className="flex items-center gap-2">
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <label htmlFor="use_fast_query" className="flex-1 ml-1 cursor-help">
-                        {t('retrievePanel.querySettings.useFastQuery', 'Enable Apfel fast search')}
-                      </label>
-                    </TooltipTrigger>
-                    <TooltipContent side="left">
-                      <p>{t('retrievePanel.querySettings.useFastQueryTooltip', 'Runs the optional Apfel fast-query side path in parallel. Disabled by default so the main query model streams directly.')}</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-                <Checkbox
-                  className="mr-10 cursor-pointer"
-                  id="use_fast_query"
-                  checked={querySettings.use_fast_query ?? false}
-                  onCheckedChange={(checked) => handleChange('use_fast_query', checked)}
-                />
-              </div>
             </>
 
           </div>

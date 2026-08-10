@@ -39,7 +39,6 @@ from lightrag.kg import (
 )
 from lightrag.kg.shared_storage import initialize_share_data
 from lightrag.constants import GRAPH_FIELD_SEP
-from lightrag.config import settings
 
 
 # Mock embedding function that returns random vectors
@@ -71,7 +70,7 @@ async def initialize_graph_storage():
     Returns the initialized storage instance.
     """
     # Get the graph storage type from environment variables
-    graph_storage_type = settings.lightrag_graph_storage
+    graph_storage_type = os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
 
     # Validate the storage type
     try:
@@ -85,7 +84,7 @@ async def initialize_graph_storage():
 
     # Check for required environment variables
     required_env_vars = STORAGE_ENV_REQUIREMENTS.get(graph_storage_type, [])
-    missing_env_vars = settings.missing_env_names(required_env_vars)
+    missing_env_vars = [var for var in required_env_vars if not os.getenv(var)]
 
     if missing_env_vars:
         ASCIIColors.red(
@@ -112,7 +111,9 @@ async def initialize_graph_storage():
         "vector_db_storage_cls_kwargs": {
             "cosine_better_than_threshold": 0.5  # Cosine similarity threshold
         },
-        "working_dir": settings.working_dir,  # Working directory
+        "working_dir": os.environ.get(
+            "WORKING_DIR", "./rag_storage"
+        ),  # Working directory
     }
 
     # Initialize shared_storage for all storage types (required for locks)
@@ -1654,7 +1655,7 @@ async def main():
     load_dotenv(dotenv_path=".env", override=False)
 
     # Get graph storage type
-    graph_storage_type = settings.lightrag_graph_storage
+    graph_storage_type = os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
     ASCIIColors.magenta(
         f"\nCurrently configured graph storage type: {graph_storage_type}"
     )

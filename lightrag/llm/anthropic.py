@@ -1,10 +1,10 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
 import sys
+import os
 import logging
 import warnings
 from typing import Any, Union, AsyncIterator
 import pipmaster as pm  # Pipmaster for dynamic library install
-from lightrag.config import settings
 
 if sys.version_info < (3, 9):
     from typing import AsyncIterator
@@ -75,7 +75,7 @@ async def anthropic_complete_if_cache(
             "enable_cot=True is not supported for the Anthropic API and will be ignored."
         )
     if not api_key:
-        api_key = settings.anthropic_api_key
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
 
     default_headers = {
         "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
@@ -105,6 +105,9 @@ async def anthropic_complete_if_cache(
         )
     kwargs.pop("response_format", None)
     timeout = kwargs.pop("timeout", None)
+
+    if os.getenv("ANTHROPIC_THINKING_MODE", "").strip().lower() == "disabled":
+        kwargs.setdefault("thinking", {"type": "disabled"})
 
     # Require max_tokens; the Anthropic SDK errors if it's missing
     kwargs.setdefault("max_tokens", 8192)
@@ -220,7 +223,14 @@ async def anthropic_complete_if_cache(
 
     if not stream:
         try:
-            return response.content[0].text
+            text_blocks = [
+                block.text
+                for block in response.content
+                if isinstance(getattr(block, "text", None), str)
+            ]
+            if not text_blocks:
+                raise InvalidResponseError("Anthropic response did not include text content")
+            return "".join(text_blocks)
         finally:
             try:
                 await anthropic_async_client.close()

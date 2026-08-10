@@ -9,6 +9,7 @@ Requirements:
     - OpenSearch 3.x or higher with k-NN plugin enabled
 """
 
+import os
 import re
 import ssl as ssl_module
 import time
@@ -26,8 +27,13 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
-from ..config import settings
-from ..utils import logger, compute_mdhash_id, _cooperative_yield, merge_source_ids
+from ..utils import (
+    logger,
+    compute_mdhash_id,
+    _cooperative_yield,
+    merge_source_ids,
+    validate_workspace,
+)
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP, DEFAULT_QUERY_PRIORITY
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
@@ -48,12 +54,18 @@ from opensearchpy.exceptions import (  # type: ignore
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
+
+def _get_opensearch_env(key, fallback):
+    cfg_key = key.replace("OPENSEARCH_", "").lower()
+    return os.environ.get(key, config.get("opensearch", cfg_key, fallback=fallback))
+
+
 def _get_index_number_of_shards() -> int:
-    return settings.opensearch_number_of_shards(1)
+    return int(_get_opensearch_env("OPENSEARCH_NUMBER_OF_SHARDS", "1"))
 
 
 def _get_index_number_of_replicas() -> int:
-    return settings.opensearch_number_of_replicas(0)
+    return int(_get_opensearch_env("OPENSEARCH_NUMBER_OF_REPLICAS", "0"))
 
 
 def _sanitize_index_name(name: str) -> str:
@@ -449,30 +461,20 @@ class ClientManager:
         global _shard_doc_supported
         async with cls._lock:
             if cls._instances["client"] is None:
-                hosts_str = settings.opensearch_hosts(
-                    config.get("opensearch", "hosts", fallback="localhost:9200")
-                )
+                hosts_str = _get_opensearch_env("OPENSEARCH_HOSTS", "localhost:9200")
                 hosts = [h.strip() for h in hosts_str.split(",") if h.strip()]
-                username = settings.opensearch_user(
-                    config.get("opensearch", "user", fallback="admin")
+                username = _get_opensearch_env("OPENSEARCH_USER", "admin")
+                password = _get_opensearch_env("OPENSEARCH_PASSWORD", "admin")
+                use_ssl = _get_opensearch_env("OPENSEARCH_USE_SSL", "true").lower() in (
+                    "true",
+                    "1",
+                    "yes",
                 )
-                password = settings.opensearch_password(
-                    config.get("opensearch", "password", fallback="admin")
-                )
-                use_ssl = settings.opensearch_use_ssl(
-                    config.get("opensearch", "use_ssl", fallback="true").lower()
-                    in ("true", "1", "yes")
-                )
-                verify_certs = settings.opensearch_verify_certs(
-                    config.get("opensearch", "verify_certs", fallback="false").lower()
-                    in ("true", "1", "yes")
-                )
-                timeout = settings.opensearch_timeout(
-                    int(config.get("opensearch", "timeout", fallback="30"))
-                )
-                max_retries = settings.opensearch_max_retries(
-                    int(config.get("opensearch", "max_retries", fallback="3"))
-                )
+                verify_certs = _get_opensearch_env(
+                    "OPENSEARCH_VERIFY_CERTS", "false"
+                ).lower() in ("true", "1", "yes")
+                timeout = int(_get_opensearch_env("OPENSEARCH_TIMEOUT", "30"))
+                max_retries = int(_get_opensearch_env("OPENSEARCH_MAX_RETRIES", "3"))
 
                 ssl_context = None
                 if use_ssl and not verify_certs:
@@ -519,16 +521,14 @@ class ClientManager:
 
 def _resolve_workspace(workspace: str, namespace: str):
     """Resolve effective workspace from env or parameter."""
-    opensearch_workspace = settings.opensearch_workspace_override
-    if opensearch_workspace:
-        effective = opensearch_workspace
+    opensearch_workspace = os.environ.get("OPENSEARCH_WORKSPACE")
+    if opensearch_workspace and opensearch_workspace.strip():
+        effective = opensearch_workspace.strip()
         logger.info(
             f"Using OPENSEARCH_WORKSPACE: '{effective}' (overriding '{workspace}/{namespace}')"
         )
         return effective
-    if workspace:
-        logger.debug(f"Using passed workspace parameter: '{workspace}'")
-    return settings.effective_opensearch_workspace(workspace)
+    return workspace
 
 
 def _build_index_name(workspace: str, namespace: str) -> tuple[str, str, str]:
@@ -616,6 +616,7 @@ class OpenSearchKVStorage(BaseKVStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self.workspace, self.final_namespace, self._index_name = _build_index_name(
             self.workspace, self.namespace
         )
@@ -1211,6 +1212,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self.workspace, self.final_namespace, self._index_name = _build_index_name(
             self.workspace, self.namespace
         )
@@ -1849,6 +1851,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self.workspace, self.final_namespace, base_name = _build_index_name(
             self.workspace, self.namespace
         )
@@ -1922,9 +1925,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     async def _detect_ppl_graphlookup(self):
         """Detect whether PPL graphlookup command is available on this cluster."""
-        env_override = settings.opensearch_use_ppl_graphlookup_override
-        if env_override is not None:
-            self._ppl_graphlookup_available = env_override
+        env_override = os.environ.get("OPENSEARCH_USE_PPL_GRAPHLOOKUP", "").lower()
+        if env_override == "true":
+            self._ppl_graphlookup_available = True
+            return
+        if env_override == "false":
+            self._ppl_graphlookup_available = False
             return
         # Auto-detect by sending a minimal PPL query
         try:
@@ -3150,7 +3156,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 if k
                 not in (
                     "_id",
-                    "entity_id",
                     "source_ids",
                     "connected_edges",
                     "edge_count",
@@ -3739,6 +3744,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self._validate_embedding_func()
         self.workspace, self.final_namespace, self._index_name = _build_index_name(
             self.workspace, self.namespace
@@ -3826,9 +3832,11 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     )
                 return
 
-            ef_construction = settings.opensearch_knn_ef_construction
-            m = settings.opensearch_knn_m
-            ef_search = settings.opensearch_knn_ef_search
+            ef_construction = int(
+                _get_opensearch_env("OPENSEARCH_KNN_EF_CONSTRUCTION", "200")
+            )
+            m = int(_get_opensearch_env("OPENSEARCH_KNN_M", "16"))
+            ef_search = int(_get_opensearch_env("OPENSEARCH_KNN_EF_SEARCH", "100"))
 
             body = {
                 "settings": {

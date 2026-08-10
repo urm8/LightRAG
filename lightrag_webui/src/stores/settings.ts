@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { createSelectors } from '@/lib/utils'
-import { defaultQueryLabel } from '@/lib/constants'
+import { defaultQueryLabel, suggestedUserPrompts } from '@/lib/constants'
 import { Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
@@ -48,9 +48,6 @@ interface SettingsState {
 
   backendMaxGraphNodes: number | null
   setBackendMaxGraphNodes: (maxNodes: number | null) => void
-
-  graphLayoutMaxIterations: number
-  setGraphLayoutMaxIterations: (iterations: number) => void
 
   // Retrieval settings
   queryLabel: string
@@ -106,7 +103,6 @@ const useSettingsStoreBase = create<SettingsState>()(
       graphQueryMaxDepth: 3,
       graphMaxNodes: 1000,
       backendMaxGraphNodes: null,
-      graphLayoutMaxIterations: 15,
 
       queryLabel: defaultQueryLabel,
 
@@ -119,22 +115,21 @@ const useSettingsStoreBase = create<SettingsState>()(
       documentsPageSize: 10,
 
       retrievalHistory: [],
-      userPromptHistory: [],
+      userPromptHistory: [...suggestedUserPrompts],
 
       querySettings: {
-        mode: 'global',
+        mode: 'mix',
         top_k: 40,
-        chunk_top_k: 8,
-        max_entity_tokens: 1600,
-        max_relation_tokens: 2200,
-        max_total_tokens: 6500,
+        chunk_top_k: 20,
+        max_entity_tokens: 6000,
+        max_relation_tokens: 8000,
+        max_total_tokens: 30000,
         only_need_context: false,
         only_need_prompt: false,
         stream: true,
-        use_fast_query: false,
         history_turns: 0,
         user_prompt: '',
-        enable_rerank: false
+        enable_rerank: true
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -142,11 +137,6 @@ const useSettingsStoreBase = create<SettingsState>()(
       setLanguage: (language: Language) => {
         set({ language })
       },
-
-      setGraphLayoutMaxIterations: (iterations: number) =>
-        set({
-          graphLayoutMaxIterations: iterations
-        }),
 
       setQueryLabel: (queryLabel: string) =>
         set({
@@ -239,7 +229,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 21,
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -276,7 +266,6 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 7) {
           state.graphQueryMaxDepth = 3
-          state.graphLayoutMaxIterations = 15
         }
         if (version < 8) {
           state.graphMinDegree = 0
@@ -318,7 +307,7 @@ const useSettingsStoreBase = create<SettingsState>()(
             max_entity_tokens: 10000,
             max_relation_tokens: 10000,
             max_total_tokens: 32000,
-            enable_rerank: false,
+            enable_rerank: true,
             history_turns: 0,
           }
         }
@@ -343,29 +332,15 @@ const useSettingsStoreBase = create<SettingsState>()(
           }
         }
         if (version < 20) {
-          // Keep local MLX query prompts inside the managed retrieval context.
-          // Older browser settings may still contain 30k+ budgets.
-          if (state.querySettings) {
-            state.querySettings.chunk_top_k = Math.min(
-              state.querySettings.chunk_top_k ?? 8,
-              8
-            )
-            state.querySettings.max_entity_tokens = Math.min(
-              state.querySettings.max_entity_tokens ?? 1600,
-              1600
-            )
-            state.querySettings.max_relation_tokens = Math.min(
-              state.querySettings.max_relation_tokens ?? 2200,
-              2200
-            )
-            state.querySettings.max_total_tokens = Math.min(
-              state.querySettings.max_total_tokens ?? 6500,
-              6500
-            )
-          }
-        }
-        if (version < 21 && state.querySettings) {
-          state.querySettings.enable_rerank = false
+          // One-time injection of system-suggested prompts; append after any existing
+          // history so user's own prompts keep priority. Skip any prompt already
+          // present to avoid duplicate dropdown entries (matches the de-duping in
+          // addUserPromptToHistory). version monotonicity makes this run at most once.
+          const existing = state.userPromptHistory ?? []
+          state.userPromptHistory = [
+            ...existing,
+            ...suggestedUserPrompts.filter((p: string) => !existing.includes(p))
+          ]
         }
         return state
       }

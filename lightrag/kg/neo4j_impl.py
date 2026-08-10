@@ -1,3 +1,4 @@
+import os
 import re
 from dataclasses import dataclass
 from typing import ClassVar
@@ -16,7 +17,6 @@ from tenacity import (
 import logging
 from ..utils import logger, validate_workspace
 from ..base import BaseGraphStorage
-from ..config import settings
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock
 import pipmaster as pm
@@ -30,6 +30,13 @@ from neo4j import (  # type: ignore
     AsyncDriver,
     AsyncManagedTransaction,
 )
+
+from dotenv import load_dotenv
+
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -70,9 +77,15 @@ class Neo4JStorage(BaseGraphStorage):
     )
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
-        neo4j_workspace = settings.neo4j_workspace_override
+        # Read env and override the arg if present
+        neo4j_workspace = os.environ.get("NEO4J_WORKSPACE")
         original_workspace = workspace  # Save original value for logging
-        workspace = settings.effective_neo4j_workspace(workspace)
+        if neo4j_workspace and neo4j_workspace.strip():
+            workspace = neo4j_workspace
+
+        # Default to 'base' when both arg and env are empty
+        if not workspace or not str(workspace).strip():
+            workspace = "base"
 
         super().__init__(
             namespace=namespace,
@@ -83,7 +96,7 @@ class Neo4JStorage(BaseGraphStorage):
         validate_workspace(self.workspace)
 
         # Log after super().__init__() to ensure self.workspace is initialized
-        if neo4j_workspace:
+        if neo4j_workspace and neo4j_workspace.strip():
             logger.info(
                 f"Using NEO4J_WORKSPACE environment variable: '{neo4j_workspace}' (overriding '{original_workspace}/{namespace}')"
             )
@@ -158,47 +171,57 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def initialize(self):
         async with get_data_init_lock():
-            URI = settings.neo4j_uri(config.get("neo4j", "uri", fallback=None))
-            USERNAME = settings.neo4j_username(
-                config.get("neo4j", "username", fallback=None)
+            URI = os.environ.get("NEO4J_URI", config.get("neo4j", "uri", fallback=None))
+            USERNAME = os.environ.get(
+                "NEO4J_USERNAME", config.get("neo4j", "username", fallback=None)
             )
-            PASSWORD = settings.neo4j_password(
-                config.get("neo4j", "password", fallback=None)
+            PASSWORD = os.environ.get(
+                "NEO4J_PASSWORD", config.get("neo4j", "password", fallback=None)
             )
-            MAX_CONNECTION_POOL_SIZE = settings.neo4j_max_connection_pool_size(
-                int(config.get("neo4j", "connection_pool_size", fallback=100))
-            )
-            CONNECTION_TIMEOUT = settings.neo4j_connection_timeout(
-                float(config.get("neo4j", "connection_timeout", fallback=30.0))
-            )
-            CONNECTION_ACQUISITION_TIMEOUT = (
-                settings.neo4j_connection_acquisition_timeout(
-                    float(
-                        config.get(
-                            "neo4j",
-                            "connection_acquisition_timeout",
-                            fallback=30.0,
-                        )
-                    )
+            MAX_CONNECTION_POOL_SIZE = int(
+                os.environ.get(
+                    "NEO4J_MAX_CONNECTION_POOL_SIZE",
+                    config.get("neo4j", "connection_pool_size", fallback=100),
                 )
             )
-            MAX_TRANSACTION_RETRY_TIME = settings.neo4j_max_transaction_retry_time(
-                float(
-                    config.get("neo4j", "max_transaction_retry_time", fallback=30.0)
-                )
+            CONNECTION_TIMEOUT = float(
+                os.environ.get(
+                    "NEO4J_CONNECTION_TIMEOUT",
+                    config.get("neo4j", "connection_timeout", fallback=30.0),
+                ),
             )
-            MAX_CONNECTION_LIFETIME = settings.neo4j_max_connection_lifetime(
-                float(config.get("neo4j", "max_connection_lifetime", fallback=300.0))
+            CONNECTION_ACQUISITION_TIMEOUT = float(
+                os.environ.get(
+                    "NEO4J_CONNECTION_ACQUISITION_TIMEOUT",
+                    config.get(
+                        "neo4j", "connection_acquisition_timeout", fallback=30.0
+                    ),
+                ),
             )
-            LIVENESS_CHECK_TIMEOUT = settings.neo4j_liveness_check_timeout(
-                float(config.get("neo4j", "liveness_check_timeout", fallback=30.0))
+            MAX_TRANSACTION_RETRY_TIME = float(
+                os.environ.get(
+                    "NEO4J_MAX_TRANSACTION_RETRY_TIME",
+                    config.get("neo4j", "max_transaction_retry_time", fallback=30.0),
+                ),
             )
-            KEEP_ALIVE = settings.neo4j_keep_alive(
-                config.get("neo4j", "keep_alive", fallback="true").lower()
-                in ("true", "1", "yes", "on")
+            MAX_CONNECTION_LIFETIME = float(
+                os.environ.get(
+                    "NEO4J_MAX_CONNECTION_LIFETIME",
+                    config.get("neo4j", "max_connection_lifetime", fallback=300.0),
+                ),
             )
-            DATABASE = settings.neo4j_database(
-                re.sub(r"[^a-zA-Z0-9-]", "-", self.namespace)
+            LIVENESS_CHECK_TIMEOUT = float(
+                os.environ.get(
+                    "NEO4J_LIVENESS_CHECK_TIMEOUT",
+                    config.get("neo4j", "liveness_check_timeout", fallback=30.0),
+                ),
+            )
+            KEEP_ALIVE = os.environ.get(
+                "NEO4J_KEEP_ALIVE",
+                config.get("neo4j", "keep_alive", fallback="true"),
+            ).lower() in ("true", "1", "yes", "on")
+            DATABASE = os.environ.get(
+                "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", self.namespace)
             )
             """The default value approach for the DATABASE is only intended to maintain compatibility with legacy practices."""
 

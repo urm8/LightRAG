@@ -4,10 +4,6 @@ import { getStatusRequestFilters, matchesStatusFilter } from '@/features/documen
 
 describe('documentStatusFilters', () => {
   test('builds exact single-status request filters for each tab', () => {
-    expect(getStatusRequestFilters('pending')).toEqual({
-      status_filter: 'pending',
-      status_filters: null
-    })
     expect(getStatusRequestFilters('completed')).toEqual({
       status_filter: 'processed',
       status_filters: null
@@ -38,11 +34,9 @@ describe('documentStatusFilters', () => {
   })
 
   test('matches a single status per non-all tab', () => {
-    expect(matchesStatusFilter('pending', 'pending')).toBe(true)
     expect(matchesStatusFilter('parsing', 'parse')).toBe(true)
     expect(matchesStatusFilter('analyzing', 'analyze')).toBe(true)
     expect(matchesStatusFilter('processing', 'process')).toBe(true)
-    expect(matchesStatusFilter('processing', 'pending')).toBe(false)
     expect(matchesStatusFilter('analyzing', 'parse')).toBe(false)
     expect(matchesStatusFilter('preprocessed', 'analyze')).toBe(false)
   })

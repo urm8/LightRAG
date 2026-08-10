@@ -11,7 +11,6 @@ from lightrag.api.mcp_server import (
     _configure_lightrag_client_auth,
     _get_lifespan_context,
     _ensure_lightrag_mcp_submodule_importable,
-    _mcp_query_profile,
 )
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
@@ -122,12 +121,6 @@ def test_lightrag_mcp_context_accessor_supports_fastmcp_2_request_context():
     assert "lightrag_client" in _get_lifespan_context(Context())
 
 
-def test_lightrag_mcp_query_profile_defaults_to_granite(monkeypatch):
-    monkeypatch.delenv("LIGHTRAG_MCP_QUERY_PROFILE", raising=False)
-
-    assert _mcp_query_profile() == "granite"
-
-
 def test_to_jsonable_strips_generated_client_unset_values():
     _ensure_lightrag_mcp_submodule_importable()
     from lightrag_mcp.client.light_rag_server_api_client.models.doc_status import (
@@ -178,7 +171,7 @@ def test_to_jsonable_strips_generated_client_unset_values():
 
 
 @pytest.mark.asyncio
-async def test_lightrag_client_query_sends_query_model_profile(monkeypatch):
+async def test_lightrag_client_query_uses_base_model_request(monkeypatch):
     _ensure_lightrag_mcp_submodule_importable()
     from lightrag_mcp.lightrag_client import LightRAGClient
 
@@ -191,6 +184,6 @@ async def test_lightrag_client_query_sends_query_model_profile(monkeypatch):
 
     monkeypatch.setattr(client, "_call_api", fake_call_api)
 
-    await client.query("Project: LightRAG. Test query", query_model="granite")
+    await client.query("Project: LightRAG. Test query")
 
-    assert captured["body"].additional_properties["query_model"] == "granite"
+    assert "query_model" not in captured["body"].additional_properties

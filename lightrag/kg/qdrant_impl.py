@@ -11,7 +11,6 @@ import numpy as np
 import pipmaster as pm
 
 from ..base import BaseVectorStorage
-from ..config import settings
 from ..constants import DEFAULT_QUERY_PRIORITY
 from ..exceptions import DataMigrationError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
@@ -471,15 +470,22 @@ class QdrantVectorDBStorage(BaseVectorStorage):
     def __post_init__(self):
         validate_workspace(self.workspace)
         self._validate_embedding_func()
-        qdrant_workspace = settings.qdrant_workspace_override
-        if qdrant_workspace:
+        # Check for QDRANT_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all Qdrant storage instances
+        qdrant_workspace = os.environ.get("QDRANT_WORKSPACE")
+        if qdrant_workspace and qdrant_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = qdrant_workspace.strip()
             logger.info(
-                f"Using QDRANT_WORKSPACE environment variable: '{qdrant_workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                f"Using QDRANT_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
-        elif self.workspace:
-            logger.debug(f"Using passed workspace parameter: '{self.workspace}'")
-
-        effective_workspace = settings.effective_qdrant_workspace(self.workspace)
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
 
         self.effective_workspace = effective_workspace or DEFAULT_WORKSPACE
 
@@ -510,7 +516,12 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         # Initialize client as None - will be created in initialize() method
         self._client = None
         self._max_batch_size = self.global_config["embedding_batch_num"]
-        self._max_upsert_payload_bytes = settings.qdrant_upsert_max_payload_bytes
+        self._max_upsert_payload_bytes = int(
+            os.getenv(
+                "QDRANT_UPSERT_MAX_PAYLOAD_BYTES",
+                str(DEFAULT_QDRANT_UPSERT_MAX_PAYLOAD_BYTES),
+            )
+        )
         self._max_upsert_points_per_batch = int(
             os.getenv(
                 "QDRANT_UPSERT_MAX_POINTS_PER_BATCH",
@@ -643,11 +654,12 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 # Create QdrantClient if not already created
                 if self._client is None:
                     self._client = QdrantClient(
-                        url=settings.qdrant_url(
-                            config.get("qdrant", "uri", fallback=None)
+                        url=os.environ.get(
+                            "QDRANT_URL", config.get("qdrant", "uri", fallback=None)
                         ),
-                        api_key=settings.qdrant_api_key(
-                            config.get("qdrant", "apikey", fallback=None)
+                        api_key=os.environ.get(
+                            "QDRANT_API_KEY",
+                            config.get("qdrant", "apikey", fallback=None),
                         ),
                     )
                     logger.debug(

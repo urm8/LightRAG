@@ -37,6 +37,7 @@ Top-level directories:
 - Validate changes by running the relevant `ruff`/`pytest`/`bun test` commands whenever feasible, and describe any unrun checks with follow-up guidance.
 - For Codex and other fresh-shell automation, prefer `./scripts/test.sh` instead of bare `pytest`; the script falls back through `PYTHON`, the active virtualenv, `uv`, `.venv`, and `venv` before trying `python` or `python3`.
 - For setup workflow changes, prefer `make env-*` targets over calling `scripts/setup/setup.sh` directly; the `Makefile` resolves a Bash 4+ interpreter for macOS/Linux compatibility.
+- For LightRAG service management on this machine, use the `Makefile` targets (`make lightrag-start`, `make lightrag-restart`, `make lightrag-stop`, `make lightrag-status`, `make lightrag-logs`) instead of invoking `launchctl` directly. Manage the separate local MLX services through `make mlx-model-*` and `make mlx-embeddings-*`. If service management needs new behavior, add or update a `Makefile` target first rather than scripting around it elsewhere.
 - When editing setup logic, keep `.env` host-usable and treat `docker-compose.final.yml` as generated output assembled from `scripts/setup/templates/*.yml`; compose-only overrides belong in the wizard-managed compose layer rather than being persisted back into `.env`.
 
 ## LightRAG MCP & Skill Workflow

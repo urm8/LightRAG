@@ -9,8 +9,6 @@ import os
 import sys
 from pathlib import Path
 
-from lightrag.config import settings
-
 
 # Known tiktoken encoding names (not model names)
 # These need to be loaded with tiktoken.get_encoding() instead of tiktoken.encoding_for_model()
@@ -39,7 +37,7 @@ def download_tiktoken_cache(cache_dir: str = None, models: list = None):
         print(f"Using specified cache directory: {cache_dir}")
     else:
         # Check if TIKTOKEN_CACHE_DIR is already set in environment
-        env_cache_dir = settings.tiktoken_cache_dir
+        env_cache_dir = os.environ.get("TIKTOKEN_CACHE_DIR")
         if env_cache_dir:
             cache_dir = env_cache_dir
             print(f"Using TIKTOKEN_CACHE_DIR from environment: {cache_dir}")

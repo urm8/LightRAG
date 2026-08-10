@@ -9,30 +9,27 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 import uvicorn
-from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-from lightrag.config import settings
+from scripts.local_env import env_bool, env_int, env_str
 
-load_dotenv(dotenv_path=".env", override=False)
-
-MODEL_PATH = settings.mlx_embeddings_model_path
-MODEL_REPO = settings.mlx_embeddings_model or "mlx-community/bge-m3-mlx-4bit"
-MODEL_NAME = settings.embedding_model or MODEL_REPO
-HOST = settings.mlx_embeddings_host
-PORT = settings.mlx_embeddings_port
-MAX_SEQ_LEN = settings.embedding_token_limit or 8192
-API_KEY = settings.embedding_binding_api_key or "dummy"
-RERANK_MODEL_PATH = settings.mlx_rerank_model_path
-RERANK_MODEL_REPO = settings.mlx_rerank_model
-RERANK_MODEL_NAME = settings.rerank_model or "BAAI/bge-reranker-v2-m3"
-RERANK_MAX_LENGTH = settings.rerank_max_tokens_per_doc
-RERANK_API_KEY = settings.rerank_binding_api_key or API_KEY
-RERANK_BATCH_SIZE = settings.mlx_rerank_batch_size
-RERANK_ENABLED = settings.lightrag_rerank_enabled
-RERANK_MEMORY_LIMIT_MB = settings.mlx_rerank_server_max_rss_mb
-RERANK_CACHE_LIMIT_MB = settings.mlx_rerank_cache_max_mb or min(
+MODEL_PATH = env_str("MLX_EMBEDDINGS_MODEL_PATH")
+MODEL_REPO = env_str("MLX_EMBEDDINGS_MODEL", "mlx-community/bge-m3-mlx-4bit")
+MODEL_NAME = env_str("EMBEDDING_MODEL") or MODEL_REPO
+HOST = env_str("MLX_EMBEDDINGS_HOST", "127.0.0.1")
+PORT = env_int("MLX_EMBEDDINGS_PORT", 11439)
+MAX_SEQ_LEN = env_int("EMBEDDING_TOKEN_LIMIT", 8192)
+API_KEY = env_str("EMBEDDING_BINDING_API_KEY", "dummy")
+RERANK_MODEL_PATH = env_str("MLX_RERANK_MODEL_PATH")
+RERANK_MODEL_REPO = env_str("MLX_RERANK_MODEL")
+RERANK_MODEL_NAME = env_str("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+RERANK_MAX_LENGTH = env_int("RERANK_MAX_TOKENS_PER_DOC", 1024)
+RERANK_API_KEY = env_str("RERANK_BINDING_API_KEY") or API_KEY
+RERANK_BATCH_SIZE = env_int("MLX_RERANK_BATCH_SIZE", 8)
+RERANK_ENABLED = env_bool("LIGHTRAG_RERANK_ENABLED")
+RERANK_MEMORY_LIMIT_MB = env_int("MLX_RERANK_SERVER_MAX_RSS_MB", 0)
+RERANK_CACHE_LIMIT_MB = env_int("MLX_RERANK_CACHE_MAX_MB", 0) or min(
     1024,
     max(128, RERANK_MEMORY_LIMIT_MB // 8),
 )

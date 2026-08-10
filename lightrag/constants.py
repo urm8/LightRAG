@@ -48,56 +48,6 @@ DEFAULT_HEADING_LEVEL_MAX_CHARS = 80
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
 GRAPH_FIELD_SEP = "<SEP>"
 
-# Default entities to extract if ENTITY_TYPES is not specified in .env
-DEFAULT_ENTITY_TYPES = [
-    "Person",
-    "Organization",
-    "Project",
-    "Repository",
-    "Library",
-    "Framework",
-    "Model",
-    "Agent",
-    "Tool",
-    "API",
-    "Service",
-    "Database",
-    "File",
-    "Document",
-    "ProgrammingLanguage",
-    "Technology",
-    "Method",
-    "Workflow",
-    "Task",
-    "Concept",
-    "Issue",
-    "Event",
-    "Metric",
-    "Company",
-    "Location",
-]
-
-DEFAULT_RELATION_LABELS = [
-    "USES",
-    "DEPENDS_ON",
-    "IMPLEMENTS",
-    "CALLS",
-    "CONNECTS_TO",
-    "RUNS_ON",
-    "STORES_IN",
-    "DEPLOYS_TO",
-    "AUTHORED_BY",
-    "PART_OF",
-    "RELATED_TO",
-    "CAUSES",
-    "MEASURES",
-    "TRACKS",
-    "FAILS_WITH",
-    "IMPROVES",
-    "REPLACES",
-    "COMPETES_WITH",
-]
-
 # Query and retrieval configuration defaults
 DEFAULT_TOP_K = 40
 DEFAULT_CHUNK_TOP_K = 20
@@ -141,9 +91,6 @@ DEFAULT_TEMPERATURE = 1.0
 DEFAULT_MAX_ASYNC = 4  # Default maximum async operations
 DEFAULT_MAX_PARALLEL_INSERT = 3  # Default maximum parallel insert operations
 
-# TODO: Deprecated. All conversation_history messages is sent to LLM.
-DEFAULT_HISTORY_TURNS = 0
-
 # Chunker defaults — i18n-aware so Chinese / mixed-language documents
 # split correctly out of the box.  Override per deployment via
 # CHUNK_R_SEPARATORS / CHUNK_V_SENTENCE_SPLIT_REGEX env vars.
@@ -173,7 +120,11 @@ DEFAULT_R_SEPARATORS: tuple[str, ...] = (
 DEFAULT_SENTENCE_SPLIT_REGEX = r"(?<=[.?!])\s+|(?<=[。？！])"
 
 # DEFAULT_CHUNK_P_SIZE: paragraph-semantic chunker target size when
-# CHUNK_P_SIZE env is unset.
+# CHUNK_P_SIZE env is unset.  Deliberately larger than the global
+# CHUNK_SIZE default — heading-aligned paragraph merging needs more
+# headroom to keep semantically related paragraphs together; falling
+# back to CHUNK_SIZE (1200) would force premature splits and defeat
+# the strategy's purpose.
 DEFAULT_CHUNK_P_SIZE = 2000
 
 # Paragraph-semantic "drop references" detection defaults (the chunking="P"

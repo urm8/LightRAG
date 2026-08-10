@@ -20,7 +20,7 @@ from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 
-from lightrag.config import settings
+from scripts.local_env import env_int, env_str
 
 try:
     from playwright.async_api import (
@@ -227,7 +227,7 @@ class PlaywrightWebKitFetcher:
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.webkit.launch(headless=True)
             self._context = await self._browser.new_context(
-                user_agent=settings.hn_loader_user_agent or DEFAULT_USER_AGENT,
+                user_agent=env_str("HN_LOADER_USER_AGENT") or DEFAULT_USER_AGENT,
                 locale="en-US",
                 viewport={"width": 1440, "height": 900},
                 screen={"width": 1440, "height": 900},
@@ -551,18 +551,18 @@ def build_api_base_url(explicit_base_url: str | None) -> str:
     if explicit_base_url:
         return normalize_api_base_url(explicit_base_url)
 
-    env_base_url = settings.lightrag_api_url
+    env_base_url = env_str("LIGHTRAG_API_URL")
     if env_base_url:
         return normalize_api_base_url(env_base_url)
 
-    host = settings.host.strip() or "127.0.0.1"
-    port = str(settings.port).strip() or "9621"
+    host = env_str("HOST", "127.0.0.1")
+    port = str(env_int("PORT", 9621))
     return normalize_api_base_url(f"http://{host}:{port}")
 
 
 def build_page_headers() -> dict[str, str]:
     return {
-        "User-Agent": settings.hn_loader_user_agent or DEFAULT_USER_AGENT,
+        "User-Agent": env_str("HN_LOADER_USER_AGENT") or DEFAULT_USER_AGENT,
         "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
@@ -1296,7 +1296,7 @@ def configure_logging(verbose: bool) -> None:
 
 async def main_async(args: argparse.Namespace) -> int:
     api_base_url = build_api_base_url(args.api_base_url)
-    api_key = args.api_key or settings.lightrag_api_key or getenv("LIGHTRAG_API_KEY")
+    api_key = args.api_key or env_str("LIGHTRAG_API_KEY") or getenv("LIGHTRAG_API_KEY")
     if not api_key:
         raise RuntimeError(
             "API key is required but not set. Provide it through --api-key or LIGHTRAG_API_KEY environment variable."

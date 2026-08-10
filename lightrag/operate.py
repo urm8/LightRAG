@@ -1,29 +1,25 @@
 from __future__ import annotations
 from functools import partial
+from pathlib import Path
 
 import asyncio
-import inspect
 import json
-import json_repair
 import re
-import os
-from typing import Any, AsyncIterator, Callable, NamedTuple, overload, Literal
+import json_repair
+from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
 from lightrag.exceptions import (
     PipelineCancelledException,
 )
-from lightrag.query.apfel import _build_apfel_iterative_portions
-from lightrag.query.apfel import _apfel_iterative_metadata
-from lightrag.query.apfel import _run_apfel_iterative_answer_generator
-from lightrag.query.apfel import _run_apfel_iterative_answer
-from lightrag.query.apfel import _is_apfel_fast_query
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
     Tokenizer,
     is_float_regex,
     sanitize_and_normalize_extracted_text,
+    sanitize_text_for_encoding,
+    repair_vlm_json_escape_damage_nested,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
@@ -42,6 +38,7 @@ from lightrag.utils import (
     process_chunks_unified,
     safe_vdb_operation_with_exception,
     create_prefixed_exception,
+    fix_tuple_delimiter_corruption,
     convert_to_user_format,
     generate_reference_list_from_chunks,
     apply_source_ids_limit,
@@ -49,13 +46,6 @@ from lightrag.utils import (
     make_relation_chunk_key,
     _cooperative_yield,
     performance_timing_log,
-    clean_chatml_markers,
-    contains_chatml_markers,
-)
-from lightrag.web_search import (
-    duckduckgo_search,
-    format_search_results,
-    WebSearchResult,
 )
 from lightrag.base import (
     BaseGraphStorage,
@@ -66,30 +56,24 @@ from lightrag.base import (
     QueryResult,
     QueryContextResult,
 )
-
-from lightrag.types import ExtractionStructuredOutput
-from lightrag.common_tools import EXTRACTION_TOOL_CHOICE, EXTRACTION_TOOLS
-from lightrag.extraction import (
-    ExtractionPromptContext,
-    build_continue_prompt,
-    build_initial_user_prompt,
-    build_system_prompt,
+from lightrag.chunk_schema import (
+    HEADING_BREADCRUMB_SEP,
+    format_heading_context,
+    format_parent_headings,
+    strip_internal_multimodal_markup_for_extraction,
 )
-from lightrag.prompt import KEYWORDS_EXTRACTION_EXAMPLES, PROMPTS
-from lightrag.chunk_schema import strip_internal_multimodal_markup_for_extraction
-
+from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
+    DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_QUERY_PRIORITY,
     DEFAULT_SUMMARY_PRIORITY,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_KG_CHUNK_PICK_METHOD,
-    DEFAULT_ENTITY_TYPES,
-    DEFAULT_RELATION_LABELS,
     DEFAULT_SUMMARY_LANGUAGE,
     SOURCE_IDS_LIMIT_METHOD_KEEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
@@ -98,9 +82,15 @@ from lightrag.constants import (
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
     DEFAULT_ENTITY_NAME_MAX_BYTES,
 )
-from lightrag.config import settings
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 import time
+from dotenv import load_dotenv
+
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
+
 
 def _get_relationship_vdb_timeout_seconds(global_config: dict[str, Any]) -> float:
     """Derive a defensive timeout for relation VDB upserts.
@@ -165,6 +155,54 @@ def _truncate_entity_identifier(
         preview,
     )
     return display_value
+
+
+def _truncate_section_context(
+    heading_path: str,
+    tokenizer: "Tokenizer | None",
+    max_tokens: int,
+) -> str:
+    """Token-budget the `---Section Context---` breadcrumb before injection.
+
+    The breadcrumb is metadata layered on top of the (already chunk-sized)
+    input text, so an unbounded heading chain could push an otherwise-valid
+    chunk past the provider context window. When the path exceeds ``max_tokens``
+    we first collapse it to the **first** level (top-level document location)
+    and the **last/leaf** level (the chunk's own, most-specific section),
+    eliding the middle with ``first → … → leaf``. A token-dense path (emoji /
+    byte-level tokenizers) can still exceed the budget even with one or two
+    levels, so a hard token cap is always applied as a backstop — the returned
+    string is guaranteed to fit ``max_tokens``. ``max_tokens <= 0`` or a missing
+    tokenizer disables the cap.
+    """
+    if not heading_path or tokenizer is None or max_tokens <= 0:
+        return heading_path
+    if len(tokenizer.encode(heading_path)) <= max_tokens:
+        return heading_path
+    levels = heading_path.split(HEADING_BREADCRUMB_SEP)
+    if len(levels) >= 3:
+        heading_path = (
+            f"{levels[0]}{HEADING_BREADCRUMB_SEP}…{HEADING_BREADCRUMB_SEP}{levels[-1]}"
+        )
+    # Backstop: enforce the cap for token-dense short paths (and any collapsed
+    # form that is still over budget). Prefer a trailing ellipsis when it fits,
+    # but re-encode each candidate because custom/BPE tokenizers may tokenize
+    # the suffix differently when it is appended to decoded prefix text.
+    tokens = tokenizer.encode(heading_path)
+    if len(tokens) > max_tokens:
+        ellipsis = "…"
+        ellipsis_token_count = len(tokenizer.encode(ellipsis))
+        if ellipsis_token_count <= max_tokens:
+            for keep in range(max_tokens - ellipsis_token_count, -1, -1):
+                candidate = tokenizer.decode(tokens[:keep]).rstrip() + ellipsis
+                if len(tokenizer.encode(candidate)) <= max_tokens:
+                    return candidate
+        for keep in range(max_tokens, -1, -1):
+            candidate = tokenizer.decode(tokens[:keep]).rstrip()
+            if len(tokenizer.encode(candidate)) <= max_tokens:
+                return candidate
+        return ""
+    return heading_path
 
 
 def _truncate_vdb_content(content: str, global_config: dict, content_label: str) -> str:
@@ -255,8 +293,11 @@ async def _handle_entity_relation_summary(
         return "", False
 
     # If only one description, return it directly (no need for LLM call)
+    # Still sanitize: descriptions read back from existing graph nodes (or
+    # injected by non-extraction producers) may carry XML-illegal control
+    # characters that would crash the GraphML flush downstream.
     if len(description_list) == 1:
-        return description_list[0], False
+        return sanitize_text_for_encoding(description_list[0]), False
 
     # Get configuration
     tokenizer: Tokenizer = global_config["tokenizer"]
@@ -283,7 +324,12 @@ async def _handle_entity_relation_summary(
                 and total_tokens < summary_max_tokens
             ):
                 # no LLM needed, just join the descriptions
-                final_description = separator.join(current_list)
+                # Sanitize for the same reason as the single-description
+                # early return above: inputs merged from pre-existing graph
+                # data are not guaranteed XML-safe.
+                final_description = sanitize_text_for_encoding(
+                    separator.join(current_list)
+                )
                 return final_description if final_description else "", llm_was_used
             else:
                 if total_tokens > summary_context_size and len(current_list) <= 2:
@@ -430,6 +476,12 @@ async def _summarize_descriptions(
         cache_type="summary",
         llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
     )
+
+    # The LLM response is the only description path that bypasses
+    # extraction-time sanitization; control chars / surrogates left here
+    # would later break GraphML (XML) serialization on write. Strip them
+    # at the source, symmetric with how extracted descriptions are cleaned.
+    summary = sanitize_text_for_encoding(summary)
 
     # Check summary token length against embedding limit
     embedding_token_limit = global_config.get("embedding_token_limit")
@@ -621,153 +673,6 @@ def _handle_single_relationship_extraction(
         return None
 
 
-
-def _default_entity_description(entity_name: str, entity_type: str) -> str:
-    return f"{entity_name} is a {entity_type} mentioned in the text."
-
-
-def _default_relation_description(
-    source_entity: str, target_entity: str, relation_label: str
-) -> str:
-    return f"{source_entity} {relation_label.lower()} {target_entity}."
-
-
-def _parse_structured_extraction_output(
-    result: str | dict[str, Any] | ExtractionStructuredOutput,
-    chunk_key: str,
-) -> ExtractionStructuredOutput | None:
-    if isinstance(result, ExtractionStructuredOutput):
-        return result
-
-    try:
-        if isinstance(result, dict):
-            return ExtractionStructuredOutput.model_validate(result)
-
-        if not isinstance(result, str):
-            return None
-
-        candidate = result.strip()
-        if not candidate:
-            return None
-
-        # Strip ChatML control tokens that may have leaked past the
-        # model's stop sequences (Hermes-4 / ChatML models).
-        if contains_chatml_markers(candidate):
-            before_len = len(candidate)
-            candidate = clean_chatml_markers(candidate)
-            logger.warning(
-                "%s: ChatML control tokens cleaned from extraction output "
-                "(%d chars removed) before JSON parsing",
-                chunk_key,
-                before_len - len(candidate),
-            )
-
-        if "```" in candidate:
-            fenced = re.findall(r"```(?:json)?\s*(.*?)```", candidate, flags=re.DOTALL)
-            if fenced:
-                candidate = fenced[0].strip()
-
-        if "{" in candidate and "}" in candidate:
-            candidate = candidate[candidate.find("{") : candidate.rfind("}") + 1]
-
-        parsed = json_repair.loads(candidate)
-        if not isinstance(parsed, dict):
-            return None
-        return ExtractionStructuredOutput.model_validate(parsed)
-    except Exception as exc:
-        logger.debug("%s: structured extraction parse failed: %s", chunk_key, exc)
-        return None
-
-
-def _structured_output_to_graph_data(
-    structured: ExtractionStructuredOutput,
-    chunk_key: str,
-    timestamp: int,
-    file_path: str,
-) -> tuple[dict, dict]:
-    maybe_nodes = defaultdict(list)
-    maybe_edges = defaultdict(list)
-
-    for entity in structured.entities:
-        entity_name = sanitize_and_normalize_extracted_text(
-            entity.entity_name, remove_inner_quotes=True
-        )
-        entity_type = sanitize_and_normalize_extracted_text(
-            entity.entity_type, remove_inner_quotes=True
-        )
-        if not entity_name or not entity_type:
-            continue
-
-        entity_description = sanitize_and_normalize_extracted_text(
-            entity.entity_description
-            or _default_entity_description(entity_name, entity_type)
-        )
-        truncated_name = _truncate_entity_identifier(
-            entity_name,
-            DEFAULT_ENTITY_NAME_MAX_LENGTH,
-            chunk_key,
-            "Entity name",
-        )
-        maybe_nodes[truncated_name].append(
-            dict(
-                entity_name=truncated_name,
-                entity_type=entity_type.replace(" ", "").lower(),
-                description=entity_description,
-                source_id=chunk_key,
-                file_path=file_path,
-                timestamp=timestamp,
-            )
-        )
-
-    for relation in structured.relations:
-        source_entity = sanitize_and_normalize_extracted_text(
-            relation.source_entity, remove_inner_quotes=True
-        )
-        target_entity = sanitize_and_normalize_extracted_text(
-            relation.target_entity, remove_inner_quotes=True
-        )
-        relation_label = sanitize_and_normalize_extracted_text(
-            relation.relationship_keywords, remove_inner_quotes=True
-        )
-        if not source_entity or not target_entity or not relation_label:
-            continue
-        if source_entity == target_entity:
-            continue
-
-        relation_description = sanitize_and_normalize_extracted_text(
-            relation.relationship_description
-            or _default_relation_description(
-                source_entity, target_entity, relation_label
-            )
-        )
-        truncated_source = _truncate_entity_identifier(
-            source_entity,
-            DEFAULT_ENTITY_NAME_MAX_LENGTH,
-            chunk_key,
-            "Relation entity",
-        )
-        truncated_target = _truncate_entity_identifier(
-            target_entity,
-            DEFAULT_ENTITY_NAME_MAX_LENGTH,
-            chunk_key,
-            "Relation entity",
-        )
-        maybe_edges[(truncated_source, truncated_target)].append(
-            dict(
-                src_id=truncated_source,
-                tgt_id=truncated_target,
-                weight=1.0,
-                description=relation_description,
-                keywords=relation_label,
-                source_id=chunk_key,
-                file_path=file_path,
-                timestamp=timestamp,
-            )
-        )
-
-    return dict(maybe_nodes), dict(maybe_edges)
-
-
 def _normalize_text_extraction_record_attributes(
     record_attributes: list[str], chunk_key: str
 ) -> list[str]:
@@ -842,6 +747,13 @@ async def _process_json_extraction_result(
         )
         return dict(maybe_nodes), dict(maybe_edges)
 
+    # Models quoting LaTeX in descriptions routinely under-escape backslashes
+    # ("\frac" is valid JSON meaning form feed + "rac"); restore the zero-risk
+    # cases before sanitization would otherwise delete the control characters
+    # and leave a maimed formula. Covers initial extraction, gleaning, and
+    # cache-rebuild — all three flow through this parser.
+    parsed = repair_vlm_json_escape_damage_nested(parsed, context=chunk_key)
+
     # Process entities
     entities_list = parsed.get("entities", [])
     if not isinstance(entities_list, list):
@@ -894,7 +806,7 @@ async def _process_json_extraction_result(
                 "Entity name",
             )
 
-            entity_data_to_store = dict(
+            node_data = dict(
                 entity_name=truncated_name,
                 entity_type=entity_type,
                 description=entity_description,
@@ -902,7 +814,7 @@ async def _process_json_extraction_result(
                 file_path=file_path,
                 timestamp=timestamp,
             )
-            maybe_nodes[truncated_name].append(entity_data_to_store)
+            maybe_nodes[truncated_name].append(node_data)
 
         except Exception as e:
             logger.warning(
@@ -989,7 +901,6 @@ async def _process_json_extraction_result(
                 f"{chunk_key}: Failed to process relationship from JSON result: {e}"
             )
             continue
-
 
     return dict(maybe_nodes), dict(maybe_edges)
 
@@ -1372,28 +1283,133 @@ async def _get_cached_extraction_results(
 
 
 async def _process_extraction_result(
-    result: str | dict[str, Any] | ExtractionStructuredOutput,
+    result: str,
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
+    tuple_delimiter: str = "<|#|>",
+    completion_delimiter: str = "<|COMPLETE|>",
 ) -> tuple[dict, dict]:
-    """Process a single structured extraction result."""
+    """Process a single extraction result (either initial or gleaning)
+    Args:
+        result (str): The extraction result to process
+        chunk_key (str): The chunk key for source tracking
+        file_path (str): The file path for citation
+        tuple_delimiter (str): Delimiter for tuple fields
+        record_delimiter (str): Delimiter for records
+        completion_delimiter (str): Delimiter for completion
+    Returns:
+        tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
+    """
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
 
-    structured_output = _parse_structured_extraction_output(result, chunk_key)
-    if structured_output is not None:
-        return _structured_output_to_graph_data(
-            structured_output,
-            chunk_key,
-            timestamp,
-            file_path,
+    if completion_delimiter not in result:
+        logger.warning(
+            f"{chunk_key}: Complete delimiter can not be found in extraction result"
         )
 
-    logger.warning(
-        "%s: extraction result is not valid structured output; legacy delimiter parsing is disabled",
-        chunk_key,
+    # Split LLL output result to records by "\n"
+    records = split_string_by_multi_markers(
+        result,
+        ["\n", completion_delimiter, completion_delimiter.lower()],
     )
+
+    # Fix LLM output format error which use tuple_delimiter to separate record instead of "\n"
+    fixed_records = []
+    for i, record in enumerate(records, start=1):
+        record = record.strip()
+        if record is None:
+            continue
+        entity_records = split_string_by_multi_markers(
+            record, [f"{tuple_delimiter}entity{tuple_delimiter}"]
+        )
+        for entity_record in entity_records:
+            if not entity_record.startswith("entity") and not entity_record.startswith(
+                "relation"
+            ):
+                entity_record = f"entity<|{entity_record}"
+            entity_relation_records = split_string_by_multi_markers(
+                # treat "relationship" and "relation" interchangeable
+                entity_record,
+                [
+                    f"{tuple_delimiter}relationship{tuple_delimiter}",
+                    f"{tuple_delimiter}relation{tuple_delimiter}",
+                ],
+            )
+            for entity_relation_record in entity_relation_records:
+                if not entity_relation_record.startswith(
+                    "entity"
+                ) and not entity_relation_record.startswith("relation"):
+                    entity_relation_record = (
+                        f"relation{tuple_delimiter}{entity_relation_record}"
+                    )
+                fixed_records.append(entity_relation_record)
+        await _cooperative_yield(i, every=8)
+
+    if len(fixed_records) != len(records):
+        logger.warning(
+            f"{chunk_key}: LLM output format error; find LLM use {tuple_delimiter} as record separators instead new-line"
+        )
+
+    delimiter_core = tuple_delimiter[2:-2]  # Extract "#" from "<|#|>"
+    delimiter_core_lower = delimiter_core.lower()
+    for i, record in enumerate(fixed_records, start=1):
+        record = record.strip()
+        if record is None:
+            continue
+
+        # Fix various forms of tuple_delimiter corruption from the LLM output using the dedicated function
+        record = fix_tuple_delimiter_corruption(record, delimiter_core, tuple_delimiter)
+        if delimiter_core != delimiter_core_lower:
+            # change delimiter_core to lower case, and fix again
+            record = fix_tuple_delimiter_corruption(
+                record, delimiter_core_lower, tuple_delimiter
+            )
+
+        record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
+        record_attributes = _normalize_text_extraction_record_attributes(
+            record_attributes, chunk_key
+        )
+
+        # Try to parse as entity
+        entity_data = _handle_single_entity_extraction(
+            record_attributes, chunk_key, timestamp, file_path
+        )
+        if entity_data is not None:
+            truncated_name = _truncate_entity_identifier(
+                entity_data["entity_name"],
+                DEFAULT_ENTITY_NAME_MAX_LENGTH,
+                chunk_key,
+                "Entity name",
+            )
+            entity_data["entity_name"] = truncated_name
+            maybe_nodes[truncated_name].append(entity_data)
+            await _cooperative_yield(i, every=8)
+            continue
+
+        # Try to parse as relationship
+        relationship_data = _handle_single_relationship_extraction(
+            record_attributes, chunk_key, timestamp, file_path
+        )
+        if relationship_data is not None:
+            truncated_source = _truncate_entity_identifier(
+                relationship_data["src_id"],
+                DEFAULT_ENTITY_NAME_MAX_LENGTH,
+                chunk_key,
+                "Relation entity",
+            )
+            truncated_target = _truncate_entity_identifier(
+                relationship_data["tgt_id"],
+                DEFAULT_ENTITY_NAME_MAX_LENGTH,
+                chunk_key,
+                "Relation entity",
+            )
+            relationship_data["src_id"] = truncated_source
+            relationship_data["tgt_id"] = truncated_target
+            maybe_edges[(truncated_source, truncated_target)].append(relationship_data)
+        await _cooperative_yield(i, every=8)
+
     return dict(maybe_nodes), dict(maybe_edges)
 
 
@@ -1403,7 +1419,20 @@ async def _rebuild_from_extraction_result(
     chunk_id: str,
     timestamp: int,
 ) -> tuple[dict, dict]:
-    """Parse cached extraction result using the structured extractor path."""
+    """Parse cached extraction result using the same logic as extract_entities.
+
+    Supports both JSON and delimiter-based formats for backward compatibility.
+    Attempts JSON parsing first; if the cached result looks like JSON (starts with '{'),
+    uses the JSON parser. Otherwise, falls back to the traditional delimiter-based parser.
+
+    Args:
+        text_chunks_storage: Text chunks storage to get chunk data
+        extraction_result: The cached LLM extraction result
+        chunk_id: The chunk ID for source tracking
+
+    Returns:
+        Tuple of (entities_dict, relationships_dict)
+    """
 
     # Get chunk data for file_path from storage
     chunk_data = await text_chunks_storage.get_by_id(chunk_id)
@@ -1413,11 +1442,28 @@ async def _rebuild_from_extraction_result(
         else "unknown_source"
     )
 
+    # Auto-detect format: try JSON first if the result looks like JSON
+    if _looks_like_json_extraction_result(extraction_result):
+        # Likely JSON format (from entity_extraction_use_json mode)
+        nodes, edges = await _process_json_extraction_result(
+            extraction_result,
+            chunk_id,
+            timestamp,
+            file_path,
+        )
+        # If JSON parsing yielded results, use them
+        if nodes or edges:
+            return nodes, edges
+        # Otherwise fall through to text-based parsing
+
+    # Fall back to traditional delimiter-based parsing
     return await _process_extraction_result(
         extraction_result,
         chunk_id,
         timestamp,
         file_path,
+        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
     )
 
 
@@ -3271,349 +3317,6 @@ async def merge_nodes_and_edges(
         pipeline_status["history_messages"].append(log_message)
 
 
-type ChunkGraphNodes = dict[str, list[dict[str, Any]]]
-type ChunkGraphEdges = dict[tuple[str, str], list[dict[str, Any]]]
-
-
-class ExtractionRequestPlan(NamedTuple):
-    request_kwargs: dict[str, Any]
-    cache_format: str
-    protocol: Literal["tools", "json"]
-
-
-def _resolve_extraction_prompt_context(
-    global_config: dict[str, Any],
-) -> ExtractionPromptContext:
-    addon_params = global_config.get("addon_params") or {}
-    language = global_config.get("_resolved_summary_language")
-    if language is None:
-        language = addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
-
-    entity_types = addon_params.get("entity_types", DEFAULT_ENTITY_TYPES)
-    relation_labels = addon_params.get("relation_labels", DEFAULT_RELATION_LABELS)
-
-    return ExtractionPromptContext(
-        language=language,
-        entity_types=list(entity_types)
-        if isinstance(entity_types, list)
-        else [str(entity_types)],
-        relation_labels=list(relation_labels)
-        if isinstance(relation_labels, list)
-        else [str(relation_labels)],
-        max_total_records=global_config["entity_extract_max_records"],
-        max_entity_records=global_config["entity_extract_max_entities"],
-    )
-
-
-def _normalize_base_url(value: str | None) -> str:
-    if not value:
-        return ""
-    return value.rstrip("/").lower()
-
-
-def _is_managed_swift_lm_extract_host(global_config: dict[str, Any]) -> bool:
-    if not settings.lightrag_manage_swift_lm:
-        return False
-
-    host = (
-        ((global_config.get("llm_cache_identities") or {}).get("extract") or {}).get("host")
-        or ((global_config.get("role_llm_configs") or {}).get("extract") or {}).get("host")
-        or ""
-    )
-    return _normalize_base_url(host) == _normalize_base_url(
-        settings.managed_swift_lm_base_url
-    )
-
-
-def _build_extraction_request_plan(
-    global_config: dict[str, Any],
-) -> ExtractionRequestPlan:
-    if _is_managed_swift_lm_extract_host(global_config):
-        return ExtractionRequestPlan(
-            request_kwargs={
-                "_lightrag_extraction_request": True,
-                "response_format": {"type": "json_object"},
-            },
-            cache_format="json_object_v1",
-            protocol="json",
-        )
-
-    return ExtractionRequestPlan(
-        request_kwargs={
-            "_lightrag_extraction_request": True,
-            "tools": EXTRACTION_TOOLS,
-            "tool_choice": EXTRACTION_TOOL_CHOICE,
-        },
-        cache_format="tool_v1",
-        protocol="tools",
-    )
-
-
-def _build_extraction_prompts(
-    prompt_context: ExtractionPromptContext,
-    content: str,
-) -> tuple[str, str, str]:
-    return (
-        build_system_prompt(prompt_context),
-        build_initial_user_prompt(prompt_context, input_text=content),
-        build_continue_prompt(prompt_context),
-    )
-
-
-def _build_extraction_cache_identity(
-    global_config: dict[str, Any],
-    request_plan: ExtractionRequestPlan,
-) -> dict[str, Any]:
-    return {
-        **get_llm_cache_identity(global_config, "extract"),
-        "extract_format": request_plan.cache_format,
-    }
-
-
-def _build_extraction_runtime(
-    *,
-    global_config: dict[str, Any],
-    content: str,
-) -> tuple[str, str, str, ExtractionRequestPlan, dict[str, Any]]:
-    prompt_context = _resolve_extraction_prompt_context(global_config)
-    request_plan = _build_extraction_request_plan(global_config)
-    return (
-        *_build_extraction_prompts(prompt_context, content),
-        request_plan,
-        _build_extraction_cache_identity(global_config, request_plan),
-    )
-
-
-def _should_run_extraction_gleaning(
-    *,
-    entity_extract_max_gleaning: int,
-    extract_tokenizer: Tokenizer | None,
-    max_extract_input_tokens: int,
-    system_prompt: str,
-    history: list[dict[str, Any]],
-    continue_prompt: str,
-    chunk_key: str,
-) -> bool:
-    if entity_extract_max_gleaning <= 0:
-        return False
-    if extract_tokenizer is None or max_extract_input_tokens <= 0:
-        return True
-
-    gleaning_token_count = (
-        len(extract_tokenizer.encode(system_prompt))
-        + sum(
-            len(extract_tokenizer.encode(msg.get("content", "") or ""))
-            for msg in history
-        )
-        + len(extract_tokenizer.encode(continue_prompt))
-    )
-    if gleaning_token_count <= max_extract_input_tokens:
-        return True
-
-    logger.warning(
-        "Gleaning stopped for chunk %s: Input tokens (%s) exceeded limit (%s).",
-        chunk_key,
-        gleaning_token_count,
-        max_extract_input_tokens,
-    )
-    return False
-
-
-async def _merge_graph_data_by_description(
-    primary: ChunkGraphNodes | ChunkGraphEdges,
-    secondary: ChunkGraphNodes | ChunkGraphEdges,
-) -> None:
-    for index, (item_key, candidate_values) in enumerate(secondary.items(), start=1):
-        if item_key not in primary:
-            primary[item_key] = list(candidate_values)
-            await _cooperative_yield(index, every=8)
-            continue
-
-        current_desc_len = len(primary[item_key][0].get("description", "") or "")
-        candidate_desc_len = len(candidate_values[0].get("description", "") or "")
-        if candidate_desc_len > current_desc_len:
-            primary[item_key] = list(candidate_values)
-        await _cooperative_yield(index, every=8)
-
-
-def _augment_multimodal_extraction_result(
-    *,
-    chunk_key: str,
-    chunk_dp: TextChunkSchema,
-    file_path: str,
-    maybe_nodes: ChunkGraphNodes,
-    maybe_edges: ChunkGraphEdges,
-) -> None:
-    sidecar_block = chunk_dp.get("sidecar")
-    if not isinstance(sidecar_block, dict):
-        return
-
-    sidecar_type = sidecar_block.get("type")
-    sidecar_id = sidecar_block.get("id")
-    if sidecar_type not in {"drawing", "table", "equation"}:
-        return
-    if not isinstance(sidecar_id, str) or not sidecar_id:
-        return
-
-    mm_entity_name = sidecar_id
-    now_ts = int(time.time())
-    maybe_nodes.setdefault(mm_entity_name, []).append(
-        {
-            "entity_name": mm_entity_name,
-            "entity_type": sidecar_type,
-            "description": chunk_dp.get("content", "") or "",
-            "source_id": chunk_key,
-            "file_path": file_path,
-            "timestamp": now_ts,
-        }
-    )
-
-    heading_block = chunk_dp.get("heading")
-    heading_label = "unknown"
-    if isinstance(heading_block, dict):
-        heading_label = str(heading_block.get("heading") or "").strip() or "unknown"
-    mm_display_name = _parse_mm_display_name(
-        chunk_dp.get("content", "") or "", sidecar_id
-    )
-    for target_name in list(maybe_nodes.keys()):
-        if target_name == mm_entity_name:
-            continue
-        maybe_edges.setdefault((mm_entity_name, target_name), []).append(
-            {
-                "src_id": mm_entity_name,
-                "tgt_id": target_name,
-                "weight": 1.0,
-                "description": (
-                    f"{target_name} is associated with {sidecar_type} "
-                    f"{mm_display_name} in section {heading_label} "
-                    f'of document "{file_path}"'
-                ),
-                "keywords": "associated with, contained in",
-                "source_id": chunk_key,
-                "file_path": file_path,
-                "timestamp": now_ts,
-            }
-    )
-
-
-async def _run_single_extraction_pass(
-    *,
-    prompt: str,
-    system_prompt: str,
-    use_llm_func: Callable[..., Any],
-    llm_response_cache: BaseKVStorage | None,
-    chunk_key: str,
-    cache_keys_collector: list[str],
-    request_plan: ExtractionRequestPlan,
-    llm_cache_identity: dict[str, Any],
-    history_messages: list[dict[str, Any]] | None = None,
-) -> tuple[str | dict[str, Any] | ExtractionStructuredOutput, int]:
-    return await use_llm_func_with_cache(
-        prompt,
-        use_llm_func,
-        system_prompt=system_prompt,
-        llm_response_cache=llm_response_cache,
-        history_messages=history_messages,
-        cache_type="extract",
-        chunk_id=chunk_key,
-        cache_keys_collector=cache_keys_collector,
-        llm_cache_identity=llm_cache_identity,
-        **request_plan.request_kwargs,
-    )
-
-
-async def _run_chunk_extraction(
-    *,
-    chunk_key: str,
-    chunk_dp: TextChunkSchema,
-    global_config: dict[str, Any],
-    use_llm_func: Callable[..., Any],
-    llm_response_cache: BaseKVStorage | None,
-    text_chunks_storage: BaseKVStorage | None,
-    entity_extract_max_gleaning: int,
-    extract_tokenizer: Tokenizer | None,
-    max_extract_input_tokens: int,
-) -> tuple[ChunkGraphNodes, ChunkGraphEdges]:
-    content = strip_internal_multimodal_markup_for_extraction(chunk_dp["content"])
-    file_path = chunk_dp.get("file_path", "unknown_source")
-    cache_keys_collector: list[str] = []
-    (
-        entity_extraction_system_prompt,
-        entity_extraction_user_prompt,
-        entity_continue_extraction_user_prompt,
-        request_plan,
-        llm_cache_identity,
-    ) = _build_extraction_runtime(global_config=global_config, content=content)
-
-    final_result, timestamp = await _run_single_extraction_pass(
-        prompt=entity_extraction_user_prompt,
-        system_prompt=entity_extraction_system_prompt,
-        use_llm_func=use_llm_func,
-        llm_response_cache=llm_response_cache,
-        chunk_key=chunk_key,
-        cache_keys_collector=cache_keys_collector,
-        request_plan=request_plan,
-        llm_cache_identity=llm_cache_identity,
-    )
-    history = pack_user_ass_to_openai_messages(
-        entity_extraction_user_prompt, final_result
-    )
-    maybe_nodes, maybe_edges = await _process_extraction_result(
-        final_result,
-        chunk_key,
-        timestamp,
-        file_path,
-    )
-
-    if _should_run_extraction_gleaning(
-        entity_extract_max_gleaning=entity_extract_max_gleaning,
-        extract_tokenizer=extract_tokenizer,
-        max_extract_input_tokens=max_extract_input_tokens,
-        system_prompt=entity_extraction_system_prompt,
-        history=history,
-        continue_prompt=entity_continue_extraction_user_prompt,
-        chunk_key=chunk_key,
-    ):
-        glean_result, timestamp = await _run_single_extraction_pass(
-            prompt=entity_continue_extraction_user_prompt,
-            system_prompt=entity_extraction_system_prompt,
-            use_llm_func=use_llm_func,
-            llm_response_cache=llm_response_cache,
-            chunk_key=chunk_key,
-            cache_keys_collector=cache_keys_collector,
-            request_plan=request_plan,
-            llm_cache_identity=llm_cache_identity,
-            history_messages=history,
-        )
-
-        glean_nodes, glean_edges = await _process_extraction_result(
-            glean_result,
-            chunk_key,
-            timestamp,
-            file_path,
-        )
-        await _merge_graph_data_by_description(maybe_nodes, glean_nodes)
-        await _merge_graph_data_by_description(maybe_edges, glean_edges)
-
-    _augment_multimodal_extraction_result(
-        chunk_key=chunk_key,
-        chunk_dp=chunk_dp,
-        file_path=file_path,
-        maybe_nodes=maybe_nodes,
-        maybe_edges=maybe_edges,
-    )
-
-    if cache_keys_collector and text_chunks_storage:
-        await update_chunk_cache_list(
-            chunk_key,
-            text_chunks_storage,
-            cache_keys_collector,
-            "entity_extraction",
-        )
-
-    return maybe_nodes, maybe_edges
-
-
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
     global_config: dict[str, str],
@@ -3637,19 +3340,67 @@ async def extract_entities(
     # the same env knob that gates ``analyze_multimodal``'s sidecar trimming
     # so both EXTRACT-role consumers share one source of truth.  ``0``
     # disables the gleaning guard (gleaning always runs regardless of size).
-    max_extract_input_tokens = int(
-        global_config.get(
-            "max_extract_input_tokens",
-            get_env_value(
-                "MAX_EXTRACT_INPUT_TOKENS",
-                DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
-                int,
-            ),
-        )
+    max_extract_input_tokens = get_env_value(
+        "MAX_EXTRACT_INPUT_TOKENS",
+        DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
+        int,
     )
     extract_tokenizer: Tokenizer | None = global_config.get("tokenizer")
 
+    # Check if JSON structured output mode is enabled
+    use_json_extraction = global_config.get("entity_extraction_use_json", False)
+
     ordered_chunks = list(chunks.items())
+    # add language and example number params to prompt
+    addon_params = global_config.get("addon_params") or {}
+    language = global_config.get("_resolved_summary_language")
+    if language is None:
+        language = addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
+    prompt_profile = global_config.get("_entity_extraction_prompt_profile")
+    if prompt_profile is None:
+        # Fallback for callers that construct global_config directly (e.g. tests
+        # or custom wiring). Re-run the resolver so behavior matches the cached
+        # path that LightRAG.__post_init__ populates, instead of duplicating
+        # guidance/override logic here.
+        prompt_profile = resolve_entity_extraction_prompt_profile(
+            addon_params, use_json_extraction
+        )
+    entity_types_guidance = prompt_profile["entity_types_guidance"]
+
+    max_total_records = global_config["entity_extract_max_records"]
+    max_entity_records = global_config["entity_extract_max_entities"]
+
+    if use_json_extraction:
+        # JSON mode: use JSON-specific prompts without delimiters
+        examples = "\n".join(prompt_profile["entity_extraction_json_examples"])
+        context_base = dict(
+            entity_types_guidance=entity_types_guidance,
+            examples=examples,
+            language=language,
+            max_total_records=max_total_records,
+            max_entity_records=max_entity_records,
+        )
+    else:
+        # Text mode: use traditional delimiter-based prompts
+        examples = "\n".join(prompt_profile["entity_extraction_examples"])
+        example_context_base = dict(
+            tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+            completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+            entity_types_guidance=entity_types_guidance,
+            language=language,
+        )
+        # add example's format
+        examples = examples.format(**example_context_base)
+
+        context_base = dict(
+            tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+            completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+            entity_types_guidance=entity_types_guidance,
+            examples=examples,
+            language=language,
+            max_total_records=max_total_records,
+            max_entity_records=max_entity_records,
+        )
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
@@ -3665,17 +3416,287 @@ async def extract_entities(
         nonlocal processed_chunks
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
-        maybe_nodes, maybe_edges = await _run_chunk_extraction(
-            chunk_key=chunk_key,
-            chunk_dp=chunk_dp,
-            global_config=global_config,
-            use_llm_func=use_llm_func,
-            llm_response_cache=llm_response_cache,
-            text_chunks_storage=text_chunks_storage,
-            entity_extract_max_gleaning=entity_extract_max_gleaning,
-            extract_tokenizer=extract_tokenizer,
-            max_extract_input_tokens=max_extract_input_tokens,
+        # Strip parser-internal markup (<cite refid>, <drawing id/path/src>,
+        # <equation id>) before building the extraction prompt. The stored
+        # chunk content is left intact so query-time citations still resolve.
+        content = strip_internal_multimodal_markup_for_extraction(chunk_dp["content"])
+        # Get file path from chunk data or use default
+        file_path = chunk_dp.get("file_path", "unknown_source")
+
+        # Build the optional `---Section Context---` block from the chunk's
+        # heading breadcrumb. The marker/wrapping lives entirely in the prompt
+        # template; here we only produce the data and decide whether to inject
+        # it. Each level is char-capped inside format_heading_context, and the
+        # joined path is token-budgeted here so heading metadata can never push
+        # an otherwise-valid chunk past the provider context window. When the
+        # chunk carries no heading, the block is an empty string so the user
+        # prompt stays byte-identical to the no-context form.
+        heading_path = _truncate_section_context(
+            format_heading_context(chunk_dp),
+            extract_tokenizer,
+            DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
         )
+        heading_context_block = (
+            PROMPTS["entity_extraction_section_context"].format(
+                heading_path=heading_path
+            )
+            if heading_path
+            else ""
+        )
+
+        # Create cache keys collector for batch processing
+        cache_keys_collector = []
+
+        if use_json_extraction:
+            # JSON mode: use JSON prompts and pass entity_extraction flag to LLM provider
+            entity_extraction_system_prompt = PROMPTS[
+                "entity_extraction_json_system_prompt"
+            ].format(**context_base)
+            entity_extraction_user_prompt = PROMPTS[
+                "entity_extraction_json_user_prompt"
+            ].format(
+                **{
+                    **context_base,
+                    "input_text": content,
+                    "heading_context_block": heading_context_block,
+                }
+            )
+            entity_continue_extraction_user_prompt = PROMPTS[
+                "entity_continue_extraction_json_user_prompt"
+            ].format(**context_base)
+        else:
+            # Text mode: use traditional delimiter-based prompts
+            entity_extraction_system_prompt = PROMPTS[
+                "entity_extraction_system_prompt"
+            ].format(**context_base)
+            entity_extraction_user_prompt = PROMPTS[
+                "entity_extraction_user_prompt"
+            ].format(
+                **{
+                    **context_base,
+                    "input_text": content,
+                    "heading_context_block": heading_context_block,
+                }
+            )
+            entity_continue_extraction_user_prompt = PROMPTS[
+                "entity_continue_extraction_user_prompt"
+            ].format(**{**context_base, "input_text": content})
+
+        final_result, timestamp = await use_llm_func_with_cache(
+            entity_extraction_user_prompt,
+            use_llm_func,
+            system_prompt=entity_extraction_system_prompt,
+            llm_response_cache=llm_response_cache,
+            cache_type="extract",
+            chunk_id=chunk_key,
+            cache_keys_collector=cache_keys_collector,
+            response_format=({"type": "json_object"} if use_json_extraction else None),
+            llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
+        )
+
+        history = pack_user_ass_to_openai_messages(
+            entity_extraction_user_prompt, final_result
+        )
+
+        # Process initial extraction with appropriate parser
+        if use_json_extraction:
+            maybe_nodes, maybe_edges = await _process_json_extraction_result(
+                final_result,
+                chunk_key,
+                timestamp,
+                file_path,
+            )
+        else:
+            maybe_nodes, maybe_edges = await _process_extraction_result(
+                final_result,
+                chunk_key,
+                timestamp,
+                file_path,
+                tuple_delimiter=context_base["tuple_delimiter"],
+                completion_delimiter=context_base["completion_delimiter"],
+            )
+
+        # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
+        run_gleaning = entity_extract_max_gleaning > 0
+        if (
+            run_gleaning
+            and extract_tokenizer is not None
+            and max_extract_input_tokens > 0
+        ):
+            # Gleaning replays the initial extraction's user/assistant pair
+            # via ``history_messages`` and appends a "continue" instruction.
+            # When the initial response was large (many entities/edges) or
+            # the chunk content is itself near the budget, that combined
+            # payload can blow past MAX_EXTRACT_INPUT_TOKENS and yield a
+            # provider ``context_length_exceeded`` error.  Pre-check here
+            # and skip rather than fail.
+            gleaning_token_count = (
+                len(extract_tokenizer.encode(entity_extraction_system_prompt))
+                + sum(
+                    len(extract_tokenizer.encode(msg.get("content", "") or ""))
+                    for msg in history
+                )
+                + len(extract_tokenizer.encode(entity_continue_extraction_user_prompt))
+            )
+            if gleaning_token_count > max_extract_input_tokens:
+                logger.warning(
+                    f"Gleaning stopped for chunk {chunk_key}: "
+                    f"Input tokens ({gleaning_token_count}) exceeded limit "
+                    f"({max_extract_input_tokens})."
+                )
+                run_gleaning = False
+
+        if run_gleaning:
+            glean_result, timestamp = await use_llm_func_with_cache(
+                entity_continue_extraction_user_prompt,
+                use_llm_func,
+                system_prompt=entity_extraction_system_prompt,
+                llm_response_cache=llm_response_cache,
+                history_messages=history,
+                cache_type="extract",
+                chunk_id=chunk_key,
+                cache_keys_collector=cache_keys_collector,
+                response_format=(
+                    {"type": "json_object"} if use_json_extraction else None
+                ),
+                llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
+            )
+
+            # Process gleaning result with appropriate parser
+            if use_json_extraction:
+                glean_nodes, glean_edges = await _process_json_extraction_result(
+                    glean_result,
+                    chunk_key,
+                    timestamp,
+                    file_path,
+                )
+            else:
+                glean_nodes, glean_edges = await _process_extraction_result(
+                    glean_result,
+                    chunk_key,
+                    timestamp,
+                    file_path,
+                    tuple_delimiter=context_base["tuple_delimiter"],
+                    completion_delimiter=context_base["completion_delimiter"],
+                )
+
+            # Merge results - compare description lengths to choose better version
+            for i, (entity_name, glean_entities) in enumerate(
+                glean_nodes.items(), start=1
+            ):
+                if entity_name in maybe_nodes:
+                    # Compare description lengths and keep the better one
+                    original_desc_len = len(
+                        maybe_nodes[entity_name][0].get("description", "") or ""
+                    )
+                    glean_desc_len = len(glean_entities[0].get("description", "") or "")
+
+                    if glean_desc_len > original_desc_len:
+                        maybe_nodes[entity_name] = list(glean_entities)
+                    # Otherwise keep original version
+                else:
+                    # New entity from gleaning stage
+                    maybe_nodes[entity_name] = list(glean_entities)
+                await _cooperative_yield(i, every=8)
+
+            for i, (edge_key, glean_edge_list) in enumerate(
+                glean_edges.items(), start=1
+            ):
+                if edge_key in maybe_edges:
+                    # Compare description lengths and keep the better one
+                    original_desc_len = len(
+                        maybe_edges[edge_key][0].get("description", "") or ""
+                    )
+                    glean_desc_len = len(
+                        glean_edge_list[0].get("description", "") or ""
+                    )
+
+                    if glean_desc_len > original_desc_len:
+                        maybe_edges[edge_key] = list(glean_edge_list)
+                    # Otherwise keep original version
+                else:
+                    # New edge from gleaning stage
+                    maybe_edges[edge_key] = list(glean_edge_list)
+                await _cooperative_yield(i, every=8)
+
+        # Inject multimodal entity + associations for drawing/table/equation
+        # chunks. Placed before update_chunk_cache_list so the per-chunk
+        # cache write still happens after; placed inside the chunk's
+        # concurrency slot (rather than the centralized post-pass that used
+        # to live in utils_pipeline.augment_chunk_results_with_mm_entities)
+        # so each multimodal chunk benefits from the chunk-level concurrency
+        # already enforced by extract_entities.
+        sidecar_block = chunk_dp.get("sidecar")
+        if isinstance(sidecar_block, dict):
+            sidecar_type = sidecar_block.get("type")
+            sidecar_id = sidecar_block.get("id")
+            if (
+                sidecar_type in {"drawing", "table", "equation"}
+                and isinstance(sidecar_id, str)
+                and sidecar_id
+            ):
+                mm_entity_name = sidecar_id
+                now_ts = int(time.time())
+                mm_nodes_list = maybe_nodes.setdefault(mm_entity_name, [])
+                mm_nodes_list.append(
+                    {
+                        "entity_name": mm_entity_name,
+                        "entity_type": sidecar_type,
+                        # description == the full multimodal chunk content so
+                        # the extracted entity carries the same grounding
+                        # surface the prompt produced; analyze_multimodal's
+                        # description/name field is already inlined there.
+                        "description": chunk_dp.get("content", "") or "",
+                        "source_id": chunk_key,
+                        "file_path": file_path,
+                        "timestamp": now_ts,
+                    }
+                )
+                heading_block = chunk_dp.get("heading")
+                heading_label = ""
+                if isinstance(heading_block, dict):
+                    heading_label = str(heading_block.get("heading") or "").strip()
+                # Omit the "in section ..." clause entirely when the chunk has no
+                # real heading — a literal "unknown" filler would otherwise leak
+                # into the relation description, embedding, and retrieval as noise.
+                location = (
+                    f"in section {heading_label} of document"
+                    if heading_label
+                    else "of document"
+                )
+                mm_display_name = _parse_mm_display_name(
+                    chunk_dp.get("content", "") or "", sidecar_id
+                )
+                for tgt in list(maybe_nodes.keys()):
+                    if tgt == mm_entity_name:
+                        continue
+                    edge_key = (mm_entity_name, tgt)
+                    edge_list = maybe_edges.setdefault(edge_key, [])
+                    edge_list.append(
+                        {
+                            "src_id": mm_entity_name,
+                            "tgt_id": tgt,
+                            "weight": 1.0,
+                            "description": (
+                                f"{tgt} is associated with {sidecar_type} "
+                                f"{mm_display_name} {location} "
+                                f'"{file_path}"'
+                            ),
+                            "keywords": "associated with, contained in",
+                            "source_id": chunk_key,
+                            "file_path": file_path,
+                            "timestamp": now_ts,
+                        }
+                    )
+
+        # Batch update chunk's llm_cache_list with all collected cache keys
+        if cache_keys_collector and text_chunks_storage:
+            await update_chunk_cache_list(
+                chunk_key,
+                text_chunks_storage,
+                cache_keys_collector,
+                "entity_extraction",
+            )
 
         processed_chunks += 1
         entities_count = len(maybe_nodes)
@@ -3690,10 +3711,8 @@ async def extract_entities(
         # Return the extracted nodes and edges for centralized processing
         return maybe_nodes, maybe_edges
 
-    role_max_async = (global_config.get("role_llm_max_async") or {}).get("extract")
-    chunk_max_async = min(
-        role_max_async or global_config.get("llm_model_max_async", 4), 2
-    )
+    # Get max async tasks limit from global_config
+    chunk_max_async = global_config.get("llm_model_max_async", 4)
     semaphore = asyncio.Semaphore(chunk_max_async)
 
     async def _process_with_semaphore(chunk):
@@ -3762,422 +3781,6 @@ async def extract_entities(
     # If all tasks completed successfully, chunk_results already contains the results
     # Return the chunk_results for later processing in merge_nodes_and_edges
     return chunk_results
-
-
-def _build_query_prompt(
-    *,
-    query: str,
-    query_param: QueryParam,
-    context_result: QueryContextResult,
-    system_prompt: str | None,
-) -> tuple[str, str, str]:
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
-    response_type = (
-        query_param.response_type
-        if query_param.response_type
-        else "Multiple Paragraphs"
-    )
-    sys_prompt_template = system_prompt if system_prompt else PROMPTS["rag_response"]
-    sys_prompt = sys_prompt_template.format(
-        response_type=response_type,
-        user_prompt=user_prompt,
-        context_data=context_result.context,
-    )
-    return sys_prompt, query, response_type
-
-
-def _build_query_cache_hash(
-    *,
-    query: str,
-    query_param: QueryParam,
-    llm_cache_identity: dict[str, Any],
-    hl_keywords_str: str,
-    ll_keywords_str: str,
-    cache_generation_marker: str,
-) -> str:
-    return compute_args_hash(
-        query_param.mode,
-        query,
-        query_param.response_type,
-        query_param.top_k,
-        query_param.chunk_top_k,
-        query_param.max_entity_tokens,
-        query_param.max_relation_tokens,
-        query_param.max_total_tokens,
-        hl_keywords_str,
-        ll_keywords_str,
-        query_param.user_prompt or "",
-        query_param.enable_rerank,
-        cache_generation_marker,
-        "\n<llm_identity>\n",
-        serialize_llm_cache_identity(llm_cache_identity),
-    )
-
-
-async def _run_query_generation(
-    *,
-    user_query: str,
-    sys_prompt: str,
-    response_type: str,
-    query_param: QueryParam,
-    global_config: dict[str, Any],
-    use_model_func: Callable[..., Any],
-    context_result: QueryContextResult,
-    tokenizer: Tokenizer,
-) -> str | AsyncIterator[str]:
-    use_apfel_iterative = _is_apfel_fast_query(global_config, query_param)
-    apfel_portions: list[dict[str, Any]] = []
-    if use_apfel_iterative:
-        apfel_portions = _build_apfel_iterative_portions(
-            context_result.raw_data,
-            tokenizer,
-            query_param.max_total_tokens,
-        )
-        context_result.raw_data.setdefault("metadata", {})[
-            "apfel_iterative"
-        ] = _apfel_iterative_metadata(apfel_portions)
-        logger.info(
-            "APFEL_ITERATIVE_PREPARED portions=%s token_estimates=%s",
-            len(apfel_portions),
-            [portion.get("token_estimate", 0) for portion in apfel_portions],
-        )
-
-    max_completion_tokens = getattr(query_param, "max_completion_tokens", None)
-    llm_call_kwargs = {}
-    if max_completion_tokens:
-        llm_call_kwargs["max_completion_tokens"] = max_completion_tokens
-
-    if use_apfel_iterative and apfel_portions:
-        iterative_kwargs = {
-            "query": user_query,
-            "response_type": response_type,
-            "query_param": query_param,
-            "use_model_func": use_model_func,
-            "tokenizer": tokenizer,
-            "portions": apfel_portions,
-            "raw_data": context_result.raw_data,
-        }
-        if query_param.stream:
-            return _run_apfel_iterative_answer_generator(**iterative_kwargs)
-        return await _run_apfel_iterative_answer(**iterative_kwargs)
-
-    return await use_model_func(
-        user_query,
-        system_prompt=sys_prompt,
-        history_messages=query_param.conversation_history,
-        enable_cot=True,
-        stream=query_param.stream,
-        _lightrag_request_kind="query",
-        **llm_call_kwargs,
-    )
-
-
-def _parse_tool_calls(text: str) -> list[dict]:
-    """Parse ``<tool_call>JSON</tool_call>`` XML blocks from LLM response text.
-
-    Returns a list of parsed tool-call dicts, each with at least a ``"tool"``
-    key.  Returns an empty list when no (parseable) tool calls are found.
-    """
-    pattern = r"<tool_call>\s*(.*?)\s*</tool_call>"
-    matches = re.findall(pattern, text, re.DOTALL)
-    result: list[dict] = []
-    for match in matches:
-        raw = match.strip()
-        # Try standard JSON first, then json_repair for lenient parsing
-        parsed = None
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            try:
-                parsed = json_repair.loads(raw)
-            except Exception:
-                pass
-        if isinstance(parsed, dict) and "tool" in parsed:
-            result.append(parsed)
-    return result
-
-
-def _remove_tool_call_xml(text: str) -> str:
-    """Strip any remaining ``<tool_call>`` blocks from a final answer."""
-    return re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL).strip()
-
-
-async def _execute_tool_call(
-    tool_call: dict,
-    entities_vdb: BaseVectorStorage | None,
-    relationships_vdb: BaseVectorStorage | None,
-    chunks_vdb: BaseVectorStorage | None,
-    knowledge_graph_inst: BaseGraphStorage | None,
-    web_search_func: Callable[..., Any] | None = None,
-) -> str:
-    """Execute a single tool call and return a human-readable result string.
-
-    Supported tools (see ``PROMPTS["agent_tool_protocol_query"]``):
-        - ``search_entities``       – semantic search over entity vectors
-        - ``search_relations``      – semantic search over relation/edge vectors
-        - ``search_chunks``         – semantic search over document chunk vectors
-        - ``get_entity_detail``     – full description for one entity from the graph
-        - ``get_relations_for_entity`` – all relations connected to one entity
-        - ``web_search``            – DuckDuckGo web search (no API key needed)
-    """
-    tool_name = tool_call.get("tool", "")
-    args = tool_call.get("args", {})
-
-    # --- Web search is handled first since it doesn't need any LightRAG storage ---
-    if tool_name == "web_search":
-        if web_search_func is None:
-            return (
-                "Error: Web search is not enabled. "
-                "Set enable_web_search=True in QueryParam to use this tool."
-            )
-        query = args.get("query", "")
-        num_results = int(args.get("num_results", 5))
-        if not query:
-            return "Error: 'query' argument is required for web_search."
-        try:
-            results = await web_search_func(query, num_results)
-            return format_search_results(results)
-        except ImportError as e:
-            return (
-                f"Error: Web search is not available. {e}\n"
-                "Install it with: uv pip install duckduckgo_search"
-            )
-        except Exception as e:
-            return f"Error during web search: {e}"
-
-    if tool_name == "search_entities":
-        if entities_vdb is None:
-            return "Error: Entity vector database is not available in this query mode."
-        query = args.get("query", "")
-        top_k = int(args.get("top_k", 10))
-        if not query:
-            return "Error: 'query' argument is required for search_entities."
-        results = await entities_vdb.query(query, top_k=top_k)
-        if not results:
-            return "No entities found."
-        lines: list[str] = []
-        for i, r in enumerate(results, 1):
-            name = r.get("entity_name", "unknown")
-            desc = r.get("description", "")
-            etype = r.get("entity_type", "")
-            lines.append(f"{i}. {name}")
-            if etype:
-                lines.append(f"   Type: {etype}")
-            if desc:
-                lines.append(f"   Description: {desc[:300]}")
-        return "\n".join(lines)
-
-    elif tool_name == "search_relations":
-        if relationships_vdb is None:
-            return "Error: Relationship vector database is not available in this query mode."
-        query = args.get("query", "")
-        top_k = int(args.get("top_k", 10))
-        if not query:
-            return "Error: 'query' argument is required for search_relations."
-        results = await relationships_vdb.query(query, top_k=top_k)
-        if not results:
-            return "No relationships found."
-        lines = []
-        for i, r in enumerate(results, 1):
-            src = r.get("source_id", "?")
-            tgt = r.get("target_id", "?")
-            desc = r.get("description", "")
-            kw = r.get("keywords", "")
-            lines.append(f"{i}. {src} → {tgt}")
-            if desc:
-                lines.append(f"   Description: {desc[:300]}")
-            if kw:
-                lines.append(f"   Keywords: {kw}")
-        return "\n".join(lines)
-
-    elif tool_name == "search_chunks":
-        if chunks_vdb is None:
-            return "Error: Chunks vector database is not available in this query mode."
-        query = args.get("query", "")
-        top_k = int(args.get("top_k", 10))
-        if not query:
-            return "Error: 'query' argument is required for search_chunks."
-        results = await chunks_vdb.query(query, top_k=top_k)
-        if not results:
-            return "No chunks found."
-        lines = []
-        for i, r in enumerate(results, 1):
-            content = r.get("content", "")
-            file_path = r.get("file_path", "unknown")
-            lines.append(f"[{i}] {content[:400]}")
-            lines.append(f"    Source: {file_path}")
-        return "\n".join(lines)
-
-    elif tool_name == "get_entity_detail":
-        if knowledge_graph_inst is None:
-            return "Error: Knowledge graph is not available in this query mode."
-        entity_name = args.get("entity_name", "")
-        if not entity_name:
-            return "Error: 'entity_name' argument is required for get_entity_detail."
-        node = await knowledge_graph_inst.get_node(entity_name)
-        if node is None:
-            return f"Entity '{entity_name}' not found in knowledge graph."
-        lines = [f"Entity: {entity_name}"]
-        if "description" in node and node["description"]:
-            lines.append(f"  Description: {node['description']}")
-        if "entity_type" in node and node["entity_type"]:
-            lines.append(f"  Type: {node['entity_type']}")
-        if "source_id" in node and node["source_id"]:
-            lines.append(f"  Source ID: {node['source_id']}")
-        return "\n".join(lines)
-
-    elif tool_name == "get_relations_for_entity":
-        if knowledge_graph_inst is None:
-            return "Error: Knowledge graph is not available in this query mode."
-        entity_name = args.get("entity_name", "")
-        if not entity_name:
-            return (
-                "Error: 'entity_name' argument is required"
-                " for get_relations_for_entity."
-            )
-        edges = await knowledge_graph_inst.get_node_edges(entity_name)
-        if not edges:
-            return f"No relationships found for entity '{entity_name}'."
-        lines = [f"Relationships for '{entity_name}':"]
-        for src, tgt in edges:
-            edge_data = await knowledge_graph_inst.get_edge(src, tgt)
-            desc = (edge_data or {}).get("description", "")
-            kw = (edge_data or {}).get("keywords", "")
-            lines.append(f"  {src} → {tgt}")
-            if desc:
-                lines.append(f"    Description: {desc[:200]}")
-            if kw:
-                lines.append(f"    Keywords: {kw}")
-        return "\n".join(lines)
-
-    else:
-        available = (
-            "search_entities, search_relations, search_chunks, "
-            "get_entity_detail, get_relations_for_entity, web_search"
-        )
-        return f"Unknown tool '{tool_name}'. Available tools: {available}"
-
-
-async def _emit_stream_event(
-    query_param: QueryParam,
-    payload: dict[str, Any],
-) -> None:
-    callback = getattr(query_param, "stream_event_callback", None)
-    if callback is None:
-        return
-    try:
-        result = callback(payload)
-        if inspect.isawaitable(result):
-            await result
-    except Exception as exc:
-        logger.warning("[_emit_stream_event] failed to emit event: %s", exc)
-
-
-async def _run_tool_loop(
-    query: str,
-    system_prompt: str,
-    use_model_func: Callable[..., Any],
-    query_param: QueryParam,
-    entities_vdb: BaseVectorStorage | None,
-    relationships_vdb: BaseVectorStorage | None,
-    chunks_vdb: BaseVectorStorage | None,
-    knowledge_graph_inst: BaseGraphStorage | None,
-    web_search_func: Callable[..., Any] | None = None,
-    max_tool_rounds: int = 5,
-) -> str:
-    """Interactive tool loop for agentic retrieval.
-
-    The LLM is called with the ``system_prompt`` (which should include
-    ``AGENT_TOOL_PROTOCOL_QUERY``) and the user ``query``.  If the response
-    contains a ``<tool_call>`` block the tool is executed and the result is
-    fed back as a new user message; otherwise the response is returned as the
-    final answer.
-
-    The loop runs at most ``max_tool_rounds`` iterations.  Streaming is
-    implicitly disabled during the tool loop.
-    """
-    history = list(query_param.conversation_history or [])
-
-    for _round in range(max_tool_rounds):
-        response = await use_model_func(
-            query,
-            system_prompt=system_prompt,
-            history_messages=history,
-            enable_cot=True,
-            stream=False,
-            _lightrag_request_kind="query",
-        )
-
-        if not isinstance(response, str):
-            # Streaming response – shouldn't happen with stream=False but be safe
-            logger.warning(
-                "[_run_tool_loop] unexpected non-string response, "
-                "falling back to direct output"
-            )
-            return str(response)
-
-        tool_calls = _parse_tool_calls(response)
-
-        if not tool_calls:
-            # No tool call – this is the final answer
-            return _remove_tool_call_xml(response)
-
-        # Execute the first tool call (protocol says one tool per turn)
-        tool_call = tool_calls[0]
-        logger.info(
-            "[_run_tool_loop] round %d tool=%s args=%s",
-            _round + 1,
-            tool_call.get("tool"),
-            tool_call.get("args"),
-        )
-        await _emit_stream_event(
-            query_param,
-            {
-                "phase": "tool_call",
-                "round": _round + 1,
-                "tool": tool_call.get("tool"),
-                "args": tool_call.get("args", {}),
-            },
-        )
-
-        try:
-            result = await _execute_tool_call(
-                tool_call,
-                entities_vdb,
-                relationships_vdb,
-                chunks_vdb,
-                knowledge_graph_inst,
-                web_search_func=web_search_func,
-            )
-        except Exception as exc:
-            logger.error("[_run_tool_loop] tool execution error: %s", exc)
-            result = f"Error executing {tool_call.get('tool')}: {exc}"
-        await _emit_stream_event(
-            query_param,
-            {
-                "phase": "tool_result",
-                "round": _round + 1,
-                "tool": tool_call.get("tool"),
-                "output": result,
-            },
-        )
-
-        # Feed assistant message (containing tool call) and tool result back
-        history.append({"role": "assistant", "content": response})
-        history.append(
-            {
-                "role": "user",
-                "content": (
-                    f"Tool result for {tool_call.get('tool')}:\n"
-                    f"{result}\n\n"
-                    "Continue your analysis or provide a final grounded answer."
-                ),
-            }
-        )
-
-    # Max rounds reached – return last response cleaned of tool call XML
-    logger.warning("[_run_tool_loop] max rounds (%d) reached", max_tool_rounds)
-    return _remove_tool_call_xml(response)
 
 
 async def kg_query(
@@ -4276,96 +3879,51 @@ async def kg_query(
             content=context_result.context, raw_data=context_result.raw_data
         )
 
-    sys_prompt, user_query, response_type = _build_query_prompt(
-        query=query,
-        query_param=query_param,
-        context_result=context_result,
-        system_prompt=system_prompt,
+    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    response_type = (
+        query_param.response_type
+        if query_param.response_type
+        else "Multiple Paragraphs"
     )
+
+    # Build system prompt
+    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
+    sys_prompt = sys_prompt_temp.format(
+        response_type=response_type,
+        user_prompt=user_prompt,
+        context_data=context_result.context,
+    )
+
+    user_query = query
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
         return QueryResult(content=prompt_content, raw_data=context_result.raw_data)
 
-    # --- Agent tool loop ---------------------------------------------------
-    agent_tools_enabled = getattr(
-        query_param, "enable_agent_tools", global_config.get("agent_tools", False)
-    )
-    if agent_tools_enabled:
-        logger.info(
-            "[kg_query] Agent tools enabled – dispatching to tool loop"
-        )
-        # Check if web search should be available
-        web_search_enabled = getattr(
-            query_param, "enable_web_search", global_config.get("web_search", False)
-        )
-        web_search_max_results = getattr(
-            query_param, "web_search_max_results", global_config.get("web_search_max_results", 5)
-        )
-        web_search_func: Callable[..., Any] | None = None
-        if web_search_enabled:
-            async def _web_search(query_str: str, num_results: int = 5) -> list[WebSearchResult]:
-                return duckduckgo_search(query_str, num_results or web_search_max_results)
-            web_search_func = _web_search
-
-        # Prepend tool protocol instructions to the system prompt
-        tool_prompt = PROMPTS["agent_tool_protocol_query"]
-        augmented_sys_prompt = f"{tool_prompt}\n\n{sys_prompt}"
-        response = await _run_tool_loop(
-            query=user_query,
-            system_prompt=augmented_sys_prompt,
-            use_model_func=use_model_func,
-            query_param=query_param,
-            entities_vdb=entities_vdb,
-            relationships_vdb=relationships_vdb,
-            chunks_vdb=chunks_vdb,
-            knowledge_graph_inst=knowledge_graph_inst,
-            web_search_func=web_search_func,
-        )
-        # Tool-loop responses are non-deterministic – skip caching
-        return QueryResult(content=response, raw_data=context_result.raw_data)
-    # -----------------------------------------------------------------------
-
     # Call LLM
     tokenizer: Tokenizer = global_config["tokenizer"]
-    use_apfel_iterative = _is_apfel_fast_query(global_config, query_param)
-    apfel_portions = (
-        _build_apfel_iterative_portions(
-            context_result.raw_data,
-            tokenizer,
-            query_param.max_total_tokens,
-        )
-        if use_apfel_iterative
-        else []
-    )
-    if apfel_portions:
-        context_result.raw_data.setdefault("metadata", {})[
-            "apfel_iterative"
-        ] = _apfel_iterative_metadata(apfel_portions)
-        logger.info(
-            "APFEL_ITERATIVE_PREPARED portions=%s token_estimates=%s",
-            len(apfel_portions),
-            [portion.get("token_estimate", 0) for portion in apfel_portions],
-        )
-
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(
         f"[kg_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
     )
 
     # Handle cache
-    cache_generation_marker = (
-        "apfel_iterative_v1"
-        if use_apfel_iterative and apfel_portions
-        else "standard_v1"
-    )
-    args_hash = _build_query_cache_hash(
-        query=query,
-        query_param=query_param,
-        llm_cache_identity=llm_cache_identity,
-        hl_keywords_str=hl_keywords_str,
-        ll_keywords_str=ll_keywords_str,
-        cache_generation_marker=cache_generation_marker,
+    args_hash = compute_args_hash(
+        query_param.mode,
+        query,
+        query_param.response_type,
+        query_param.top_k,
+        query_param.chunk_top_k,
+        query_param.max_entity_tokens,
+        query_param.max_relation_tokens,
+        query_param.max_total_tokens,
+        hl_keywords_str,
+        ll_keywords_str,
+        query_param.user_prompt or "",
+        query_param.enable_rerank,
+        global_config.get("enable_content_headings", False),
+        "\n<llm_identity>\n",
+        serialize_llm_cache_identity(llm_cache_identity),
     )
 
     cached_result = await handle_cache(
@@ -4379,22 +3937,15 @@ async def kg_query(
         )
         response = cached_response
     else:
-        response = await _run_query_generation(
-            user_query=user_query,
-            sys_prompt=sys_prompt,
-            response_type=response_type,
-            query_param=query_param,
-            global_config=global_config,
-            use_model_func=use_model_func,
-            context_result=context_result,
-            tokenizer=tokenizer,
+        response = await use_model_func(
+            user_query,
+            system_prompt=sys_prompt,
+            history_messages=query_param.conversation_history,
+            enable_cot=True,
+            stream=query_param.stream,
         )
 
-        if (
-            hashing_kv
-            and hashing_kv.global_config.get("enable_llm_cache")
-            and not (use_apfel_iterative and query_param.stream)
-        ):
+        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {
                 "mode": query_param.mode,
                 "response_type": query_param.response_type,
@@ -4407,7 +3958,9 @@ async def kg_query(
                 "ll_keywords": ll_keywords_str,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
-                "generation": cache_generation_marker,
+                "enable_content_headings": global_config.get(
+                    "enable_content_headings", False
+                ),
             }
             await save_to_cache(
                 hashing_kv,
@@ -4424,7 +3977,7 @@ async def kg_query(
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
-        if not use_apfel_iterative and len(response) > len(sys_prompt):
+        if len(response) > len(sys_prompt):
             response = (
                 response.replace(sys_prompt, "")
                 .replace("user", "")
@@ -4613,7 +4166,7 @@ async def extract_keywords_only(
     """
 
     # 1. Build the examples
-    examples = "\n".join(KEYWORDS_EXTRACTION_EXAMPLES)
+    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
 
     addon_params = global_config.get("addon_params") or {}
     language = global_config.get("_resolved_summary_language")
@@ -4663,32 +4216,10 @@ async def extract_keywords_only(
         global_config["role_llm_funcs"]["keyword"], _priority=DEFAULT_QUERY_PRIORITY
     )
 
-
-    # TODO: use structured extraction here
-    result = await use_model_func(
-        kw_prompt,
-        keyword_extraction=True,
-        _lightrag_request_kind="query_keywords",
-    )
-    # 5. Parse out JSON from the LLM response
-    result = remove_think_tags(result)
-    try:
-        keywords_data = json_repair.loads(result)
-        if not keywords_data:
-            logger.error("No JSON-like structure found in the LLM respond.")
-            return [], []
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing error: {e}")
-        logger.error(f"LLM respond: {result}")
-        return [], []
-
-    hl_keywords = keywords_data.get("high_level_keywords", [])
-    ll_keywords = keywords_data.get("low_level_keywords", [])
     result = await use_model_func(kw_prompt, response_format={"type": "json_object"})
 
     # 5. Parse out JSON from the LLM response with tolerant provider normalization
     _, hl_keywords, ll_keywords = _parse_keywords_payload(result)
-
 
     # 6. Cache only the processed keywords with cache type
     if hl_keywords or ll_keywords:
@@ -5162,6 +4693,41 @@ async def _apply_token_truncation(
     }
 
 
+async def _attach_content_headings(
+    chunks: list[dict], text_chunks_db: BaseKVStorage | None
+) -> None:
+    """Backfill the ``content_headings`` field onto chunks in place.
+
+    Vector chunks never carry a ``heading`` field (chunks_vdb does not store it),
+    and the round-robin merge drops the entity/relation headings too. So we look
+    the chunks up by ``chunk_id`` in text_chunks storage and attach the parent
+    heading path. Only chunks that actually have parent headings get the field,
+    so empty paths are omitted from the JSON sent to the LLM.
+
+    Each level is char-capped inside ``format_parent_headings`` and the joined
+    path is token-budgeted against ``DEFAULT_MAX_SECTION_CONTEXT_TOKENS`` here —
+    mirroring the extraction breadcrumb (see ``_truncate_section_context``). The
+    query-context token truncation only keeps/drops whole chunks; it never trims
+    this metadata inside a retained chunk, so a deep heading chain (the per-level
+    cap bounds each level's length, not the number of levels) is bounded here.
+    """
+    if not text_chunks_db or not chunks:
+        return
+    tokenizer = text_chunks_db.global_config.get("tokenizer")
+    chunk_ids = [c.get("chunk_id") for c in chunks]
+    chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids)
+    for chunk, data in zip(chunks, chunk_data_list):
+        if not isinstance(data, dict):
+            continue
+        headings = _truncate_section_context(
+            format_parent_headings(data),
+            tokenizer,
+            DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
+        )
+        if headings:
+            chunk["content_headings"] = headings
+
+
 async def _merge_all_chunks(
     filtered_entities: list[dict],
     filtered_relations: list[dict],
@@ -5260,6 +4826,12 @@ async def _merge_all_chunks(
     logger.info(
         f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
     )
+
+    # Backfill heading path before token truncation so it counts toward the budget
+    if text_chunks_db and text_chunks_db.global_config.get(
+        "enable_content_headings", False
+    ):
+        await _attach_content_headings(merged_chunks, text_chunks_db)
 
     return merged_chunks
 
@@ -5368,12 +4940,13 @@ async def _build_context_str(
     # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
     chunks_context = []
     for i, chunk in enumerate(truncated_chunks):
-        chunks_context.append(
-            {
-                "reference_id": chunk["reference_id"],
-                "content": chunk["content"],
-            }
-        )
+        entry = {
+            "reference_id": chunk["reference_id"],
+            "content": chunk["content"],
+        }
+        if chunk.get("content_headings"):
+            entry["content_headings"] = chunk["content_headings"]
+        chunks_context.append(entry)
 
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
@@ -5579,7 +5152,6 @@ async def _get_node_data(
         f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
     )
 
-    _t0 = time.monotonic()
     results = await entities_vdb.query(
         query, top_k=query_param.top_k, query_embedding=query_embedding
     )
@@ -5594,10 +5166,6 @@ async def _get_node_data(
     nodes_dict, degrees_dict = await asyncio.gather(
         knowledge_graph_inst.get_nodes_batch(node_ids),
         knowledge_graph_inst.node_degrees_batch(node_ids),
-    )
-    _t1 = time.monotonic()
-    logger.info(
-        f"Graph backend: get_nodes_batch({len(node_ids)} nodes) + node_degrees_batch took {(_t1 - _t0) * 1000:.0f}ms"
     )
 
     # Now, if you need the node data and degree in order:
@@ -5623,10 +5191,6 @@ async def _get_node_data(
         query_param,
         knowledge_graph_inst,
     )
-    _t2 = time.monotonic()
-    logger.info(
-        f"Graph backend: _find_most_related_edges_from_entities took {(_t2 - _t1) * 1000:.0f}ms"
-    )
 
     logger.info(
         f"Local query: {len(node_datas)} entites, {len(use_relations)} relations"
@@ -5643,7 +5207,6 @@ async def _find_most_related_edges_from_entities(
     knowledge_graph_inst: BaseGraphStorage,
 ):
     node_names = [dp["entity_name"] for dp in node_datas]
-    _te0 = time.monotonic()
     batch_edges_dict = await knowledge_graph_inst.get_nodes_edges_batch(node_names)
 
     all_edges = []
@@ -5667,10 +5230,6 @@ async def _find_most_related_edges_from_entities(
     edge_data_dict, edge_degrees_dict = await asyncio.gather(
         knowledge_graph_inst.get_edges_batch(edge_pairs_dicts),
         knowledge_graph_inst.edge_degrees_batch(edge_pairs_tuples),
-    )
-    _te1 = time.monotonic()
-    logger.info(
-        f"Graph backend: get_nodes_edges_batch({len(node_names)} nodes) + get_edges_batch({len(edge_pairs_dicts)} edges) + edge_degrees_batch took {(_te1 - _te0) * 1000:.0f}ms"
     )
 
     # Reconstruct edge_datas list in the same order as the deduplicated results.
@@ -5878,12 +5437,7 @@ async def _get_edge_data(
     # Prepare edge pairs in two forms:
     # For the batch edge properties function, use dicts.
     edge_pairs_dicts = [{"src": r["src_id"], "tgt": r["tgt_id"]} for r in results]
-    _te0 = time.monotonic()
     edge_data_dict = await knowledge_graph_inst.get_edges_batch(edge_pairs_dicts)
-    _te1 = time.monotonic()
-    logger.info(
-        f"Graph backend: get_edges_batch({len(edge_pairs_dicts)} edges) took {(_te1 - _te0) * 1000:.0f}ms"
-    )
 
     # Reconstruct edge_datas list in the same order as results.
     edge_datas = []
@@ -5938,12 +5492,7 @@ async def _find_most_related_entities_from_relationships(
             seen.add(e["tgt_id"])
 
     # Only get nodes data, no need for node degrees
-    _tn0 = time.monotonic()
     nodes_dict = await knowledge_graph_inst.get_nodes_batch(entity_names)
-    _tn1 = time.monotonic()
-    logger.info(
-        f"Graph backend: get_nodes_batch({len(entity_names)} entities from relations) took {(_tn1 - _tn0) * 1000:.0f}ms"
-    )
 
     # Rebuild the list in the same order as entity_names
     node_datas = []
@@ -6170,6 +5719,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    text_chunks_db: BaseKVStorage | None = None,
     return_raw_data: Literal[True] = True,
 ) -> dict[str, Any]: ...
 
@@ -6182,6 +5732,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    text_chunks_db: BaseKVStorage | None = None,
     return_raw_data: Literal[False] = False,
 ) -> str | AsyncIterator[str]: ...
 
@@ -6193,9 +5744,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
-    entities_vdb: BaseVectorStorage | None = None,
-    relationships_vdb: BaseVectorStorage | None = None,
-    knowledge_graph_inst: BaseGraphStorage | None = None,
+    text_chunks_db: BaseKVStorage | None = None,
 ) -> QueryResult | None:
     """
     Execute naive query and return unified QueryResult object.
@@ -6207,9 +5756,6 @@ async def naive_query(
         global_config: Global configuration
         hashing_kv: Cache storage
         system_prompt: System prompt
-        entities_vdb: Optional entity vector database (needed for agent tool loop)
-        relationships_vdb: Optional relationship vector database (needed for agent tool loop)
-        knowledge_graph_inst: Optional knowledge graph (needed for agent tool loop)
 
     Returns:
         QueryResult | None: Unified query result object containing:
@@ -6243,6 +5789,10 @@ async def naive_query(
         )
         return None
 
+    # Backfill heading path before token truncation so it counts toward the budget
+    if global_config.get("enable_content_headings", False):
+        await _attach_content_headings(chunks, text_chunks_db)
+
     # Calculate dynamic token limit for chunks
     max_total_tokens = getattr(
         query_param,
@@ -6250,7 +5800,7 @@ async def naive_query(
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
-    # Calculate system prompt template tokens (excluding injected context)
+    # Calculate system prompt template tokens (excluding content_data)
     user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
     response_type = (
         query_param.response_type
@@ -6263,13 +5813,11 @@ async def naive_query(
         system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     )
 
-    # Support both naive-only templates ({content_data}) and shared RAG templates
-    # ({context_data}) so WebUI prompt overrides do not break naive mode.
+    # Create a preliminary system prompt with empty content_data to calculate overhead
     pre_sys_prompt = sys_prompt_template.format(
         response_type=response_type,
         user_prompt=user_prompt,
         content_data="",  # Empty for overhead calculation
-        context_data="",
     )
 
     # Calculate available tokens for chunks
@@ -6325,12 +5873,13 @@ async def naive_query(
     # Build chunks_context from processed chunks with reference IDs
     chunks_context = []
     for i, chunk in enumerate(processed_chunks_with_ref_ids):
-        chunks_context.append(
-            {
-                "reference_id": chunk["reference_id"],
-                "content": chunk["content"],
-            }
-        )
+        entry = {
+            "reference_id": chunk["reference_id"],
+            "content": chunk["content"],
+        }
+        if chunk.get("content_headings"):
+            entry["content_headings"] = chunk["content_headings"]
+        chunks_context.append(entry)
 
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
@@ -6351,10 +5900,9 @@ async def naive_query(
         return QueryResult(content=context_content, raw_data=raw_data)
 
     sys_prompt = sys_prompt_template.format(
-        response_type=response_type,
+        response_type=query_param.response_type,
         user_prompt=user_prompt,
         content_data=context_content,
-        context_data=context_content,
     )
 
     user_query = query
@@ -6362,43 +5910,6 @@ async def naive_query(
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
         return QueryResult(content=prompt_content, raw_data=raw_data)
-
-    # --- Agent tool loop ---------------------------------------------------
-    agent_tools_enabled = getattr(
-        query_param, "enable_agent_tools", global_config.get("agent_tools", False)
-    )
-    if agent_tools_enabled:
-        logger.info(
-            "[naive_query] Agent tools enabled – dispatching to tool loop"
-        )
-        web_search_enabled = getattr(
-            query_param, "enable_web_search", global_config.get("web_search", False)
-        )
-        web_search_max_results = getattr(
-            query_param, "web_search_max_results", global_config.get("web_search_max_results", 5)
-        )
-        web_search_func: Callable[..., Any] | None = None
-        if web_search_enabled:
-            async def _web_search(q: str, n: int = 5) -> list[WebSearchResult]:
-                return duckduckgo_search(q, n or web_search_max_results)
-            web_search_func = _web_search
-
-        tool_prompt = PROMPTS["agent_tool_protocol_query"]
-        augmented_sys_prompt = f"{tool_prompt}\n\n{sys_prompt}"
-        response = await _run_tool_loop(
-            query=user_query,
-            system_prompt=augmented_sys_prompt,
-            use_model_func=use_model_func,
-            query_param=query_param,
-            entities_vdb=entities_vdb,
-            relationships_vdb=relationships_vdb,
-            chunks_vdb=chunks_vdb,
-            knowledge_graph_inst=knowledge_graph_inst,
-            web_search_func=web_search_func,
-        )
-        # Tool-loop responses are non-deterministic – skip caching
-        return QueryResult(content=response, raw_data=raw_data)
-    # -----------------------------------------------------------------------
 
     # Handle cache
     args_hash = compute_args_hash(
@@ -6412,6 +5923,7 @@ async def naive_query(
         query_param.max_total_tokens,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        global_config.get("enable_content_headings", False),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -6425,19 +5937,12 @@ async def naive_query(
         )
         response = cached_response
     else:
-        llm_call_kwargs = {}
-        max_completion_tokens = getattr(query_param, "max_completion_tokens", None)
-        if max_completion_tokens:
-            llm_call_kwargs["max_completion_tokens"] = max_completion_tokens
-
         response = await use_model_func(
             user_query,
             system_prompt=sys_prompt,
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
-            _lightrag_request_kind="query",
-            **llm_call_kwargs,
         )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
@@ -6451,6 +5956,9 @@ async def naive_query(
                 "max_total_tokens": query_param.max_total_tokens,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
+                "enable_content_headings": global_config.get(
+                    "enable_content_headings", False
+                ),
             }
             await save_to_cache(
                 hashing_kv,

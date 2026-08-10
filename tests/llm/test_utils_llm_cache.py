@@ -1,7 +1,6 @@
 from unittest.mock import AsyncMock
 
 import pytest
-from pydantic import BaseModel
 
 from lightrag.utils import use_llm_func_with_cache
 
@@ -40,34 +39,6 @@ async def test_use_llm_func_with_cache_partitions_cache_by_response_format():
     assert json_result == '{"answer":"json"}'
     assert llm_func.await_count == 2
     assert len(cache._store) == 2
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_use_llm_func_with_cache_accepts_typed_response_format_classes():
-    class _StructuredAnswer(BaseModel):
-        answer: str
-
-    cache = _FakeKVStorage()
-    llm_func = AsyncMock(return_value='{"answer":"ok"}')
-
-    first_result, _ = await use_llm_func_with_cache(
-        "same prompt",
-        llm_func,
-        llm_response_cache=cache,
-        response_format=_StructuredAnswer,
-    )
-    second_result, _ = await use_llm_func_with_cache(
-        "same prompt",
-        llm_func,
-        llm_response_cache=cache,
-        response_format=_StructuredAnswer,
-    )
-
-    assert first_result == '{"answer":"ok"}'
-    assert second_result == '{"answer":"ok"}'
-    assert llm_func.await_count == 1
-    assert len(cache._store) == 1
 
 
 @pytest.mark.offline

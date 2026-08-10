@@ -1,3 +1,4 @@
+import os
 import logging
 from typing import Any, final, Union
 from dataclasses import dataclass
@@ -12,8 +13,12 @@ if not pm.is_installed("redis"):
 # aioredis is a depricated library, replaced with redis
 from redis.asyncio import Redis, ConnectionPool  # type: ignore
 from redis.exceptions import RedisError, ConnectionError, TimeoutError  # type: ignore
-from lightrag.config import settings
-from lightrag.utils import logger, get_pinyin_sort_key, _cooperative_yield
+from lightrag.utils import (
+    logger,
+    get_pinyin_sort_key,
+    _cooperative_yield,
+    validate_workspace,
+)
 
 from lightrag.base import (
     BaseKVStorage,
@@ -37,27 +42,10 @@ config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 # Constants for Redis connection pool with environment variable support
-MAX_CONNECTIONS = settings.redis_max_connections
-SOCKET_TIMEOUT = settings.redis_socket_timeout
-SOCKET_CONNECT_TIMEOUT = settings.redis_connect_timeout
-RETRY_ATTEMPTS = settings.redis_retry_attempts
-
-
-def _resolve_redis_workspace(workspace: str, namespace: str) -> str:
-    redis_workspace = settings.redis_workspace_override
-    if redis_workspace:
-        logger.info(
-            f"Using REDIS_WORKSPACE environment variable: '{redis_workspace}' (overriding '{workspace}/{namespace}')"
-        )
-        return redis_workspace
-    if workspace:
-        logger.debug(f"Using passed workspace parameter: '{workspace}'")
-    return workspace
-
-
-def _resolve_redis_uri() -> str:
-    default_uri = config.get("redis", "uri", fallback="redis://localhost:6379")
-    return settings.redis_uri(default_uri) or default_uri
+MAX_CONNECTIONS = int(os.getenv("REDIS_MAX_CONNECTIONS", "200"))
+SOCKET_TIMEOUT = float(os.getenv("REDIS_SOCKET_TIMEOUT", "30.0"))
+SOCKET_CONNECT_TIMEOUT = float(os.getenv("REDIS_CONNECT_TIMEOUT", "10.0"))
+RETRY_ATTEMPTS = int(os.getenv("REDIS_RETRY_ATTEMPTS", "3"))
 
 # Tenacity retry decorator for Redis operations
 redis_retry = retry(
@@ -143,7 +131,23 @@ class RedisConnectionManager:
 @dataclass
 class RedisKVStorage(BaseKVStorage):
     def __post_init__(self):
-        effective_workspace = _resolve_redis_workspace(self.workspace, self.namespace)
+        validate_workspace(self.workspace)
+        # Check for REDIS_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all Redis storage instances
+        redis_workspace = os.environ.get("REDIS_WORKSPACE")
+        if redis_workspace and redis_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = redis_workspace.strip()
+            logger.info(
+                f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
 
         # Build final_namespace with workspace prefix for data isolation
         # Keep original namespace unchanged for type detection logic
@@ -158,7 +162,9 @@ class RedisKVStorage(BaseKVStorage):
             self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
 
-        self._redis_url = _resolve_redis_uri()
+        self._redis_url = os.environ.get(
+            "REDIS_URI", config.get("redis", "uri", fallback="redis://localhost:6379")
+        )
         self._pool = None
         self._redis = None
         self._initialized = False
@@ -522,7 +528,23 @@ class RedisDocStatusStorage(DocStatusStorage):
     """Redis implementation of document status storage"""
 
     def __post_init__(self):
-        effective_workspace = _resolve_redis_workspace(self.workspace, self.namespace)
+        validate_workspace(self.workspace)
+        # Check for REDIS_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all Redis storage instances
+        redis_workspace = os.environ.get("REDIS_WORKSPACE")
+        if redis_workspace and redis_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = redis_workspace.strip()
+            logger.info(
+                f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
 
         # Build final_namespace with workspace prefix for data isolation
         # Keep original namespace unchanged for type detection logic
@@ -539,7 +561,9 @@ class RedisDocStatusStorage(DocStatusStorage):
                 f"[{self.workspace}] Final namespace (no workspace): '{self.namespace}'"
             )
 
-        self._redis_url = _resolve_redis_uri()
+        self._redis_url = os.environ.get(
+            "REDIS_URI", config.get("redis", "uri", fallback="redis://localhost:6379")
+        )
         self._pool = None
         self._redis = None
         self._initialized = False

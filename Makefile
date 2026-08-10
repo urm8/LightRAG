@@ -19,8 +19,17 @@ MLX_OPENAI_SERVER_HOST ?= 127.0.0.1
 MLX_OPENAI_SERVER_PORT ?= 11436
 MLX_OPENAI_SERVER_URL ?= http://$(MLX_OPENAI_SERVER_HOST):$(MLX_OPENAI_SERVER_PORT)/v1/models
 MLX_OPENAI_SERVER_LOG_DIR ?= $(HOME)/Library/Logs/lightrag
+MLX_MODEL_LAUNCHD_LABEL ?= com.local.mlx-model
+MLX_MODEL_LAUNCHD_PLIST ?= $(HOME)/Library/LaunchAgents/$(MLX_MODEL_LAUNCHD_LABEL).plist
+MLX_EMBEDDINGS_LAUNCHD_LABEL ?= com.local.mlx-embeddings
+MLX_EMBEDDINGS_LAUNCHD_PLIST ?= $(HOME)/Library/LaunchAgents/$(MLX_EMBEDDINGS_LAUNCHD_LABEL).plist
+MLX_EMBEDDINGS_HOST ?= 127.0.0.1
+MLX_EMBEDDINGS_PORT ?= 11439
+MLX_EMBEDDINGS_URL ?= http://$(MLX_EMBEDDINGS_HOST):$(MLX_EMBEDDINGS_PORT)/v1/models
 MLX_AGENTCPM_MODEL ?= huihui-ai/Huihui-granite-4.1-3b-abliterated
 MLX_AGENTCPM_MODEL_DIR ?= $(CURDIR)/models/huihui-granite-4.1-3b-abliterated-mlx-4bit
+QUERY_MLX_MODEL ?= mlx-community/gemma-4-e4b-it-4bit
+QUERY_MLX_HOST ?= http://$(MLX_OPENAI_SERVER_HOST):$(MLX_OPENAI_SERVER_PORT)/v1
 MLX_AGENTCPM_MAX_KV_SIZE ?= 4096
 MLX_AGENTCPM_CHAT_TEMPLATE_ARGS ?= {}
 MLX_CHAT_URL ?= http://$(MLX_OPENAI_SERVER_HOST):$(MLX_OPENAI_SERVER_PORT)/v1/chat/completions
@@ -44,7 +53,7 @@ COLOR_GREEN :=
 COLOR_YELLOW :=
 endif
 
-.PHONY: help dev test-prompt test-prompt-results promptfoo-apfel promptfoo-capture-logs extract-prompt-issues improve-prompts rl-enhance-prompts prompt-enhancement-report lightrag-start lightrag-restart lightrag-stop lightrag-status lightrag-logs lightrag-clear-db clear-db lightrag-reindex reindex vscode-bridge-health copilot-api-health bridge-health copilot-api-start copilot-api-restart copilot-api-stop copilot-api-status copilot-api-logs mlx-openai-health mlx-openai-logs swiftlm-install mlx-agentcpm-install mlx-agentcpm-convert mlx-agentcpm-start mlx-agentcpm-restart mlx-agentcpm-stop mlx-agentcpm-status mlx-agentcpm-logs mlx-agentcpm-health mlx-chat mlx-chat-native mlx-chat-test hn-front-page-load use-mlx-agentcpm configure env-base env-storage env-server env-validate env-backup env-security-check env-base-rewrite env-storage-rewrite env base storage server validate backup security security-check base-rewrite storage-rewrite
+.PHONY: help dev test-prompt test-prompt-results promptfoo-apfel promptfoo-capture-logs extract-prompt-issues improve-prompts rl-enhance-prompts prompt-enhancement-report lightrag-start lightrag-restart lightrag-stop lightrag-status lightrag-logs lightrag-clear-db clear-db lightrag-reindex reindex lightrag-rebuild-vdb vscode-bridge-health copilot-api-health bridge-health copilot-api-start copilot-api-restart copilot-api-stop copilot-api-status copilot-api-logs mlx-openai-health mlx-openai-logs mlx-model-install mlx-model-start mlx-model-restart mlx-model-stop mlx-model-status mlx-model-logs mlx-model-health mlx-embeddings-install mlx-embeddings-start mlx-embeddings-restart mlx-embeddings-stop mlx-embeddings-status mlx-embeddings-logs mlx-embeddings-health swiftlm-install mlx-agentcpm-install mlx-agentcpm-convert mlx-agentcpm-start mlx-agentcpm-restart mlx-agentcpm-stop mlx-agentcpm-status mlx-agentcpm-logs mlx-chat mlx-chat-native mlx-chat-test hn-front-page-load embedding-candidates-bench modernbert-embed-bench use-deepseek use-mlx configure env-base env-storage env-server env-validate env-backup env-security-check env-base-rewrite env-storage-rewrite env base storage server validate backup security security-check base-rewrite storage-rewrite
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
@@ -62,6 +71,7 @@ help:
 	@printf "  $(COLOR_GREEN)make lightrag-status$(COLOR_RESET)        Print local launchd LightRAG service status\n"
 	@printf "  $(COLOR_GREEN)make lightrag-logs$(COLOR_RESET)          Tail local launchd LightRAG logs\n"
 	@printf "  $(COLOR_GREEN)make lightrag-clear-db$(COLOR_RESET)      Delete all ingested documents, chunks, graph, and vectors\n"
+	@printf "  $(COLOR_GREEN)make lightrag-rebuild-vdb$(COLOR_RESET)   Rebuild vectors after stopping LightRAG\n"
 	@printf "  $(COLOR_GREEN)make vscode-bridge-health$(COLOR_RESET)   Check VS Code Copilot bridge /v1/models\n"
 	@printf "  $(COLOR_GREEN)make copilot-api-health$(COLOR_RESET)     Check copilot-api /v1/models\n"
 	@printf "  $(COLOR_GREEN)make bridge-health$(COLOR_RESET)          Check both local Copilot bridges\n"
@@ -70,15 +80,20 @@ help:
 	@printf "  $(COLOR_GREEN)make copilot-api-stop$(COLOR_RESET)       Stop the local launchd Copilot API service\n"
 	@printf "  $(COLOR_GREEN)make copilot-api-status$(COLOR_RESET)     Print local launchd Copilot API service status\n"
 	@printf "  $(COLOR_GREEN)make copilot-api-logs$(COLOR_RESET)       Tail local launchd Copilot API logs\n"
-	@printf "  $(COLOR_GREEN)make mlx-openai-health$(COLOR_RESET)      Check the managed native SwiftLM /v1/models\n"
-	@printf "  $(COLOR_GREEN)make mlx-openai-logs$(COLOR_RESET)        Tail managed native Swift runtime logs\n"
+	@printf "  $(COLOR_GREEN)make mlx-model-restart$(COLOR_RESET)      Restart the local launchd MLX model service\n"
+	@printf "  $(COLOR_GREEN)make mlx-model-health$(COLOR_RESET)       Check the local MLX model service\n"
+	@printf "  $(COLOR_GREEN)make mlx-embeddings-restart$(COLOR_RESET) Restart the local launchd MLX embeddings service\n"
+	@printf "  $(COLOR_GREEN)make mlx-embeddings-health$(COLOR_RESET)  Check the local MLX embeddings service\n"
 	@printf "  $(COLOR_GREEN)make swiftlm-install$(COLOR_RESET)        Build native SwiftLM and the local BGE-M3 embedding runtime\n"
 	@printf "  $(COLOR_GREEN)make mlx-agentcpm-convert$(COLOR_RESET)   Convert AgentCPM-Explore to local MLX 4-bit model\n"
 	@printf "  $(COLOR_GREEN)make mlx-chat$(COLOR_RESET)               Open an interactive chat session with the local MLX model\n"
 	@printf "  $(COLOR_GREEN)make mlx-chat-native$(COLOR_RESET)        Open native mlx_lm.chat against the local MLX model files\n"
 	@printf "  $(COLOR_GREEN)make mlx-chat-test$(COLOR_RESET)          Send a chat smoke test to the local MLX chat endpoint\n"
+	@printf "  $(COLOR_GREEN)make embedding-candidates-bench$(COLOR_RESET) Benchmark isolated embedding candidates\n"
+	@printf "  $(COLOR_GREEN)make modernbert-embed-bench$(COLOR_RESET) Benchmark isolated ModernBERT embeddings\n"
 	@printf "  $(COLOR_GREEN)make hn-front-page-load$(COLOR_RESET)     Load Hacker News front-page posts into LightRAG via uv\n"
-	@printf "  $(COLOR_GREEN)make use-mlx-agentcpm$(COLOR_RESET)       Switch LightRAG .env LLM binding to local MLX AgentCPM\n"
+	@printf "  $(COLOR_GREEN)make use-deepseek$(COLOR_RESET)           Switch query roles to DeepSeek and restart LightRAG\n"
+	@printf "  $(COLOR_GREEN)make use-mlx$(COLOR_RESET)                Switch query roles to local MLX and restart LightRAG\n"
 	@printf "  $(COLOR_GREEN)make env-base$(COLOR_RESET)               Configure LLM, embedding, and reranker (run first)\n"
 	@printf "  $(COLOR_GREEN)make env-storage$(COLOR_RESET)            Configure storage backends and databases\n"
 	@printf "  $(COLOR_GREEN)make env-server$(COLOR_RESET)             Configure server, security, and SSL\n"
@@ -99,8 +114,8 @@ help:
 	@printf "  make test-prompt\n"
 	@printf "  make test-prompt-results\n"
 	@printf "  make copilot-api-restart\n"
-	@printf "  make mlx-openai-health\n"
-	@printf "  make mlx-openai-logs\n"
+	@printf "  make mlx-model-health\n"
+	@printf "  make mlx-embeddings-health\n"
 	@printf "  make lightrag-restart\n"
 	@printf "  make lightrag-logs\n"
 	@printf "  make env-base\n"
@@ -288,6 +303,16 @@ lightrag-reindex reindex: lightrag-clear-db
 		exit 1; \
 	fi
 
+embedding-candidates-bench:
+	@.venv/bin/python scripts/benchmark_embedding_candidates.py
+
+modernbert-embed-bench:
+	@.venv/bin/python scripts/benchmark_embedding_candidates.py --profiles modernbert
+
+lightrag-rebuild-vdb:
+	@printf "$(COLOR_YELLOW)Stop LightRAG first with 'make lightrag-stop'; this tool can drop and rebuild vector storages.$(COLOR_RESET)\n"
+	@.venv/bin/python -m lightrag.tools.rebuild_vdb
+
 vscode-bridge-health:
 	@set -a; [ ! -f .env ] || . ./.env; set +a; \
 	code=$$(curl -sS -o /tmp/vscode-bridge-health.json -w '%{http_code}' \
@@ -336,27 +361,88 @@ copilot-api-status:
 copilot-api-logs:
 	@tail -f "$(COPILOT_API_LOG_DIR)/copilot-api.out.log" "$(COPILOT_API_LOG_DIR)/copilot-api.err.log"
 
-mlx-openai-health:
+mlx-model-install:
+	@MLX_MODEL_LAUNCHD_LABEL="$(MLX_MODEL_LAUNCHD_LABEL)" .venv/bin/python scripts/install_mlx_model_launchd.py
+
+mlx-model-start: mlx-model-install
+	@launchctl bootstrap gui/$$(id -u) "$(MLX_MODEL_LAUNCHD_PLIST)" 2>/dev/null || true
+	@launchctl kickstart -k gui/$$(id -u)/$(MLX_MODEL_LAUNCHD_LABEL)
+	@printf "$(COLOR_GREEN)Started $(MLX_MODEL_LAUNCHD_LABEL).$(COLOR_RESET)\n"
+
+mlx-model-restart: mlx-model-install
+	@launchctl bootout gui/$$(id -u) "$(MLX_MODEL_LAUNCHD_PLIST)" 2>/dev/null || true
+	@launchctl bootstrap gui/$$(id -u) "$(MLX_MODEL_LAUNCHD_PLIST)"
+	@launchctl kickstart -k gui/$$(id -u)/$(MLX_MODEL_LAUNCHD_LABEL)
+	@printf "$(COLOR_GREEN)Restarted $(MLX_MODEL_LAUNCHD_LABEL).$(COLOR_RESET)\n"
+
+mlx-model-stop:
+	@launchctl bootout gui/$$(id -u) "$(MLX_MODEL_LAUNCHD_PLIST)"
+	@printf "$(COLOR_GREEN)Stopped $(MLX_MODEL_LAUNCHD_LABEL).$(COLOR_RESET)\n"
+
+mlx-model-status:
+	@launchctl print gui/$$(id -u)/$(MLX_MODEL_LAUNCHD_LABEL)
+
+mlx-model-logs:
+	@tail -f "$(MLX_OPENAI_SERVER_LOG_DIR)/mlx-model.out.log" "$(MLX_OPENAI_SERVER_LOG_DIR)/mlx-model.err.log"
+
+mlx-model-health:
 	@code=$$(curl -sS -o /tmp/mlx-openai-health.json -w '%{http_code}' \
 		-H "Authorization: Bearer dummy" "$(MLX_OPENAI_SERVER_URL)" 2>/tmp/mlx-openai-health.err || true); \
 	if [ "$$code" = "200" ]; then \
 		count=$$(python3 -c 'import json; print(len(json.load(open("/tmp/mlx-openai-health.json")).get("data", [])))' 2>/dev/null || printf "?"); \
-		printf "$(COLOR_GREEN)SwiftLM OK$(COLOR_RESET) %s (%s models)\n" "$(MLX_OPENAI_SERVER_URL)" "$$count"; \
+		printf "$(COLOR_GREEN)MLX model OK$(COLOR_RESET) %s (%s models)\n" "$(MLX_OPENAI_SERVER_URL)" "$$count"; \
 	else \
-		printf "$(COLOR_YELLOW)SwiftLM unavailable$(COLOR_RESET) %s (http=%s)\n" "$(MLX_OPENAI_SERVER_URL)" "$${code:-000}"; \
+		printf "$(COLOR_YELLOW)MLX model unavailable$(COLOR_RESET) %s (http=%s)\n" "$(MLX_OPENAI_SERVER_URL)" "$${code:-000}"; \
 		[ ! -s /tmp/mlx-openai-health.err ] || sed 's/^/  /' /tmp/mlx-openai-health.err; \
 		exit 1; \
 	fi
 
-mlx-openai-logs:
-	@tail -f "$(MLX_OPENAI_SERVER_LOG_DIR)/managed-swift-lm.out.log" "$(MLX_OPENAI_SERVER_LOG_DIR)/managed-swift-lm.err.log" "$(MLX_OPENAI_SERVER_LOG_DIR)/managed-swift-embeddings.out.log" "$(MLX_OPENAI_SERVER_LOG_DIR)/managed-swift-embeddings.err.log"
+mlx-embeddings-install:
+	@MLX_EMBEDDINGS_LAUNCHD_LABEL="$(MLX_EMBEDDINGS_LAUNCHD_LABEL)" .venv/bin/python scripts/install_mlx_embeddings_launchd.py
+
+mlx-embeddings-start: mlx-embeddings-install
+	@launchctl bootstrap gui/$$(id -u) "$(MLX_EMBEDDINGS_LAUNCHD_PLIST)" 2>/dev/null || true
+	@launchctl kickstart -k gui/$$(id -u)/$(MLX_EMBEDDINGS_LAUNCHD_LABEL)
+	@printf "$(COLOR_GREEN)Started $(MLX_EMBEDDINGS_LAUNCHD_LABEL).$(COLOR_RESET)\n"
+
+mlx-embeddings-restart: mlx-embeddings-install
+	@launchctl bootout gui/$$(id -u) "$(MLX_EMBEDDINGS_LAUNCHD_PLIST)" 2>/dev/null || true
+	@launchctl bootstrap gui/$$(id -u) "$(MLX_EMBEDDINGS_LAUNCHD_PLIST)"
+	@launchctl kickstart -k gui/$$(id -u)/$(MLX_EMBEDDINGS_LAUNCHD_LABEL)
+	@printf "$(COLOR_GREEN)Restarted $(MLX_EMBEDDINGS_LAUNCHD_LABEL).$(COLOR_RESET)\n"
+
+mlx-embeddings-stop:
+	@launchctl bootout gui/$$(id -u) "$(MLX_EMBEDDINGS_LAUNCHD_PLIST)"
+	@printf "$(COLOR_GREEN)Stopped $(MLX_EMBEDDINGS_LAUNCHD_LABEL).$(COLOR_RESET)\n"
+
+mlx-embeddings-status:
+	@launchctl print gui/$$(id -u)/$(MLX_EMBEDDINGS_LAUNCHD_LABEL)
+
+mlx-embeddings-logs:
+	@tail -f "$(MLX_OPENAI_SERVER_LOG_DIR)/mlx-embeddings.out.log" "$(MLX_OPENAI_SERVER_LOG_DIR)/mlx-embeddings.err.log"
+
+mlx-embeddings-health:
+	@code=$$(curl -sS -o /tmp/mlx-embeddings-health.json -w '%{http_code}' \
+		-H "Authorization: Bearer dummy" "$(MLX_EMBEDDINGS_URL)" 2>/tmp/mlx-embeddings-health.err || true); \
+	if [ "$$code" = "200" ]; then \
+		count=$$(python3 -c 'import json; print(len(json.load(open("/tmp/mlx-embeddings-health.json")).get("data", [])))' 2>/dev/null || printf "?"); \
+		printf "$(COLOR_GREEN)MLX embeddings OK$(COLOR_RESET) %s (%s models)\n" "$(MLX_EMBEDDINGS_URL)" "$$count"; \
+	else \
+		printf "$(COLOR_YELLOW)MLX embeddings unavailable$(COLOR_RESET) %s (http=%s)\n" "$(MLX_EMBEDDINGS_URL)" "$${code:-000}"; \
+		[ ! -s /tmp/mlx-embeddings-health.err ] || sed 's/^/  /' /tmp/mlx-embeddings-health.err; \
+		exit 1; \
+	fi
+
+mlx-openai-health: mlx-model-health
+
+mlx-openai-logs: mlx-model-logs
 
 swiftlm-install:
 	@./scripts/install_swiftlm_runtime.sh
 
 mlx-agentcpm-install:
 	@printf "$(COLOR_YELLOW)mlx-agentcpm-install is deprecated.$(COLOR_RESET)\n"
-	@printf "Use make swiftlm-install, then make lightrag-restart.\n"
+	@printf "Use make swiftlm-install, then make mlx-model-restart.\n"
 
 mlx-agentcpm-convert:
 	@mkdir -p "$(dir $(MLX_AGENTCPM_MODEL_DIR))"
@@ -374,23 +460,23 @@ mlx-agentcpm-convert:
 
 mlx-agentcpm-start:
 	@printf "$(COLOR_YELLOW)mlx-agentcpm-start is deprecated.$(COLOR_RESET)\n"
-	@printf "Use make lightrag-start. LightRAG starts the native Swift runtimes itself.\n"
+	@printf "Use make mlx-model-start.\n"
 
 mlx-agentcpm-restart:
 	@printf "$(COLOR_YELLOW)mlx-agentcpm-restart is deprecated.$(COLOR_RESET)\n"
-	@printf "Use make lightrag-restart. LightRAG restarts the native Swift runtimes itself.\n"
+	@printf "Use make mlx-model-restart.\n"
 
 mlx-agentcpm-stop:
 	@printf "$(COLOR_YELLOW)mlx-agentcpm-stop is deprecated.$(COLOR_RESET)\n"
-	@printf "Use make lightrag-stop. LightRAG owns the native Swift runtime lifecycle.\n"
+	@printf "Use make mlx-model-stop.\n"
 
 mlx-agentcpm-status:
 	@printf "$(COLOR_YELLOW)mlx-agentcpm-status is deprecated.$(COLOR_RESET)\n"
-	@printf "Use make lightrag-status.\n"
+	@printf "Use make mlx-model-status.\n"
 
-mlx-agentcpm-logs: mlx-openai-logs
+mlx-agentcpm-logs: mlx-model-logs
 
-mlx-agentcpm-health: mlx-openai-health
+mlx-agentcpm-health: mlx-model-health
 
 mlx-chat:
 	@set -a; [ ! -f .env ] || . ./.env; set +a; \
@@ -416,9 +502,16 @@ hn-front-page-load:
 	@uv run playwright install webkit
 	@uv run python scripts/load_hn_front_page.py $(HN_FRONT_PAGE_LOAD_ARGS)
 
-use-mlx-agentcpm:
-	@.venv/bin/python -c 'from pathlib import Path; path = Path(".env"); text = path.read_text(); replacements = {"LLM_BINDING_HOST=http://127.0.0.1:11435/v1": "LLM_BINDING_HOST=http://127.0.0.1:11436/v1", "LLM_MODEL=apple-foundationmodel": "LLM_MODEL=openbmb/AgentCPM-Explore"}; [text := text.replace(old, new, 1) for old, new in replacements.items() if old in text]; text = text if "LLM_BINDING_API_KEY=dummy" in text else text + "\\nLLM_BINDING_API_KEY=dummy\\n"; path.write_text(text); print(path)'
-	@printf "$(COLOR_GREEN)Switched .env to local MLX AgentCPM endpoint on 127.0.0.1:11436.$(COLOR_RESET)\n"
+# DEPRECATED: use `make use-mlx`; the old target only rewrote legacy values.
+# use-mlx-agentcpm:
+
+use-deepseek:
+	@.venv/bin/python scripts/switch_query_llm_profile.py deepseek
+	@$(MAKE) lightrag-restart
+
+use-mlx:
+	@.venv/bin/python scripts/switch_query_llm_profile.py mlx --mlx-host "$(QUERY_MLX_HOST)" --mlx-model "$(QUERY_MLX_MODEL)"
+	@$(MAKE) lightrag-restart
 
 env-base env base configure:
 	@$(SETUP_BASH) $(SETUP_SCRIPT) --base $(SETUP_OPTS)

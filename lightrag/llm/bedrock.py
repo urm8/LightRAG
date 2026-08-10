@@ -2,7 +2,6 @@ import copy
 import inspect
 import json
 import logging
-from lightrag.config import settings
 import warnings
 
 import pipmaster as pm  # Pipmaster for dynamic library install
@@ -208,13 +207,6 @@ async def bedrock_complete_if_cache(
         logging.debug(
             "enable_cot=True is not supported for Bedrock and will be ignored."
         )
-    # Respect existing env; only set if a non-empty value is available
-    access_key = settings.aws_access_key_id or aws_access_key_id
-    secret_key = settings.aws_secret_access_key or aws_secret_access_key
-    session_token = settings.aws_session_token or aws_session_token
-    _set_env_if_present("AWS_ACCESS_KEY_ID", access_key)
-    _set_env_if_present("AWS_SECRET_ACCESS_KEY", secret_key)
-    _set_env_if_present("AWS_SESSION_TOKEN", session_token)
 
     # Bedrock Converse API has no JSON mode; drop legacy extraction flags and
     # response_format below and rely on the prompt template plus downstream
@@ -243,8 +235,7 @@ async def bedrock_complete_if_cache(
             stacklevel=2,
         )
 
-    # Region handling: prefer settings, else kwarg
-    region = settings.aws_region or kwargs.pop("aws_region", None)
+    region = aws_region or kwargs.pop("aws_region", None)
     endpoint_url = _normalize_bedrock_endpoint_url(endpoint_url)
     kwargs.pop("hashing_kv", None)
     # Capture stream flag (if provided) and remove from kwargs since it's not a Bedrock API parameter
@@ -504,17 +495,7 @@ async def bedrock_embed(
             stacklevel=2,
         )
 
-    # Respect existing env; only set if a non-empty value is available
-    access_key = settings.aws_access_key_id or aws_access_key_id
-    secret_key = settings.aws_secret_access_key or aws_secret_access_key
-    session_token = settings.aws_session_token or aws_session_token
-    _set_env_if_present("AWS_ACCESS_KEY_ID", access_key)
-    _set_env_if_present("AWS_SECRET_ACCESS_KEY", secret_key)
-    _set_env_if_present("AWS_SESSION_TOKEN", session_token)
-
-    # Region handling: prefer settings, else kwarg
-    region = settings.aws_region or aws_region
-
+    region = aws_region
     endpoint_url = _normalize_bedrock_endpoint_url(endpoint_url)
 
     session = aioboto3.Session()

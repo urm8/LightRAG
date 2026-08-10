@@ -11,7 +11,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar, List, get_args, get_origin
 
-from lightrag.config import settings
+from lightrag.utils import get_env_value
 from lightrag.constants import DEFAULT_TEMPERATURE
 
 
@@ -127,9 +127,7 @@ class BindingOptions:
                         raise argparse.ArgumentTypeError(f"Invalid JSON: {e}")
 
                 # Get environment variable with JSON parsing
-                env_value = settings.binding_env_value(
-                    arg_item["env_name"], argparse.SUPPRESS
-                )
+                env_value = get_env_value(f"{arg_item['env_name']}", argparse.SUPPRESS)
                 if env_value is not argparse.SUPPRESS:
                     try:
                         env_value = json_list_parser(env_value)
@@ -157,9 +155,7 @@ class BindingOptions:
                         raise argparse.ArgumentTypeError(f"Invalid JSON: {e}")
 
                 # Get environment variable with JSON parsing
-                env_value = settings.binding_env_value(
-                    arg_item["env_name"], argparse.SUPPRESS
-                )
+                env_value = get_env_value(f"{arg_item['env_name']}", argparse.SUPPRESS)
                 if env_value is not argparse.SUPPRESS:
                     try:
                         env_value = json_dict_parser(env_value)
@@ -184,10 +180,8 @@ class BindingOptions:
                     return bool(value)
 
                 # Get environment variable with proper type conversion
-                env_value = (
-                    settings.binding_env_bool(arg_item["env_name"])
-                    if settings.binding_env_configured(arg_item["env_name"])
-                    else argparse.SUPPRESS
+                env_value = get_env_value(
+                    f"{arg_item['env_name']}", argparse.SUPPRESS, bool
                 )
 
                 group.add_argument(
@@ -204,9 +198,7 @@ class BindingOptions:
                 group.add_argument(
                     f"--{arg_item['argname']}",
                     type=resolved_type,
-                    default=settings.binding_env_value(
-                        arg_item["env_name"], argparse.SUPPRESS
-                    ),
+                    default=get_env_value(f"{arg_item['env_name']}", argparse.SUPPRESS),
                     help=arg_item["help"],
                 )
 
@@ -684,11 +676,16 @@ class BedrockLLMOptions(BindingOptions):
 
 if __name__ == "__main__":
     import sys
+    import dotenv
     # from io import StringIO
+
+    dotenv.load_dotenv(dotenv_path=".env", override=False)
 
     # env_strstream = StringIO(
     #     ("OLLAMA_LLM_TEMPERATURE=0.1\nOLLAMA_EMBEDDING_TEMPERATURE=0.2\n")
     # )
+    # # Load environment variables from .env file
+    # dotenv.load_dotenv(stream=env_strstream)
 
     if len(sys.argv) > 1 and sys.argv[1] == "test":
         # Add arguments for OllamaEmbeddingOptions, OllamaLLMOptions, and OpenAILLMOptions
@@ -829,7 +826,7 @@ if __name__ == "__main__":
             print(f"✗ Environment variable dict parsing failed: {e}")
         finally:
             # Clean up environment variable
-            if settings.binding_env_configured("OPENAI_LLM_REASONING"):
+            if "OPENAI_LLM_REASONING" in os.environ:
                 del os.environ["OPENAI_LLM_REASONING"]
 
     else:
