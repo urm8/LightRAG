@@ -54,7 +54,7 @@ COLOR_GREEN :=
 COLOR_YELLOW :=
 endif
 
-.PHONY: help dev test-prompt test-prompt-results promptfoo-apfel promptfoo-capture-logs extract-prompt-issues improve-prompts rl-enhance-prompts prompt-enhancement-report lightrag-start lightrag-restart lightrag-stop lightrag-status lightrag-logs lightrag-clear-db clear-db lightrag-reindex reindex lightrag-rebuild-vdb vscode-bridge-health copilot-api-health bridge-health copilot-api-start copilot-api-restart copilot-api-stop copilot-api-status copilot-api-logs mlx-openai-health mlx-openai-logs mlx-model-install mlx-model-start mlx-model-restart mlx-model-stop mlx-model-status mlx-model-logs mlx-model-health mlx-embeddings-install mlx-embeddings-start mlx-embeddings-restart mlx-embeddings-stop mlx-embeddings-status mlx-embeddings-logs mlx-embeddings-health swiftlm-install mlx-agentcpm-install mlx-agentcpm-convert mlx-agentcpm-start mlx-agentcpm-restart mlx-agentcpm-stop mlx-agentcpm-status mlx-agentcpm-logs mlx-chat mlx-chat-native mlx-chat-test hn-front-page-load embedding-candidates-bench modernbert-embed-bench use-deepseek use-mlx configure env-base env-storage env-server env-validate env-backup env-security-check env-base-rewrite env-storage-rewrite env base storage server validate backup security security-check base-rewrite storage-rewrite apple-up apple-down apple-status apple-logs apple-restart apple-pull
+.PHONY: help dev test-prompt test-prompt-results promptfoo-apfel promptfoo-capture-logs extract-prompt-issues improve-prompts rl-enhance-prompts prompt-enhancement-report lightrag-start lightrag-restart lightrag-stop lightrag-unregister lightrag-uninstall lightrag-status lightrag-logs lightrag-clear-db clear-db lightrag-reindex reindex lightrag-rebuild-vdb vscode-bridge-health copilot-api-health bridge-health copilot-api-start copilot-api-restart copilot-api-stop copilot-api-status copilot-api-logs mlx-openai-health mlx-openai-logs mlx-model-install mlx-model-start mlx-model-restart mlx-model-stop mlx-model-status mlx-model-logs mlx-model-health mlx-embeddings-install mlx-embeddings-start mlx-embeddings-restart mlx-embeddings-stop mlx-embeddings-status mlx-embeddings-logs mlx-embeddings-health swiftlm-install mlx-agentcpm-install mlx-agentcpm-convert mlx-agentcpm-start mlx-agentcpm-restart mlx-agentcpm-stop mlx-agentcpm-status mlx-agentcpm-logs mlx-chat mlx-chat-native mlx-chat-test hn-front-page-load embedding-candidates-bench modernbert-embed-bench use-deepseek use-mlx configure env-base env-storage env-server env-validate env-backup env-security-check env-base-rewrite env-storage-rewrite env base storage server validate backup security security-check base-rewrite storage-rewrite apple-up apple-down apple-status apple-logs apple-restart apple-pull
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
@@ -69,6 +69,7 @@ help:
 	@printf "  $(COLOR_GREEN)make lightrag-start$(COLOR_RESET)         Start the local launchd LightRAG service\n"
 	@printf "  $(COLOR_GREEN)make lightrag-restart$(COLOR_RESET)       Restart the local launchd LightRAG service\n"
 	@printf "  $(COLOR_GREEN)make lightrag-stop$(COLOR_RESET)          Stop the local launchd LightRAG service\n"
+	@printf "  $(COLOR_GREEN)make lightrag-unregister$(COLOR_RESET)    Unload LightRAG and remove its launchd plist\n"
 	@printf "  $(COLOR_GREEN)make lightrag-status$(COLOR_RESET)        Print local launchd LightRAG service status\n"
 	@printf "  $(COLOR_GREEN)make lightrag-logs$(COLOR_RESET)          Tail local launchd LightRAG logs\n"
 	@printf "  $(COLOR_GREEN)make lightrag-clear-db$(COLOR_RESET)      Delete all ingested documents, chunks, graph, and vectors\n"
@@ -252,6 +253,21 @@ lightrag-restart:
 lightrag-stop:
 	@launchctl bootout gui/$$(id -u) "$(LIGHTRAG_LAUNCHD_PLIST)"
 	@printf "$(COLOR_GREEN)Stopped $(LIGHTRAG_LAUNCHD_LABEL).$(COLOR_RESET)\n"
+
+lightrag-unregister lightrag-uninstall:
+	@domain="gui/$$(id -u)"; \
+	launchctl bootout "$$domain/$(LIGHTRAG_LAUNCHD_LABEL)" 2>/dev/null || \
+		launchctl bootout "$$domain" "$(LIGHTRAG_LAUNCHD_PLIST)" 2>/dev/null || true; \
+	rm -f "$(LIGHTRAG_LAUNCHD_PLIST)"; \
+	for attempt in $$(seq 1 50); do \
+		launchctl print "$$domain/$(LIGHTRAG_LAUNCHD_LABEL)" >/dev/null 2>&1 || break; \
+		sleep 0.1; \
+	done; \
+	if launchctl print "$$domain/$(LIGHTRAG_LAUNCHD_LABEL)" >/dev/null 2>&1; then \
+		printf "$(COLOR_YELLOW)Failed to unregister $(LIGHTRAG_LAUNCHD_LABEL).$(COLOR_RESET)\n"; \
+		exit 1; \
+	fi; \
+	printf "$(COLOR_GREEN)Unregistered $(LIGHTRAG_LAUNCHD_LABEL) and removed $(LIGHTRAG_LAUNCHD_PLIST).$(COLOR_RESET)\n"
 
 lightrag-status:
 	@launchctl print gui/$$(id -u)/$(LIGHTRAG_LAUNCHD_LABEL)
