@@ -1,0 +1,167 @@
+# Build the urm8 fork image for the arm64 k3s workers and deploy it with Helm.
+# Required production secrets: GHCR_TOKEN, KUBECONFIG_B64, LIGHTRAG_VALUES_B64.
+name: Build and deploy urm8
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-lightrag-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/urm8/lightrag
+  IMAGE_PLATFORM: linux/arm64
+  RELEASE: lightrag
+  NAMESPACE: lightrag
+
+jobs:
+  build-and-deploy:
+    name: Build image and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production
+
+    steps:
+      - name: Check out repository and MCP submodule
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Require deployment secrets
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+          LIGHTRAG_VALUES_B64: ${{ secrets.LIGHTRAG_VALUES_B64 }}
+        run: |
+          missing=0
+          for name in GHCR_TOKEN KUBECONFIG_B64 LIGHTRAG_VALUES_B64; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing production secret ${name}"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Build and push arm64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: ${{ env.IMAGE_PLATFORM }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.image_tag }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha,scope=lightrag
+          cache-to: type=gha,mode=max,scope=lightrag
+
+      - name: Verify image platform
+        run: |
+          docker buildx imagetools inspect --raw \
+            "${IMAGE}:${{ steps.meta.outputs.image_tag }}" \
+            | jq -e '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")' \
+            >/dev/null
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.33.1
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.18.0
+
+      - name: Materialize private deployment files
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+          LIGHTRAG_VALUES_B64: ${{ secrets.LIGHTRAG_VALUES_B64 }}
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/lightrag"
+          printf '%s' "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/lightrag/kubeconfig"
+          printf '%s' "$LIGHTRAG_VALUES_B64" | base64 --decode > "$RUNNER_TEMP/lightrag/values.private.yaml"
+          echo "KUBECONFIG=$RUNNER_TEMP/lightrag/kubeconfig" >> "$GITHUB_ENV"
+          echo "PRIVATE_VALUES=$RUNNER_TEMP/lightrag/values.private.yaml" >> "$GITHUB_ENV"
+
+      - name: Prepare namespace and secrets
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$NAMESPACE" create secret docker-registry ghcr-secret \
+            --docker-server="$REGISTRY" \
+            --docker-username="${{ github.actor }}" \
+            --docker-password="$GHCR_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n persistence get secret lightrag-db -o json \
+            | jq 'del(.metadata.namespace, .metadata.uid, .metadata.resourceVersion,
+                .metadata.creationTimestamp, .metadata.selfLink, .metadata.managedFields)' \
+            | kubectl -n "$NAMESPACE" apply -f -
+
+      - name: Validate Helm chart
+        run: |
+          helm lint ./helm -f "$PRIVATE_VALUES"
+          helm template "$RELEASE" ./helm -n "$NAMESPACE" \
+            -f "$PRIVATE_VALUES" \
+            --set-string image.repository="$IMAGE" \
+            --set-string image.tag="${{ steps.meta.outputs.image_tag }}" >/dev/null
+
+      - name: Clear stuck Helm operation
+        run: |
+          status="$(helm -n "$NAMESPACE" status "$RELEASE" -o json 2>/dev/null \
+            | jq -r '.info.status // empty' || true)"
+          case "$status" in
+            pending-upgrade|pending-install|pending-rollback)
+              helm -n "$NAMESPACE" rollback "$RELEASE" --wait --timeout 5m
+              ;;
+          esac
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install "$RELEASE" ./helm \
+            -n "$NAMESPACE" --create-namespace \
+            -f "$PRIVATE_VALUES" \
+            --set-string image.repository="$IMAGE" \
+            --set-string image.tag="${{ steps.meta.outputs.image_tag }}" \
+            --force-conflicts --wait --timeout 10m
+
+      - name: Verify deployment
+        run: |
+          kubectl -n "$NAMESPACE" get pods -o wide
+          kubectl -n "$NAMESPACE" rollout status deployment/"$RELEASE" --timeout=5m
+          test "$(kubectl -n "$NAMESPACE" get pod -l app.kubernetes.io/instance="$RELEASE" \
+            -o jsonpath='{.items[0].spec.nodeName}')" != "master-node"
+          curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors \
+            https://rag.urm8.org/health >/dev/null
+
+      - name: Cluster diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n "$NAMESPACE" get deploy,pods,svc,ingress,certificate -o wide || true
+          kubectl -n "$NAMESPACE" logs deployment/"$RELEASE" --tail=200 || true
+          kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp | tail -50 || true

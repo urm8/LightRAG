@@ -582,3 +582,86 @@ apple-restart:
 
 apple-pull:
 	@$(SETUP_BASH) $(APPLE_SCRIPT) pull
+
+# ---------------------------------------------------------------------------
+# GHCR + Hetzner k3s deployment (local equivalents of deploy-urm8.yml)
+# ---------------------------------------------------------------------------
+
+K8S_NAMESPACE ?= lightrag
+HELM_RELEASE ?= lightrag
+HELM_CHART ?= ./helm
+PRIVATE_VALUES ?= ./helm/values.private.yaml
+KUBECONFIG ?= $(HOME)/.kube/config
+REGISTRY ?= ghcr.io
+IMAGE ?= $(REGISTRY)/urm8/lightrag
+TAG ?= $(shell git rev-parse HEAD)
+PLATFORM ?= linux/arm64
+GHCR_USERNAME ?= urm8
+GHCR_TOKEN ?= $(shell gh auth token 2>/dev/null)
+
+.PHONY: helm-lint helm-template image-login image-build image-push image-build-push \
+	build-push ensure-k3s-namespace ghcr-secret db-secret app-secret deploy \
+	deploy-status deploy-verify deploy-rollback deploy-uninstall
+
+helm-lint:
+	helm lint $(HELM_CHART)
+
+helm-template:
+	helm template $(HELM_RELEASE) $(HELM_CHART) -n $(K8S_NAMESPACE)
+
+image-login:
+	@test -n "$(GHCR_TOKEN)" || (echo "Authenticate with gh auth login first"; exit 1)
+	@printf '%s' "$(GHCR_TOKEN)" | docker login $(REGISTRY) -u "$(GHCR_USERNAME)" --password-stdin
+
+image-build:
+	docker build --platform $(PLATFORM) -t $(IMAGE):$(TAG) -t $(IMAGE):latest .
+
+image-push: image-login
+	docker push $(IMAGE):$(TAG)
+	docker push $(IMAGE):latest
+
+image-build-push build-push: image-build image-push
+
+ensure-k3s-namespace:
+	@kubectl --kubeconfig $(KUBECONFIG) create namespace $(K8S_NAMESPACE) \
+		--dry-run=client -o yaml | kubectl --kubeconfig $(KUBECONFIG) apply -f - >/dev/null
+
+ghcr-secret: ensure-k3s-namespace
+	@test -n "$(GHCR_TOKEN)" || (echo "Authenticate with gh auth login first"; exit 1)
+	@kubectl --kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) create secret docker-registry ghcr-secret \
+		--docker-server=$(REGISTRY) --docker-username=$(GHCR_USERNAME) \
+		--docker-password="$(GHCR_TOKEN)" --dry-run=client -o yaml \
+		| kubectl --kubeconfig $(KUBECONFIG) apply -f - >/dev/null
+
+db-secret: ensure-k3s-namespace
+	@kubectl --kubeconfig $(KUBECONFIG) -n persistence get secret lightrag-db -o json \
+		| jq 'del(.metadata.namespace, .metadata.uid, .metadata.resourceVersion, \
+			.metadata.creationTimestamp, .metadata.selfLink, .metadata.managedFields)' \
+		| kubectl --kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) apply -f - >/dev/null
+
+app-secret:
+	@test -f "$(PRIVATE_VALUES)" || (echo "Missing $(PRIVATE_VALUES)"; exit 1)
+	@test "$$(stat -f '%Lp' "$(PRIVATE_VALUES)" 2>/dev/null || stat -c '%a' "$(PRIVATE_VALUES)")" = "600" || \
+		(echo "$(PRIVATE_VALUES) must have mode 600"; exit 1)
+	@helm template $(HELM_RELEASE) $(HELM_CHART) -n $(K8S_NAMESPACE) -f "$(PRIVATE_VALUES)" >/dev/null
+
+deploy: ghcr-secret db-secret app-secret
+	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
+		--kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) --create-namespace \
+		-f "$(PRIVATE_VALUES)" \
+		--set-string image.repository=$(IMAGE) --set-string image.tag=$(TAG) \
+		--force-conflicts --wait --timeout 10m
+
+deploy-status:
+	kubectl --kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) get deploy,svc,ingress,pods,certificate -o wide
+
+deploy-verify:
+	kubectl --kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) get pods -o wide
+	kubectl --kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) logs deploy/$(HELM_RELEASE) --tail=100
+	curl -fsS https://rag.urm8.org/health >/dev/null
+
+deploy-rollback:
+	helm --kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) rollback $(HELM_RELEASE)
+
+deploy-uninstall:
+	helm --kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) uninstall $(HELM_RELEASE)

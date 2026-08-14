@@ -1,0 +1,179 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lightrag.fullname" . }}
+  labels:
+    {{- include "lightrag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "lightrag.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lightrag.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      nodeSelector:
+        {{- toYaml .Values.scheduling.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.scheduling.tolerations | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: lightrag
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: HOST
+              value: {{ .Values.config.host | quote }}
+            - name: PORT
+              value: {{ .Values.config.port | quote }}
+            - name: WORKSPACE
+              value: {{ .Values.config.workspace | quote }}
+            - name: LIGHTRAG_KV_STORAGE
+              value: PGKVStorage
+            - name: LIGHTRAG_DOC_STATUS_STORAGE
+              value: PGDocStatusStorage
+            - name: LIGHTRAG_GRAPH_STORAGE
+              value: PGGraphStorage
+            - name: LIGHTRAG_VECTOR_STORAGE
+              value: PGVectorStorage
+            - name: POSTGRES_HOST
+              value: {{ .Values.database.host | quote }}
+            - name: POSTGRES_PORT
+              value: {{ .Values.database.port | quote }}
+            - name: POSTGRES_DATABASE
+              value: {{ .Values.database.name | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.database.user | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: password
+            - name: POSTGRES_MAX_CONNECTIONS
+              value: {{ .Values.database.maxConnections | quote }}
+            - name: POSTGRES_VECTOR_INDEX_TYPE
+              value: {{ .Values.database.vectorIndexType | quote }}
+            - name: MAX_PARALLEL_INSERT
+              value: {{ .Values.config.maxParallelInsert | quote }}
+            - name: MAX_ASYNC_LLM
+              value: {{ .Values.config.maxAsyncLlm | quote }}
+            - name: LLM_TIMEOUT
+              value: {{ .Values.config.llmTimeout | quote }}
+            - name: LLM_BINDING
+              value: {{ .Values.config.llm.binding | quote }}
+            - name: LLM_BINDING_HOST
+              value: {{ .Values.config.llm.host | quote }}
+            - name: LLM_MODEL
+              value: {{ .Values.config.llm.model | quote }}
+            - name: LLM_BINDING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.appSecretName }}
+                  key: LLM_BINDING_API_KEY
+            - name: OPENAI_LLM_EXTRA_BODY
+              value: {{ .Values.config.llm.extraBody | quote }}
+            - name: OPENAI_LLM_TEMPERATURE
+              value: {{ .Values.config.llm.temperature | quote }}
+            - name: EXTRACT_LLM_BINDING
+              value: {{ .Values.config.llm.binding | quote }}
+            - name: EXTRACT_LLM_BINDING_HOST
+              value: {{ .Values.config.llm.host | quote }}
+            - name: EXTRACT_LLM_MODEL
+              value: {{ .Values.config.llm.model | quote }}
+            - name: QUERY_LLM_BINDING
+              value: {{ .Values.config.llm.binding | quote }}
+            - name: QUERY_LLM_BINDING_HOST
+              value: {{ .Values.config.llm.host | quote }}
+            - name: QUERY_LLM_MODEL
+              value: {{ .Values.config.llm.model | quote }}
+            - name: KEYWORD_LLM_BINDING
+              value: {{ .Values.config.llm.binding | quote }}
+            - name: KEYWORD_LLM_BINDING_HOST
+              value: {{ .Values.config.llm.host | quote }}
+            - name: KEYWORD_LLM_MODEL
+              value: {{ .Values.config.llm.model | quote }}
+            - name: EMBEDDING_BINDING
+              value: {{ .Values.config.embedding.binding | quote }}
+            - name: EMBEDDING_BINDING_HOST
+              value: {{ .Values.config.embedding.host | quote }}
+            - name: EMBEDDING_MODEL
+              value: {{ .Values.config.embedding.model | quote }}
+            - name: EMBEDDING_DIM
+              value: {{ .Values.config.embedding.dimension | quote }}
+            - name: EMBEDDING_TOKEN_LIMIT
+              value: {{ .Values.config.embedding.tokenLimit | quote }}
+            - name: EMBEDDING_BATCH_NUM
+              value: {{ .Values.config.embedding.batchSize | quote }}
+            - name: EMBEDDING_FUNC_MAX_ASYNC
+              value: {{ .Values.config.embedding.maxAsync | quote }}
+            - name: EMBEDDING_BINDING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.appSecretName }}
+                  key: EMBEDDING_BINDING_API_KEY
+            - name: RERANK_BINDING
+              value: {{ .Values.config.rerank.binding | quote }}
+            - name: VLM_PROCESS_ENABLE
+              value: "false"
+            - name: LIGHTRAG_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.appSecretName }}
+                  key: LIGHTRAG_API_KEY
+            - name: LIGHTRAG_MCP_ENABLED
+              value: {{ .Values.config.mcp.enabled | quote }}
+            - name: LIGHTRAG_MCP_PATH
+              value: {{ .Values.config.mcp.path | quote }}
+            - name: LIGHTRAG_MCP_TRANSPORT
+              value: {{ .Values.config.mcp.transport | quote }}
+            - name: LIGHTRAG_MCP_API_BASE_URL
+              value: {{ .Values.config.mcp.apiBaseUrl | quote }}
+            - name: LIGHTRAG_MCP_JSON_RESPONSE
+              value: {{ .Values.config.mcp.jsonResponse | quote }}
+            - name: LIGHTRAG_MCP_STATELESS_HTTP
+              value: {{ .Values.config.mcp.statelessHttp | quote }}
+            - name: WHITELIST_PATHS
+              value: "/health"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL

@@ -1,0 +1,102 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/urm8/lightrag
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: ghcr-secret
+
+updateStrategy:
+  type: Recreate
+
+scheduling:
+  nodeSelector:
+    scheduling.urm8.org/pool: worker
+  tolerations: []
+
+service:
+  type: ClusterIP
+  port: 9621
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: 1500m
+    memory: 2Gi
+
+ingress:
+  enabled: true
+  className: haproxy
+  host: rag.urm8.org
+  tlsSecretName: rag-urm8-org-tls
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    haproxy.org/ssl-redirect: "true"
+    haproxy.org/timeout-server: 300s
+
+database:
+  secretName: lightrag-db
+  host: pgbouncer.persistence.svc.cluster.local
+  port: "5432"
+  name: lightrag
+  user: lightrag
+  maxConnections: "25"
+  vectorIndexType: HNSW
+
+appSecretName: lightrag-app
+
+secrets:
+  create: false
+  llmApiKey: ""
+  embeddingApiKey: ""
+  lightragApiKey: ""
+
+config:
+  host: 0.0.0.0
+  port: "9621"
+  workspace: default
+  maxParallelInsert: "1"
+  maxAsyncLlm: "4"
+  llmTimeout: "900"
+  llm:
+    binding: openai
+    host: https://api.deepseek.com
+    model: deepseek-v4-flash
+    extraBody: '{"thinking":{"type":"disabled"}}'
+    temperature: "0.0"
+  embedding:
+    binding: openai
+    host: https://api.openai.com/v1
+    model: text-embedding-3-small
+    dimension: "1536"
+    tokenLimit: "8192"
+    batchSize: "32"
+    maxAsync: "4"
+  rerank:
+    binding: "null"
+  mcp:
+    enabled: "true"
+    path: /mcp
+    transport: streamable-http
+    apiBaseUrl: http://127.0.0.1:9621
+    jsonResponse: "false"
+    statelessHttp: "false"
+
+probes:
+  startup:
+    failureThreshold: 60
+    periodSeconds: 5
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  liveness:
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+terminationGracePeriodSeconds: 60
