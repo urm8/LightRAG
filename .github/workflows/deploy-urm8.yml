@@ -30,10 +30,8 @@ jobs:
     environment: production
 
     steps:
-      - name: Check out repository and MCP submodule
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Require deployment secrets
         env:
