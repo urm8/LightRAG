@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import platform
+import secrets
 import subprocess
 import sys
 import time
@@ -17,6 +18,8 @@ from typing import Any, Literal, cast
 import attrs
 from fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
+from starlette.datastructures import Headers
+from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -1027,8 +1030,30 @@ class _MCPMountRootEndpoint:
         await self.app(child_scope, receive, send)
 
 
+class _MCPAPIKeyMiddleware:
+    """Require the REST API key before exposing MCP management tools."""
+
+    def __init__(self, app: ASGIApp, api_key: str | None):
+        self.app = app
+        self.api_key = api_key or ""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if self.api_key and scope["type"] == "http":
+            supplied_key = Headers(scope=scope).get("x-api-key", "")
+            if not secrets.compare_digest(supplied_key, self.api_key):
+                response = JSONResponse(
+                    {"detail": "Invalid or missing API key"}, status_code=403
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 def mount_lightrag_mcp_http_app(
-    app: Any, mcp_http_app: ASGIApp, mount_path: str
+    app: Any,
+    mcp_http_app: ASGIApp,
+    mount_path: str,
+    api_key: str | None = None,
 ) -> None:
     """Mount FastMCP at /mcp and /mcp/ without POST slash redirects.
 
@@ -1041,13 +1066,14 @@ def mount_lightrag_mcp_http_app(
     if not normalized_path.startswith("/"):
         normalized_path = f"/{normalized_path}"
 
+    protected_mcp_app = _MCPAPIKeyMiddleware(mcp_http_app, api_key)
     app.router.routes.insert(
         0,
         Route(
             normalized_path,
-            endpoint=_MCPMountRootEndpoint(mcp_http_app, normalized_path),
+            endpoint=_MCPMountRootEndpoint(protected_mcp_app, normalized_path),
             methods=["GET", "POST", "DELETE"],
             include_in_schema=False,
         ),
     )
-    app.mount(normalized_path, mcp_http_app)
+    app.mount(normalized_path, protected_mcp_app)

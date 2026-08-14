@@ -87,6 +87,29 @@ def test_lightrag_mcp_mount_accepts_path_without_redirect():
     assert client.post("/mcp/").status_code == 200
 
 
+def test_lightrag_mcp_mount_requires_configured_api_key():
+    async def child_endpoint(request):
+        return PlainTextResponse("ok")
+
+    host_app = Starlette()
+    mcp_app = Starlette(
+        routes=[Route("/", child_endpoint, methods=["GET", "POST", "DELETE"])]
+    )
+    mount_lightrag_mcp_http_app(host_app, mcp_app, "/mcp", api_key="test-key")
+    client = TestClient(host_app, follow_redirects=False)
+
+    assert client.post("/mcp").status_code == 403
+    assert client.post("/mcp", headers={"X-API-Key": "wrong"}).status_code == 403
+    assert (
+        client.post("/mcp", headers={"X-API-Key": "test-key"}).status_code
+        == 200
+    )
+    assert (
+        client.post("/mcp/", headers={"X-API-Key": "test-key"}).status_code
+        == 200
+    )
+
+
 def test_lightrag_mcp_configures_x_api_key_header():
     class GeneratedClient:
         def __init__(self):

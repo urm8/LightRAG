@@ -29,6 +29,7 @@ Makefile
 /tests
 /scripts
 /data
+/models
 /dickens
 /reproduce
 /output_complete

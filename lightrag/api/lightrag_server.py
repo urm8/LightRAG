@@ -1471,7 +1471,9 @@ def create_app(args):
     app = FastAPI(**app_kwargs)
 
     if mcp_http_app is not None:
-        mount_lightrag_mcp_http_app(app, mcp_http_app, mcp_mount_path)
+        mount_lightrag_mcp_http_app(
+            app, mcp_http_app, mcp_mount_path, api_key=api_key
+        )
         logger.info("Integrated LightRAG MCP mounted at %s", mcp_mount_path)
 
     # Add custom validation error handler for /query/data endpoint
