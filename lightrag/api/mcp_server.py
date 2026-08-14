@@ -6,17 +6,19 @@ import asyncio
 import logging
 import os
 import platform
+import re
 import secrets
+import shutil
 import subprocess
-import sys
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
+from uuid import uuid4
 
-import attrs
-from fastmcp import Context, FastMCP
+from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
@@ -113,43 +115,15 @@ AGENTIC_TOOL_DESCRIPTIONS = {
 }
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
-def _ensure_lightrag_mcp_submodule_importable() -> None:
-    src_path = _repo_root() / "third_party" / "lightrag-mcp" / "src"
-    if not src_path.exists():
-        raise RuntimeError(
-            "LightRAG MCP submodule is missing. Run "
-            "`git submodule update --init --recursive third_party/lightrag-mcp`."
-        )
-    src = str(src_path)
-    if src not in sys.path:
-        sys.path.insert(0, src)
-
-
-def _load_lightrag_client_class() -> type[Any]:
-    _ensure_lightrag_mcp_submodule_importable()
-    from lightrag_mcp.lightrag_client import LightRAGClient
-
-    return LightRAGClient
-
-
 def _to_jsonable(value: Any) -> Any:
-    value_type = type(value)
-    if value_type.__name__ == "Unset" and getattr(value_type, "__module__", "").endswith(
-        ".types"
-    ):
-        return None
     if value is None or isinstance(value, str | int | float | bool):
         return value
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
+    if hasattr(value, "value") and isinstance(value.value, str | int | float | bool):
+        return value.value
     if hasattr(value, "to_dict") and callable(value.to_dict):
         return _to_jsonable(value.to_dict())
-    if attrs.has(type(value)):
-        return _to_jsonable(attrs.asdict(value, recurse=False))
     if isinstance(value, dict):
         normalized: dict[str, Any] = {}
         for key, item in value.items():
@@ -201,44 +175,20 @@ def _summarize_tool_kwargs(kwargs: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
-def _get_lifespan_context(ctx: Context) -> dict[str, Any]:
-    lifespan_context = getattr(ctx, "lifespan_context", None)
-    if isinstance(lifespan_context, dict):
-        return lifespan_context
-    request_context = getattr(ctx, "request_context", None)
-    if request_context is not None:
-        request_lifespan_context = getattr(request_context, "lifespan_context", None)
-        if isinstance(request_lifespan_context, dict):
-            return request_lifespan_context
-    return {}
-
-
 async def _execute_lightrag_operation(
-    ctx: Context,
     operation_name: str,
-    operation_func: Callable[[Any], Awaitable[Any]],
+    operation_func: Callable[[], Awaitable[Any]],
     *,
     tool_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
     try:
-        client = _get_lifespan_context(ctx).get("lightrag_client")
-        if client is None:
-            logger.error(
-                "LightRAG MCP client is not initialized for operation=%s",
-                operation_name,
-            )
-            return _format_response(
-                f"LightRAG MCP client is not initialized for {operation_name}",
-                is_error=True,
-            )
-
         logger.info(
             "Executing LightRAG MCP operation: %s args=%s",
             operation_name,
             _summarize_tool_kwargs(tool_kwargs or {}),
         )
-        result = await operation_func(client)
+        result = await operation_func()
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info(
             "Completed LightRAG MCP operation: %s duration_ms=%.2f response_type=%s result=%s",
@@ -258,18 +208,6 @@ async def _execute_lightrag_operation(
             _summarize_tool_kwargs(tool_kwargs or {}),
         )
         return _format_response(exc, is_error=True)
-
-
-def _default_api_base_url(args: Any) -> str:
-    explicit = os.getenv("LIGHTRAG_MCP_API_BASE_URL", "").strip()
-    if explicit:
-        return explicit
-    port = int(getattr(args, "port", 9621))
-    return f"http://127.0.0.1:{port}"
-
-
-def _default_api_key(api_key: str | None) -> str:
-    return os.getenv("LIGHTRAG_MCP_API_KEY", "").strip() or api_key or ""
 
 
 def _run_command_output(command: list[str], timeout_s: float = 5.0) -> dict[str, Any]:
@@ -368,7 +306,7 @@ def _memory_pressure_snapshot(top_process_limit: int = 8) -> dict[str, Any]:
         "top_processes": top_processes,
     }
 
-    if sys.platform == "darwin":
+    if platform.system() == "Darwin":
         snapshot["macos"] = {
             "memory_pressure_q": _run_command_output(["memory_pressure", "-Q"]),
             "vm_stat": _run_command_output(["vm_stat"]),
@@ -378,53 +316,288 @@ def _memory_pressure_snapshot(top_process_limit: int = 8) -> dict[str, Any]:
     return snapshot
 
 
-def _configure_lightrag_client_auth(client: Any, api_key: str) -> None:
-    """Ensure generated LightRAG API clients send the server's X-API-Key."""
+@dataclass(slots=True)
+class LightRAGMCPRuntime:
+    """Direct in-process adapter between MCP tools and a live LightRAG instance."""
 
-    if not api_key:
-        return
+    rag_provider: Callable[[], Any]
+    doc_manager: Any
+    args: Any
+    background_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
 
-    generated_client = getattr(client, "client", None)
-    if generated_client is None:
-        return
+    @property
+    def rag(self) -> Any:
+        rag = self.rag_provider()
+        if rag is None:
+            raise RuntimeError("LightRAG runtime is not initialized")
+        return rag
 
-    if hasattr(generated_client, "auth_header_name"):
-        generated_client.auth_header_name = "X-API-Key"
-    if hasattr(generated_client, "prefix"):
-        generated_client.prefix = ""
+    def schedule(self, coroutine: Awaitable[Any], *, name: str) -> None:
+        task = asyncio.create_task(coroutine, name=name)
+        self.background_tasks.add(task)
 
-    with_headers = getattr(generated_client, "with_headers", None)
-    if callable(with_headers):
-        client.client = with_headers({"X-API-Key": api_key})
+        def _finished(done: asyncio.Task[Any]) -> None:
+            self.background_tasks.discard(done)
+            if done.cancelled():
+                return
+            error = done.exception()
+            if error is not None:
+                logger.error(
+                    "LightRAG MCP background task failed name=%s error=%s",
+                    done.get_name(),
+                    error,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
 
-    for attr_name in ("_client", "_async_client"):
-        http_client = getattr(client.client, attr_name, None)
-        if http_client is not None:
-            http_client.headers.pop("Authorization", None)
-            http_client.headers["X-API-Key"] = api_key
+        task.add_done_callback(_finished)
+
+    async def close(self) -> None:
+        tasks = tuple(self.background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def query(
+        self,
+        *,
+        query: str,
+        mode: str,
+        top_k: int,
+        only_need_context: bool,
+        only_need_prompt: bool,
+        response_type: str,
+        max_token_for_text_unit: int,
+        max_token_for_global_context: int,
+        max_token_for_local_context: int,
+        hl_keywords: list[str],
+        ll_keywords: list[str],
+        history_turns: int,
+    ) -> dict[str, Any]:
+        from lightrag.base import QueryParam
+
+        normalized_mode = {"semantic": "naive", "keyword": "local"}.get(mode, mode)
+        param = QueryParam(
+            mode=normalized_mode,
+            stream=False,
+            top_k=top_k,
+            chunk_top_k=top_k,
+            only_need_context=only_need_context,
+            only_need_prompt=only_need_prompt,
+            response_type=response_type,
+            max_entity_tokens=max_token_for_local_context,
+            max_relation_tokens=max_token_for_global_context,
+            max_total_tokens=(
+                max_token_for_text_unit
+                + max_token_for_global_context
+                + max_token_for_local_context
+            ),
+            hl_keywords=hl_keywords,
+            ll_keywords=ll_keywords,
+            conversation_history=[],
+            include_references=True,
+        )
+        result = await self.rag.aquery_llm(query, param=param)
+        llm_response = result.get("llm_response", {})
+        data = result.get("data", {})
+        return {
+            "response": llm_response.get("content")
+            or "No relevant context found for the query.",
+            "references": data.get("references", []),
+            "history_turns": history_turns,
+        }
+
+    async def insert_text(self, text: str | list[str]) -> dict[str, Any]:
+        texts = [text] if isinstance(text, str) else list(text)
+        if not texts or any(not item.strip() for item in texts):
+            raise ValueError("text must contain at least one non-empty document")
+        track_id = f"mcp-{uuid4().hex}"
+        file_paths = [f"mcp-memory/{track_id}-{index}.txt" for index in range(len(texts))]
+        self.schedule(
+            self.rag.ainsert(texts, file_paths=file_paths, track_id=track_id),
+            name=f"mcp-insert-{track_id}",
+        )
+        return {
+            "status": "success",
+            "message": "Text accepted for background processing",
+            "track_id": track_id,
+        }
+
+    async def _enqueue_file(self, file_path: Path, track_id: str) -> bool:
+        from lightrag.api.routers.document_routes import pipeline_enqueue_file
+
+        if not file_path.is_file():
+            raise FileNotFoundError(f"File not found: {file_path}")
+        if not self.doc_manager.is_supported_file(file_path.name):
+            raise ValueError(f"Unsupported file type: {file_path.suffix}")
+        success, _ = await pipeline_enqueue_file(self.rag, file_path, track_id)
+        return success
+
+    async def insert_file(self, file_path: str) -> dict[str, Any]:
+        path = Path(file_path).expanduser().resolve()
+        track_id = f"mcp-file-{uuid4().hex}"
+        if not await self._enqueue_file(path, track_id):
+            raise RuntimeError(f"File was not enqueued: {path.name}")
+        self.schedule(
+            self.rag.apipeline_process_enqueue_documents(),
+            name=f"mcp-process-{track_id}",
+        )
+        return {"status": "success", "track_id": track_id, "file_path": str(path)}
+
+    async def upload_file(self, file_path: str) -> dict[str, Any]:
+        source = Path(file_path).expanduser().resolve()
+        if not source.is_file():
+            raise FileNotFoundError(f"File not found: {source}")
+        target = self.doc_manager.input_dir / source.name
+        if target.exists():
+            raise FileExistsError(f"Input file already exists: {target.name}")
+        await asyncio.to_thread(shutil.copy2, source, target)
+        try:
+            return await self.insert_file(str(target))
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+
+    async def insert_batch(
+        self,
+        *,
+        directory_path: str,
+        recursive: bool,
+        depth: int,
+        include_only: list[str],
+        ignore_files: list[str],
+        ignore_directories: list[str],
+    ) -> dict[str, Any]:
+        if include_only and ignore_files:
+            raise ValueError("include_only and ignore_files cannot both be set")
+        root = Path(directory_path).expanduser().resolve()
+        if not root.is_dir():
+            raise FileNotFoundError(f"Directory not found: {root}")
+        include_patterns = [re.compile(pattern) for pattern in include_only]
+        ignore_file_patterns = [re.compile(pattern) for pattern in ignore_files]
+        ignore_dir_patterns = [re.compile(pattern) for pattern in ignore_directories]
+        candidates: list[Path] = []
+        paths = root.rglob("*") if recursive else root.iterdir()
+        for path in paths:
+            if not path.is_file():
+                continue
+            relative_parts = path.relative_to(root).parts
+            if len(relative_parts) > depth + 1:
+                continue
+            if any(
+                pattern.search(part)
+                for part in relative_parts[:-1]
+                for pattern in ignore_dir_patterns
+            ):
+                continue
+            if include_patterns and not any(
+                pattern.search(path.name) for pattern in include_patterns
+            ):
+                continue
+            if any(pattern.search(path.name) for pattern in ignore_file_patterns):
+                continue
+            candidates.append(path)
+
+        track_id = f"mcp-batch-{uuid4().hex}"
+        failures: list[dict[str, str]] = []
+        accepted = 0
+        for path in candidates:
+            try:
+                accepted += int(await self._enqueue_file(path, track_id))
+            except Exception as exc:
+                failures.append({"file_path": str(path), "error": str(exc)})
+        if accepted:
+            self.schedule(
+                self.rag.apipeline_process_enqueue_documents(),
+                name=f"mcp-process-{track_id}",
+            )
+        return {
+            "status": "success" if not failures else "partial_success",
+            "track_id": track_id,
+            "accepted": accepted,
+            "failed": len(failures),
+            "failures": failures,
+        }
+
+    async def scan(self) -> dict[str, Any]:
+        track_id = f"mcp-scan-{uuid4().hex}"
+        accepted = 0
+        for path in self.doc_manager.iter_new_files():
+            accepted += int(await self._enqueue_file(path, track_id))
+        if accepted:
+            self.schedule(
+                self.rag.apipeline_process_enqueue_documents(),
+                name=f"mcp-process-{track_id}",
+            )
+        return {"status": "scanning_started", "track_id": track_id, "accepted": accepted}
+
+    async def documents(self) -> dict[str, Any]:
+        from lightrag.base import DocStatus
+
+        statuses = tuple(DocStatus)
+        rows = await asyncio.gather(
+            *(self.rag.get_docs_by_status(status) for status in statuses)
+        )
+        return {
+            "statuses": {
+                status.value: [
+                    {"id": doc_id, **(_to_jsonable(doc) or {})}
+                    for doc_id, doc in result.items()
+                ]
+                for status, result in zip(statuses, rows, strict=True)
+            }
+        }
+
+    async def pipeline_status(self) -> dict[str, Any]:
+        from lightrag.kg.shared_storage import (
+            _INTERNAL_PIPELINE_STATUS_FIELDS,
+            get_namespace_data,
+        )
+
+        status = (
+            await get_namespace_data("pipeline_status", workspace=self.rag.workspace)
+        ).copy()
+        for field_name in _INTERNAL_PIPELINE_STATUS_FIELDS:
+            status.pop(field_name, None)
+        history = status.get("history_messages")
+        if history is not None and not isinstance(history, list):
+            status["history_messages"] = history[-1000:]
+        return _to_jsonable(status)
+
+    async def health(self) -> dict[str, Any]:
+        status = await self.pipeline_status()
+        return {
+            "status": "healthy",
+            "workspace": self.rag.workspace,
+            "pipeline_busy": bool(status.get("busy", False)),
+            "configuration": {
+                "kv_storage": self.args.kv_storage,
+                "doc_status_storage": self.args.doc_status_storage,
+                "graph_storage": self.args.graph_storage,
+                "vector_storage": self.args.vector_storage,
+                "llm_model": self.args.llm_model,
+                "embedding_model": self.args.embedding_model,
+            },
+        }
 
 
-def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
+def create_lightrag_mcp(
+    rag_provider: Callable[[], Any], doc_manager: Any, args: Any
+) -> FastMCP:
     """Create the curated LightRAG MCP server using current FastMCP APIs."""
 
-    base_url = _default_api_base_url(args)
-    resolved_api_key = _default_api_key(api_key)
+    runtime = LightRAGMCPRuntime(rag_provider, doc_manager, args)
 
     @asynccontextmanager
     async def lifespan(_server: FastMCP):
-        client_class = _load_lightrag_client_class()
-        client = client_class(base_url=base_url, api_key=resolved_api_key)
-        _configure_lightrag_client_auth(client, resolved_api_key)
         logger.info(
-            "Integrated LightRAG MCP server started base_url=%s api_key_configured=%s transport=%s",
-            base_url,
-            bool(resolved_api_key),
+            "Integrated LightRAG MCP server started mode=direct transport=%s",
             os.getenv("LIGHTRAG_MCP_TRANSPORT", "streamable-http"),
         )
         try:
-            yield {"lightrag_client": client}
+            yield {}
         finally:
-            await client.close()
+            await runtime.close()
             logger.info("Integrated LightRAG MCP server stopped")
 
     mcp = FastMCP(
@@ -434,7 +607,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
 
     @mcp.tool(name="query_document", description=AGENTIC_TOOL_DESCRIPTIONS["query_document"])
     async def query_document(
-        ctx: Context,
         query: str = Field(description="Query text"),
         mode: str = Field(
             default="mix",
@@ -478,9 +650,9 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             description="Conversation turns included in response context",
         ),
     ) -> dict[str, Any]:
-        async def _operation(client: Any) -> Any:
-            return await client.query(
-                query_text=query,
+        async def _operation() -> Any:
+            return await runtime.query(
+                query=query,
                 mode=mode,
                 top_k=top_k,
                 only_need_context=only_need_context,
@@ -495,7 +667,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             )
 
         return await _execute_lightrag_operation(
-            ctx,
             "query_document",
             _operation,
             tool_kwargs={
@@ -516,14 +687,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         description=AGENTIC_TOOL_DESCRIPTIONS["insert_document"],
     )
     async def insert_document(
-        ctx: Context,
         text: str | list[str] = Field(description="Text or list of texts to insert"),
     ) -> dict[str, Any]:
-        async def _operation(client: Any) -> Any:
-            return await client.insert_text(text=text)
+        async def _operation() -> Any:
+            return await runtime.insert_text(text)
 
         return await _execute_lightrag_operation(
-            ctx,
             "insert_document",
             _operation,
             tool_kwargs={"text": text},
@@ -534,14 +703,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         description=AGENTIC_TOOL_DESCRIPTIONS["upload_document"],
     )
     async def upload_document(
-        ctx: Context,
         file_path: str = Field(description="Local path to the file to upload"),
     ) -> dict[str, Any]:
-        async def _operation(client: Any) -> Any:
-            return await client.upload_document(file_path=file_path)
+        async def _operation() -> Any:
+            return await runtime.upload_file(file_path)
 
         return await _execute_lightrag_operation(
-            ctx,
             "upload_document",
             _operation,
             tool_kwargs={"file_path": file_path},
@@ -549,14 +716,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
 
     @mcp.tool(name="insert_file", description=AGENTIC_TOOL_DESCRIPTIONS["insert_file"])
     async def insert_file(
-        ctx: Context,
         file_path: str = Field(description="Local path to the file to insert"),
     ) -> dict[str, Any]:
-        async def _operation(client: Any) -> Any:
-            return await client.insert_file(file_path=file_path)
+        async def _operation() -> Any:
+            return await runtime.insert_file(file_path)
 
         return await _execute_lightrag_operation(
-            ctx,
             "insert_file",
             _operation,
             tool_kwargs={"file_path": file_path},
@@ -564,7 +729,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
 
     @mcp.tool(name="insert_batch", description=AGENTIC_TOOL_DESCRIPTIONS["insert_batch"])
     async def insert_batch(
-        ctx: Context,
         directory_path: str = Field(description="Directory containing files to insert"),
         recursive: bool = Field(default=False, description="Walk subdirectories"),
         depth: int = Field(default=1, description="Maximum recursion depth"),
@@ -581,8 +745,8 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             description="Regular expressions for directory names to skip",
         ),
     ) -> dict[str, Any]:
-        async def _operation(client: Any) -> Any:
-            return await client.insert_batch(
+        async def _operation() -> Any:
+            return await runtime.insert_batch(
                 directory_path=directory_path,
                 recursive=recursive,
                 depth=depth,
@@ -592,7 +756,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             )
 
         return await _execute_lightrag_operation(
-            ctx,
             "insert_batch",
             _operation,
             tool_kwargs={
@@ -609,53 +772,53 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         name="scan_for_new_documents",
         description=AGENTIC_TOOL_DESCRIPTIONS["scan_for_new_documents"],
     )
-    async def scan_for_new_documents(ctx: Context) -> dict[str, Any]:
-        async def _operation(client: Any) -> Any:
-            return await client.scan_for_new_documents()
+    async def scan_for_new_documents() -> dict[str, Any]:
+        async def _operation() -> Any:
+            return await runtime.scan()
 
         return await _execute_lightrag_operation(
-            ctx, "scan_for_new_documents", _operation
+            "scan_for_new_documents", _operation
         )
 
     @mcp.tool(name="get_documents", description=AGENTIC_TOOL_DESCRIPTIONS["get_documents"])
-    async def get_documents(ctx: Context) -> dict[str, Any]:
-        async def _operation(client: Any) -> Any:
-            return await client.get_documents()
+    async def get_documents() -> dict[str, Any]:
+        async def _operation() -> Any:
+            return await runtime.documents()
 
-        return await _execute_lightrag_operation(ctx, "get_documents", _operation)
+        return await _execute_lightrag_operation("get_documents", _operation)
 
     @mcp.tool(
         name="get_pipeline_status",
         description=AGENTIC_TOOL_DESCRIPTIONS["get_pipeline_status"],
     )
-    async def get_pipeline_status(ctx: Context) -> dict[str, Any]:
-        async def _operation(client: Any) -> Any:
-            return await client.get_pipeline_status()
+    async def get_pipeline_status() -> dict[str, Any]:
+        async def _operation() -> Any:
+            return await runtime.pipeline_status()
 
         return await _execute_lightrag_operation(
-            ctx, "get_pipeline_status", _operation
+            "get_pipeline_status", _operation
         )
 
     @mcp.tool(
         name="get_graph_labels",
         description=AGENTIC_TOOL_DESCRIPTIONS["get_graph_labels"],
     )
-    async def get_graph_labels(ctx: Context) -> dict[str, Any]:
-        async def _operation(client: Any) -> Any:
-            return await client.get_graph_labels()
+    async def get_graph_labels() -> dict[str, Any]:
+        async def _operation() -> Any:
+            return await runtime.rag.get_graph_labels()
 
-        return await _execute_lightrag_operation(ctx, "get_graph_labels", _operation)
+        return await _execute_lightrag_operation("get_graph_labels", _operation)
 
     @mcp.tool(
         name="check_lightrag_health",
         description=AGENTIC_TOOL_DESCRIPTIONS["check_lightrag_health"],
     )
-    async def check_lightrag_health(ctx: Context) -> dict[str, Any]:
-        async def _operation(client: Any) -> Any:
-            return await client.get_health()
+    async def check_lightrag_health() -> dict[str, Any]:
+        async def _operation() -> Any:
+            return await runtime.health()
 
         return await _execute_lightrag_operation(
-            ctx, "check_lightrag_health", _operation
+            "check_lightrag_health", _operation
         )
 
     @mcp.tool(
@@ -672,7 +835,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
 
     @mcp.tool(name="merge_entities", description=AGENTIC_TOOL_DESCRIPTIONS["merge_entities"])
     async def merge_entities(
-        ctx: Context,
         source_entities: list[str] = Field(description="Entity names to merge"),
         target_entity: str = Field(description="Target entity name"),
         merge_strategy: dict[str, str] = Field(
@@ -680,15 +842,15 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             description="Property merge strategy by field name",
         ),
     ) -> dict[str, Any]:
-        async def _operation(client: Any) -> Any:
-            return await client.merge_entities(
-                source_entities=source_entities,
-                target_entity=target_entity,
-                merge_strategy=merge_strategy,
+        async def _operation() -> Any:
+            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+
+            await check_pipeline_busy_or_raise(runtime.rag)
+            return await runtime.rag.amerge_entities(
+                source_entities, target_entity, merge_strategy
             )
 
         return await _execute_lightrag_operation(
-            ctx,
             "merge_entities",
             _operation,
             tool_kwargs={
@@ -703,12 +865,11 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         description=AGENTIC_TOOL_DESCRIPTIONS["create_entities"],
     )
     async def create_entities(
-        ctx: Context,
         entities: list[dict[str, Any]] = Field(
             description="Entities with entity_name, entity_type, description, source_id"
         ),
     ) -> dict[str, Any]:
-        async def _create_entity(client: Any, data: dict[str, Any]) -> dict[str, Any]:
+        async def _create_entity(data: dict[str, Any]) -> dict[str, Any]:
             entity_name = data.get("entity_name")
             entity_type = data.get("entity_type")
             description = data.get("description")
@@ -720,11 +881,13 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                     "error": "Missing required fields",
                 }
             try:
-                result = await client.create_entity(
-                    entity_name=str(entity_name),
-                    entity_type=str(entity_type),
-                    description=str(description),
-                    source_id=str(source_id),
+                result = await runtime.rag.acreate_entity(
+                    str(entity_name),
+                    {
+                        "entity_type": str(entity_type),
+                        "description": str(description),
+                        "source_id": str(source_id),
+                    },
                 )
                 return {
                     "entity_name": str(entity_name),
@@ -738,9 +901,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                     "error": str(exc),
                 }
 
-        async def _operation(client: Any) -> Any:
+        async def _operation() -> Any:
+            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+
+            await check_pipeline_busy_or_raise(runtime.rag)
             results = await asyncio.gather(
-                *(_create_entity(client, entity) for entity in entities)
+                *(_create_entity(entity) for entity in entities)
             )
             return {
                 "total": len(entities),
@@ -750,7 +916,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             }
 
         return await _execute_lightrag_operation(
-            ctx,
             "create_entities",
             _operation,
             tool_kwargs={"entities": entities},
@@ -761,12 +926,11 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         description=AGENTIC_TOOL_DESCRIPTIONS["delete_by_entities"],
     )
     async def delete_by_entities(
-        ctx: Context,
         entity_names: list[str] = Field(description="Entity names to delete"),
     ) -> dict[str, Any]:
-        async def _delete_entity(client: Any, entity_name: str) -> dict[str, Any]:
+        async def _delete_entity(entity_name: str) -> dict[str, Any]:
             try:
-                result = await client.delete_by_entity(entity_name=entity_name)
+                result = await runtime.rag.adelete_by_entity(entity_name)
                 return {
                     "entity_name": entity_name,
                     "status": "success",
@@ -775,9 +939,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             except Exception as exc:
                 return {"entity_name": entity_name, "status": "error", "error": str(exc)}
 
-        async def _operation(client: Any) -> Any:
+        async def _operation() -> Any:
+            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+
+            await check_pipeline_busy_or_raise(runtime.rag)
             results = await asyncio.gather(
-                *(_delete_entity(client, entity_name) for entity_name in entity_names)
+                *(_delete_entity(entity_name) for entity_name in entity_names)
             )
             return {
                 "total": len(entity_names),
@@ -787,7 +954,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             }
 
         return await _execute_lightrag_operation(
-            ctx,
             "delete_by_entities",
             _operation,
             tool_kwargs={"entity_names": entity_names},
@@ -798,19 +964,18 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         description=AGENTIC_TOOL_DESCRIPTIONS["delete_by_doc_ids"],
     )
     async def delete_by_doc_ids(
-        ctx: Context,
         doc_ids: list[str] = Field(description="Document IDs to delete"),
     ) -> dict[str, Any]:
-        async def _delete_by_doc_id(client: Any, doc_id: str) -> dict[str, Any]:
+        async def _delete_by_doc_id(doc_id: str) -> dict[str, Any]:
             try:
-                result = await client.delete_by_doc_id(doc_id=doc_id)
+                result = await runtime.rag.adelete_by_doc_id(doc_id)
                 return {"doc_id": doc_id, "status": "success", "result": _to_jsonable(result)}
             except Exception as exc:
                 return {"doc_id": doc_id, "status": "error", "error": str(exc)}
 
-        async def _operation(client: Any) -> Any:
+        async def _operation() -> Any:
             results = await asyncio.gather(
-                *(_delete_by_doc_id(client, doc_id) for doc_id in doc_ids)
+                *(_delete_by_doc_id(doc_id) for doc_id in doc_ids)
             )
             return {
                 "total": len(doc_ids),
@@ -820,7 +985,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             }
 
         return await _execute_lightrag_operation(
-            ctx,
             "delete_by_doc_ids",
             _operation,
             tool_kwargs={"doc_ids": doc_ids},
@@ -828,12 +992,11 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
 
     @mcp.tool(name="edit_entities", description=AGENTIC_TOOL_DESCRIPTIONS["edit_entities"])
     async def edit_entities(
-        ctx: Context,
         entities: list[dict[str, Any]] = Field(
             description="Entities with entity_name, entity_type, description, source_id"
         ),
     ) -> dict[str, Any]:
-        async def _edit_entity(client: Any, data: dict[str, Any]) -> dict[str, Any]:
+        async def _edit_entity(data: dict[str, Any]) -> dict[str, Any]:
             entity_name = data.get("entity_name")
             entity_type = data.get("entity_type")
             description = data.get("description")
@@ -845,11 +1008,14 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                     "error": "Missing required fields",
                 }
             try:
-                result = await client.edit_entity(
-                    entity_name=str(entity_name),
-                    entity_type=str(entity_type),
-                    description=str(description),
-                    source_id=str(source_id),
+                result = await runtime.rag.aedit_entity(
+                    str(entity_name),
+                    {
+                        "entity_type": str(entity_type),
+                        "description": str(description),
+                        "source_id": str(source_id),
+                    },
+                    allow_rename=False,
                 )
                 return {
                     "entity_name": str(entity_name),
@@ -863,9 +1029,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                     "error": str(exc),
                 }
 
-        async def _operation(client: Any) -> Any:
+        async def _operation() -> Any:
+            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+
+            await check_pipeline_busy_or_raise(runtime.rag)
             results = await asyncio.gather(
-                *(_edit_entity(client, entity) for entity in entities)
+                *(_edit_entity(entity) for entity in entities)
             )
             return {
                 "total": len(entities),
@@ -875,7 +1044,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             }
 
         return await _execute_lightrag_operation(
-            ctx,
             "edit_entities",
             _operation,
             tool_kwargs={"entities": entities},
@@ -886,12 +1054,11 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
         description=AGENTIC_TOOL_DESCRIPTIONS["create_relations"],
     )
     async def create_relations(
-        ctx: Context,
         relations: list[dict[str, Any]] = Field(
             description="Relations with source, target, description, keywords, optional source_id and weight"
         ),
     ) -> dict[str, Any]:
-        async def _create_relation(client: Any, data: dict[str, Any]) -> dict[str, Any]:
+        async def _create_relation(data: dict[str, Any]) -> dict[str, Any]:
             source = data.get("source")
             target = data.get("target")
             description = data.get("description")
@@ -906,13 +1073,16 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                     "error": "Missing required fields",
                 }
             try:
-                result = await client.create_relation(
-                    source=str(source),
-                    target=str(target),
-                    description=str(description),
-                    keywords=str(keywords),
-                    source_id=str(source_id) if source_id else None,
-                    weight=float(weight) if weight is not None else None,
+                relation_data: dict[str, Any] = {
+                    "description": str(description),
+                    "keywords": str(keywords),
+                }
+                if source_id:
+                    relation_data["source_id"] = str(source_id)
+                if weight is not None:
+                    relation_data["weight"] = float(weight)
+                result = await runtime.rag.acreate_relation(
+                    str(source), str(target), relation_data
                 )
                 return {
                     "relation": label,
@@ -922,9 +1092,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             except Exception as exc:
                 return {"relation": label, "status": "error", "error": str(exc)}
 
-        async def _operation(client: Any) -> Any:
+        async def _operation() -> Any:
+            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+
+            await check_pipeline_busy_or_raise(runtime.rag)
             results = await asyncio.gather(
-                *(_create_relation(client, relation) for relation in relations)
+                *(_create_relation(relation) for relation in relations)
             )
             return {
                 "total": len(relations),
@@ -934,7 +1107,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             }
 
         return await _execute_lightrag_operation(
-            ctx,
             "create_relations",
             _operation,
             tool_kwargs={"relations": relations},
@@ -942,12 +1114,11 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
 
     @mcp.tool(name="edit_relations", description=AGENTIC_TOOL_DESCRIPTIONS["edit_relations"])
     async def edit_relations(
-        ctx: Context,
         relations: list[dict[str, Any]] = Field(
             description="Relations with source, target, description, keywords, relation_type, optional source_id and weight"
         ),
     ) -> dict[str, Any]:
-        async def _edit_relation(client: Any, data: dict[str, Any]) -> dict[str, Any]:
+        async def _edit_relation(data: dict[str, Any]) -> dict[str, Any]:
             source = data.get("source")
             target = data.get("target")
             description = data.get("description")
@@ -963,14 +1134,17 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
                     "error": "Missing required fields",
                 }
             try:
-                result = await client.edit_relation(
-                    source=str(source),
-                    target=str(target),
-                    description=str(description),
-                    keywords=str(keywords),
-                    relation_type=str(relation_type),
-                    source_id=str(source_id) if source_id else None,
-                    weight=float(weight) if weight is not None else None,
+                updated_data: dict[str, Any] = {
+                    "description": str(description),
+                    "keywords": str(keywords),
+                    "relation_type": str(relation_type),
+                }
+                if source_id:
+                    updated_data["source_id"] = str(source_id)
+                if weight is not None:
+                    updated_data["weight"] = float(weight)
+                result = await runtime.rag.aedit_relation(
+                    str(source), str(target), updated_data
                 )
                 return {
                     "relation": label,
@@ -980,9 +1154,12 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             except Exception as exc:
                 return {"relation": label, "status": "error", "error": str(exc)}
 
-        async def _operation(client: Any) -> Any:
+        async def _operation() -> Any:
+            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+
+            await check_pipeline_busy_or_raise(runtime.rag)
             results = await asyncio.gather(
-                *(_edit_relation(client, relation) for relation in relations)
+                *(_edit_relation(relation) for relation in relations)
             )
             return {
                 "total": len(relations),
@@ -992,7 +1169,6 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
             }
 
         return await _execute_lightrag_operation(
-            ctx,
             "edit_relations",
             _operation,
             tool_kwargs={"relations": relations},
@@ -1001,8 +1177,10 @@ def create_lightrag_mcp(args: Any, api_key: str | None) -> FastMCP:
     return mcp
 
 
-def create_lightrag_mcp_http_app(args: Any, api_key: str | None) -> Any:
-    mcp = create_lightrag_mcp(args=args, api_key=api_key)
+def create_lightrag_mcp_http_app(
+    rag_provider: Callable[[], Any], doc_manager: Any, args: Any
+) -> Any:
+    mcp = create_lightrag_mcp(rag_provider, doc_manager, args)
     return mcp.http_app(
         path="/",
         transport=cast(

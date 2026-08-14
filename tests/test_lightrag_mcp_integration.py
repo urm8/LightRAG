@@ -1,16 +1,14 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from lightrag.api.mcp_server import (
     AGENTIC_TOOL_DESCRIPTIONS,
-    _to_jsonable,
+    LightRAGMCPRuntime,
     create_lightrag_mcp,
     create_lightrag_mcp_http_app,
     mount_lightrag_mcp_http_app,
-    _configure_lightrag_client_auth,
-    _get_lifespan_context,
-    _ensure_lightrag_mcp_submodule_importable,
 )
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
@@ -40,9 +38,28 @@ EXPECTED_TOOL_NAMES = {
 }
 
 
+def _args():
+    return SimpleNamespace(
+        kv_storage="JsonKVStorage",
+        doc_status_storage="JsonDocStatusStorage",
+        graph_storage="NetworkXStorage",
+        vector_storage="NanoVectorDBStorage",
+        llm_model="test-llm",
+        embedding_model="test-embedding",
+    )
+
+
+def _mcp():
+    return create_lightrag_mcp(
+        rag_provider=lambda: SimpleNamespace(),
+        doc_manager=SimpleNamespace(),
+        args=_args(),
+    )
+
+
 @pytest.mark.asyncio
-async def test_integrated_lightrag_mcp_exposes_sidecar_tool_names():
-    mcp = create_lightrag_mcp(SimpleNamespace(port=9621), api_key="test-key")
+async def test_integrated_lightrag_mcp_exposes_expected_tool_names():
+    mcp = _mcp()
 
     tools = await mcp.get_tools()
     tool_names = set(tools)
@@ -52,7 +69,7 @@ async def test_integrated_lightrag_mcp_exposes_sidecar_tool_names():
 
 @pytest.mark.asyncio
 async def test_integrated_lightrag_mcp_tool_descriptions_are_agentic():
-    mcp = create_lightrag_mcp(SimpleNamespace(port=9621), api_key="test-key")
+    mcp = _mcp()
 
     tools = await mcp.get_tools()
 
@@ -65,7 +82,11 @@ async def test_integrated_lightrag_mcp_tool_descriptions_are_agentic():
 
 
 def test_lightrag_mcp_http_app_mounts_at_root_for_fastapi_prefix():
-    mcp_app = create_lightrag_mcp_http_app(SimpleNamespace(port=9621), api_key="test-key")
+    mcp_app = create_lightrag_mcp_http_app(
+        rag_provider=lambda: SimpleNamespace(),
+        doc_manager=SimpleNamespace(),
+        args=_args(),
+    )
 
     assert hasattr(mcp_app, "lifespan")
     assert any(getattr(route, "path", None) == "/" for route in mcp_app.routes)
@@ -110,103 +131,51 @@ def test_lightrag_mcp_mount_requires_configured_api_key():
     )
 
 
-def test_lightrag_mcp_configures_x_api_key_header():
-    class GeneratedClient:
-        def __init__(self):
-            self.headers = {}
-            self.auth_header_name = "Authorization"
-            self.prefix = "Bearer"
+@pytest.mark.asyncio
+async def test_runtime_query_calls_live_lightrag_directly():
+    class Rag:
+        async def aquery_llm(self, query, param):
+            assert query == "Project: LightRAG. Test query"
+            assert param.mode == "mix"
+            assert param.max_total_tokens == 3000
+            return {
+                "llm_response": {"content": "direct response"},
+                "data": {"references": [{"reference_id": "1", "file_path": "a.md"}]},
+            }
 
-        def with_headers(self, headers):
-            self.headers.update(headers)
-            return self
+    runtime = LightRAGMCPRuntime(lambda: Rag(), SimpleNamespace(), _args())
 
-    class Client:
-        def __init__(self):
-            self.client = GeneratedClient()
-
-    client = Client()
-
-    _configure_lightrag_client_auth(client, "secret-key")
-
-    assert client.client.headers == {"X-API-Key": "secret-key"}
-    assert client.client.auth_header_name == "X-API-Key"
-    assert client.client.prefix == ""
-
-
-def test_lightrag_mcp_context_accessor_supports_fastmcp_2_request_context():
-    class RequestContext:
-        lifespan_context = {"lightrag_client": object()}
-
-    class Context:
-        request_context = RequestContext()
-
-    assert "lightrag_client" in _get_lifespan_context(Context())
-
-
-def test_to_jsonable_strips_generated_client_unset_values():
-    _ensure_lightrag_mcp_submodule_importable()
-    from lightrag_mcp.client.light_rag_server_api_client.models.doc_status import (
-        DocStatus,
+    result = await runtime.query(
+        query="Project: LightRAG. Test query",
+        mode="mix",
+        top_k=10,
+        only_need_context=False,
+        only_need_prompt=False,
+        response_type="Multiple Paragraphs",
+        max_token_for_text_unit=1000,
+        max_token_for_global_context=1000,
+        max_token_for_local_context=1000,
+        hl_keywords=[],
+        ll_keywords=[],
+        history_turns=0,
     )
-    from lightrag_mcp.client.light_rag_server_api_client.models.doc_status_response import (
-        DocStatusResponse,
-    )
-    from lightrag_mcp.client.light_rag_server_api_client.models.docs_statuses_response import (
-        DocsStatusesResponse,
-    )
-    from lightrag_mcp.client.light_rag_server_api_client.models.docs_statuses_response_statuses import (
-        DocsStatusesResponseStatuses,
-    )
-    from lightrag_mcp.client.light_rag_server_api_client.types import UNSET
 
-    doc = DocStatusResponse(
-        id="doc-1",
-        content_summary="summary",
-        content_length=7,
-        status=DocStatus.PROCESSED,
-        created_at="2026-06-05T00:00:00Z",
-        updated_at="2026-06-05T00:00:00Z",
-        file_path="note.txt",
-        chunks_count=UNSET,
-        error=UNSET,
-        metadata=UNSET,
-    )
-    statuses = DocsStatusesResponseStatuses()
-    statuses.additional_properties = {"processed": [doc]}
-    response = DocsStatusesResponse(statuses=statuses)
-
-    assert _to_jsonable(response) == {
-        "statuses": {
-            "processed": [
-                {
-                    "id": "doc-1",
-                    "content_summary": "summary",
-                    "content_length": 7,
-                    "status": "processed",
-                    "created_at": "2026-06-05T00:00:00Z",
-                    "updated_at": "2026-06-05T00:00:00Z",
-                    "file_path": "note.txt",
-                }
-            ]
-        }
-    }
+    assert result["response"] == "direct response"
+    assert result["references"][0]["file_path"] == "a.md"
 
 
 @pytest.mark.asyncio
-async def test_lightrag_client_query_uses_base_model_request(monkeypatch):
-    _ensure_lightrag_mcp_submodule_importable()
-    from lightrag_mcp.lightrag_client import LightRAGClient
+async def test_runtime_insert_schedules_live_lightrag_ingestion():
+    inserted = []
 
-    client = LightRAGClient(base_url="http://127.0.0.1:9621", api_key="test-key")
-    captured = {}
+    class Rag:
+        async def ainsert(self, texts, *, file_paths, track_id):
+            inserted.append((texts, file_paths, track_id))
 
-    async def fake_call_api(**kwargs):
-        captured["body"] = kwargs["body"]
-        return None
+    runtime = LightRAGMCPRuntime(lambda: Rag(), SimpleNamespace(), _args())
+    result = await runtime.insert_text("Project: LightRAG. Durable finding.")
+    await asyncio.gather(*runtime.background_tasks)
 
-    monkeypatch.setattr(client, "_call_api", fake_call_api)
-
-    await client.query("Project: LightRAG. Test query")
-
-    assert "query_model" not in captured["body"].additional_properties
+    assert result["status"] == "success"
+    assert inserted[0][0] == ["Project: LightRAG. Durable finding."]
+    assert inserted[0][2] == result["track_id"]

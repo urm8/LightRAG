@@ -8,7 +8,7 @@ This FAQ documents the local LightRAG API service, the LightRAG MCP bridge, and 
 - LightRAG MCP stdio: optional legacy wrapper, started on demand by Codex or VS Code
 - LightRAG MCP HTTP: `http://127.0.0.1:9621/mcp`
 - LightRAG repo: `/Users/max/projs/github.com/HKUDS/LightRAG`
-- MCP submodule: `/Users/max/projs/github.com/HKUDS/LightRAG/third_party/lightrag-mcp`
+- MCP implementation: `/Users/max/projs/github.com/HKUDS/LightRAG/lightrag/api/mcp_server.py`
 - Local config: `/Users/max/projs/github.com/HKUDS/LightRAG/.env`
 - Local data: `/Users/max/projs/github.com/HKUDS/LightRAG/inputs` and `/Users/max/projs/github.com/HKUDS/LightRAG/rag_storage`
 - Local MCP wrappers: `/Users/max/projs/github.com/HKUDS/LightRAG/data/bin/lightrag-mcp-stdio` and `/Users/max/projs/github.com/HKUDS/LightRAG/data/bin/lightrag-mcp-http` are legacy sidecar helpers.
@@ -26,7 +26,7 @@ This FAQ documents the local LightRAG API service, the LightRAG MCP bridge, and 
 - PostgreSQL extensions are `vector` for pgvector and Apache AGE `age` for graph storage.
 - Processing concurrency uses `MAX_ASYNC=4` and `MAX_PARALLEL_INSERT=2`. The VS Code bridge throttles above four active requests with `429 throttled (active=4, max=4)`, so keep LightRAG LLM concurrency at or below four for this endpoint.
 - Entity extraction includes coding-project metadata types such as `Workspace`, `Project`, `Repository`, `Directory`, `File`, `ProgrammingLanguage`, `TechnologyStack`, `Service`, `Deployment`, `Environment`, `Configuration`, `Command`, `APIEndpoint`, `Database`, and `StorageBackend`.
-- MCP HTTP is mounted inside the main LightRAG service at `http://127.0.0.1:9621/mcp`.
+- MCP HTTP is mounted inside the main LightRAG service at `http://127.0.0.1:9621/mcp` and calls the live `LightRAG` runtime directly; it has no sidecar or generated REST-client dependency.
 
 ## How do I start LightRAG?
 

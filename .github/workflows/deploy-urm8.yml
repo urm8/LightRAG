@@ -148,7 +148,7 @@ jobs:
             -f "$PRIVATE_VALUES" \
             --set-string image.repository="$IMAGE" \
             --set-string image.tag="${{ steps.meta.outputs.image_tag }}" \
-            --force-conflicts --wait --timeout 10m
+            --wait --timeout 10m
 
       - name: Verify deployment
         run: |

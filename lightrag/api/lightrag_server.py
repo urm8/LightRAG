@@ -1428,7 +1428,14 @@ def create_app(args):
             mount_lightrag_mcp_http_app,
         )
 
-        mcp_http_app = create_lightrag_mcp_http_app(args=args, api_key=api_key)
+        # The provider closes over ``rag``, which is constructed below before the
+        # application lifespan starts. MCP tools therefore call the live runtime
+        # directly without a loopback HTTP client.
+        mcp_http_app = create_lightrag_mcp_http_app(
+            rag_provider=lambda: rag,
+            doc_manager=doc_manager,
+            args=args,
+        )
 
         @asynccontextmanager
         async def app_lifespan(app: FastAPI):

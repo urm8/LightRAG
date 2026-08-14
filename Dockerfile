@@ -102,11 +102,6 @@ RUN --mount=type=cache,target=/root/.local/share/uv \
     && /app/.venv/bin/python -m pip install --no-index --no-cache-dir \
         --find-links=/tmp/spacy_models zh_core_web_sm en_core_web_sm
 
-# The integrated MCP server imports its generated API client from the vendored
-# submodule at runtime. Keep this copy after dependency sync so MCP-only changes
-# do not invalidate the large Python dependency layer.
-COPY third_party/lightrag-mcp/src ./third_party/lightrag-mcp/src
-
 # Create persistent data directories AFTER package installation
 RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/prompts /app/data/tiktoken
 
