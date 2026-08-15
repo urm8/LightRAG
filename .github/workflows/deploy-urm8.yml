@@ -123,11 +123,18 @@ jobs:
 
       - name: Validate Helm chart
         run: |
+          rendered="$(mktemp)"
+          trap 'rm -f "$rendered"' EXIT
           helm lint ./helm -f "$PRIVATE_VALUES"
           helm template "$RELEASE" ./helm -n "$NAMESPACE" \
             -f "$PRIVATE_VALUES" \
             --set-string image.repository="$IMAGE" \
-            --set-string image.tag="${{ steps.meta.outputs.image_tag }}" >/dev/null
+            --set-string image.tag="${{ steps.meta.outputs.image_tag }}" >"$rendered"
+          grep -q 'value: postgresql.persistence.svc.cluster.local' "$rendered"
+          if grep -q 'value: pgbouncer.persistence.svc.cluster.local' "$rendered"; then
+            echo "LightRAG must connect directly to PostgreSQL, not PgBouncer" >&2
+            exit 1
+          fi
 
       - name: Clear stuck Helm operation
         run: |

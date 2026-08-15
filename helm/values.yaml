@@ -40,7 +40,7 @@ ingress:
 
 database:
   secretName: lightrag-db
-  host: pgbouncer.persistence.svc.cluster.local
+  host: postgresql.persistence.svc.cluster.local
   port: "5432"
   name: lightrag
   user: lightrag
