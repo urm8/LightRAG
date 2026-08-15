@@ -196,7 +196,7 @@ async def test_isolated_node_survives_end_to_end():
     with patch.object(storage, "_query", side_effect=capture.as_side_effect()):
         kg = await storage.get_knowledge_graph("*", max_nodes=50)
 
-    assert capture.subgraph_params == {"node_ids": [1, 2]}
+    assert capture.subgraph_params == {"node_ids": ["1", "2"]}
     # ...and present in the returned graph.
     assert {node.id for node in kg.nodes} == {"1", "2"}
     assert kg.is_truncated is False
@@ -226,8 +226,11 @@ async def test_subgraph_read_stays_directed_and_dedupes_edges():
     with patch.object(storage, "_query", side_effect=capture.as_side_effect()):
         kg = await storage.get_knowledge_graph("*", max_nodes=50)
 
-    assert 'LEFT JOIN test_graph."DIRECTED"' in capture.subgraph_sql
-    assert "ANY($1::bigint[])" in capture.subgraph_sql
+    assert "FROM test_graph._ag_label_vertex" in capture.subgraph_sql
+    assert "LEFT JOIN test_graph._ag_label_edge" in capture.subgraph_sql
+    assert "e.end_id::text" in capture.subgraph_sql
+    assert "v.id::text" in capture.subgraph_sql
+    assert "ANY($1::text[])" in capture.subgraph_sql
     assert "cypher(" not in capture.subgraph_sql
     assert "node_ids" not in capture.subgraph_sql
     assert len(kg.edges) == 1

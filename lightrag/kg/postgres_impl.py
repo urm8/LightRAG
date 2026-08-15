@@ -8595,7 +8595,8 @@ class PGGraphStorage(BaseGraphStorage):
         if node_label == "*":
             # First check total node count to determine if graph should be truncated
             count_query = (
-                f"SELECT COUNT(*) AS total_nodes FROM {self.graph_name}.base"
+                f"SELECT COUNT(*) AS total_nodes "
+                f"FROM {self.graph_name}._ag_label_vertex"
             )
 
             count_result = await self._query(count_query)
@@ -8638,37 +8639,37 @@ class PGGraphStorage(BaseGraphStorage):
                     GROUP BY node_id
                 )
                 SELECT v.id AS node_id, COALESCE(d.degree, 0) AS degree
-                FROM {self.graph_name}.base v
+                FROM {self.graph_name}._ag_label_vertex v
                 LEFT JOIN node_degrees d ON d.node_id = v.id
                 ORDER BY degree DESC, v.id ASC
                 LIMIT $1"""
             node_results = await self._query(query_nodes, params={"limit": max_nodes})
 
-            node_ids = [int(result["node_id"]) for result in node_results]
+            node_ids = [str(result["node_id"]) for result in node_results]
 
             logger.info(
                 f"[{self.workspace}] Total nodes: {total_nodes}, Selected nodes: {len(node_ids)}"
             )
 
             if node_ids:
-                # Read AGE's backing tables directly. AGE 1.8 can segfault the
+                # Read AGE's canonical backing tables directly. AGE 1.8 can segfault the
                 # PostgreSQL backend on the equivalent Cypher pattern using a
                 # list variable with two ``id(...) IN node_ids`` predicates.
-                # The native join also avoids constructing an interpolated ID
-                # list and preserves isolated selected vertices.
+                # Reading the parent label tables also avoids custom ``graphid``
+                # parameter operators and preserves isolated selected vertices.
                 query = f"""
                     SELECT
-                        v.id AS node_id,
+                        v.id::text AS node_id,
                         v.properties AS node_properties,
-                        e.id AS edge_id,
-                        e.start_id,
-                        e.end_id,
+                        e.id::text AS edge_id,
+                        e.start_id::text AS start_id,
+                        e.end_id::text AS end_id,
                         e.properties AS edge_properties
-                    FROM {self.graph_name}.base AS v
-                    LEFT JOIN {self.graph_name}."DIRECTED" AS e
+                    FROM {self.graph_name}._ag_label_vertex AS v
+                    LEFT JOIN {self.graph_name}._ag_label_edge AS e
                       ON e.start_id = v.id
-                     AND e.end_id = ANY($1::bigint[])
-                    WHERE v.id = ANY($1::bigint[])
+                     AND e.end_id::text = ANY($1::text[])
+                    WHERE v.id::text = ANY($1::text[])
                     ORDER BY v.id, e.id
                 """
                 results = await self._query(query, params={"node_ids": node_ids})
