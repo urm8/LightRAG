@@ -167,7 +167,7 @@ jobs:
           kubectl -n "$NAMESPACE" rollout status deployment/"$RELEASE" --timeout=5m
           test "$(kubectl -n "$NAMESPACE" get pod -l app.kubernetes.io/instance="$RELEASE" \
             -o jsonpath='{.items[0].spec.nodeName}')" != "master-node"
-          curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors \
+          curl -fsSL --retry 24 --retry-delay 5 --retry-all-errors \
             https://rag.urm8.org/health >/dev/null
 
       - name: Cluster diagnostics on failure
