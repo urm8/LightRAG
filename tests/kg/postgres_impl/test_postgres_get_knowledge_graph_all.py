@@ -49,12 +49,13 @@ class _QueryCapture:
         self.degree_sql = None
         self.degree_params = None
         self.subgraph_sql = None
+        self.subgraph_params = None
 
     def as_side_effect(self):
         """Return an ``async def`` so AsyncMock awaits it (a callable instance is not)."""
 
         async def fake_query(query, **kwargs):
-            if "count(distinct n)" in query:
+            if "COUNT(*) AS total_nodes" in query:
                 self.count_sql = query
                 return [{"total_nodes": self._total_nodes}]
             if "node_degrees" in query:
@@ -63,22 +64,31 @@ class _QueryCapture:
                 return self._degree_rows
             # subgraph read
             self.subgraph_sql = query
+            self.subgraph_params = kwargs.get("params")
             return self._subgraph_rows
 
         return fake_query
 
 
-def _node(node_id, entity_id):
-    return {"id": node_id, "properties": {"entity_id": entity_id}}
-
-
-def _edge(edge_id, start_id, end_id, weight="1"):
+def _node_row(node_id, entity_id):
     return {
-        "id": edge_id,
-        "label": "DIRECTED",
+        "node_id": node_id,
+        "node_properties": {"entity_id": entity_id},
+        "edge_id": None,
+        "start_id": None,
+        "end_id": None,
+        "edge_properties": None,
+    }
+
+
+def _edge_row(node_id, entity_id, edge_id, start_id, end_id, weight="1"):
+    return {
+        "node_id": node_id,
+        "node_properties": {"entity_id": entity_id},
+        "edge_id": edge_id,
         "start_id": start_id,
         "end_id": end_id,
-        "properties": {"weight": weight},
+        "edge_properties": {"weight": weight},
     }
 
 
@@ -93,7 +103,7 @@ async def test_degree_selection_sql_is_undirected_and_preserves_isolated():
     capture = _QueryCapture(
         total_nodes=2,
         degree_rows=[{"node_id": 1, "degree": 3}, {"node_id": 2, "degree": 0}],
-        subgraph_rows=[{"a": _node(1, "Alice"), "r": None, "b": None}],
+        subgraph_rows=[_node_row(1, "Alice")],
     )
     storage = make_graph_storage()
 
@@ -136,7 +146,7 @@ async def test_degree_selection_keeps_the_index_only_vertex_scan():
     capture = _QueryCapture(
         total_nodes=99,
         degree_rows=[{"node_id": 1, "degree": 1}, {"node_id": 2, "degree": 1}],
-        subgraph_rows=[{"a": _node(1, "Alice"), "r": None, "b": None}],
+        subgraph_rows=[_node_row(1, "Alice")],
     )
     storage = make_graph_storage()
 
@@ -158,7 +168,7 @@ async def test_degree_selection_limit_is_parameterized():
     capture = _QueryCapture(
         total_nodes=2,
         degree_rows=[{"node_id": 1, "degree": 3}],
-        subgraph_rows=[{"a": _node(1, "Alice"), "r": None, "b": None}],
+        subgraph_rows=[_node_row(1, "Alice")],
     )
     storage = make_graph_storage()
 
@@ -177,9 +187,8 @@ async def test_isolated_node_survives_end_to_end():
         total_nodes=2,
         degree_rows=[{"node_id": 1, "degree": 2}, {"node_id": 2, "degree": 0}],
         subgraph_rows=[
-            {"a": _node(1, "Alice"), "r": None, "b": None},
-            # MATCH (a) still returns the isolated node with null r/b.
-            {"a": _node(2, "Bob"), "r": None, "b": None},
+            _node_row(1, "Alice"),
+            _node_row(2, "Bob"),
         ],
     )
     storage = make_graph_storage()
@@ -187,8 +196,7 @@ async def test_isolated_node_survives_end_to_end():
     with patch.object(storage, "_query", side_effect=capture.as_side_effect()):
         kg = await storage.get_knowledge_graph("*", max_nodes=50)
 
-    # The isolated node id is formatted into the subgraph id list...
-    assert "2" in capture.subgraph_sql
+    assert capture.subgraph_params == {"node_ids": [1, 2]}
     # ...and present in the returned graph.
     assert {node.id for node in kg.nodes} == {"1", "2"}
     assert kg.is_truncated is False
@@ -202,14 +210,15 @@ async def test_isolated_node_survives_end_to_end():
 @pytest.mark.asyncio
 async def test_subgraph_read_stays_directed_and_dedupes_edges():
     """Subgraph read keeps the directed (a)-[r]->(b) match and dedupes by edge id."""
-    duplicate_edge = _edge(10, 1, 2)
+    duplicate_edge = _edge_row(1, "Alice", 10, 1, 2)
     capture = _QueryCapture(
         total_nodes=2,
         degree_rows=[{"node_id": 1, "degree": 1}, {"node_id": 2, "degree": 1}],
         subgraph_rows=[
-            {"a": _node(1, "Alice"), "r": duplicate_edge, "b": _node(2, "Bob")},
+            duplicate_edge,
             # Same AGE edge id appearing twice must collapse to one edge.
-            {"a": _node(1, "Alice"), "r": duplicate_edge, "b": _node(2, "Bob")},
+            duplicate_edge,
+            _node_row(2, "Bob"),
         ],
     )
     storage = make_graph_storage()
@@ -217,7 +226,10 @@ async def test_subgraph_read_stays_directed_and_dedupes_edges():
     with patch.object(storage, "_query", side_effect=capture.as_side_effect()):
         kg = await storage.get_knowledge_graph("*", max_nodes=50)
 
-    assert "(a)-[r]->(b)" in capture.subgraph_sql
+    assert 'LEFT JOIN test_graph."DIRECTED"' in capture.subgraph_sql
+    assert "ANY($1::bigint[])" in capture.subgraph_sql
+    assert "cypher(" not in capture.subgraph_sql
+    assert "node_ids" not in capture.subgraph_sql
     assert len(kg.edges) == 1
     edge = kg.edges[0]
     assert edge.source == "1"

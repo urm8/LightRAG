@@ -8594,10 +8594,9 @@ class PGGraphStorage(BaseGraphStorage):
         # Handle wildcard query - get all nodes
         if node_label == "*":
             # First check total node count to determine if graph should be truncated
-            count_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                    MATCH (n:base)
-                    RETURN count(distinct n) AS total_nodes
-                    $$) AS (total_nodes bigint)"""
+            count_query = (
+                f"SELECT COUNT(*) AS total_nodes FROM {self.graph_name}.base"
+            )
 
             count_result = await self._query(count_query)
             total_nodes = count_result[0]["total_nodes"] if count_result else 0
@@ -8645,62 +8644,63 @@ class PGGraphStorage(BaseGraphStorage):
                 LIMIT $1"""
             node_results = await self._query(query_nodes, params={"limit": max_nodes})
 
-            node_ids = [str(result["node_id"]) for result in node_results]
+            node_ids = [int(result["node_id"]) for result in node_results]
 
             logger.info(
                 f"[{self.workspace}] Total nodes: {total_nodes}, Selected nodes: {len(node_ids)}"
             )
 
             if node_ids:
-                formatted_ids = ", ".join(node_ids)
-                # Construct batch query for subgraph within max_nodes
-                query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                        WITH [{formatted_ids}] AS node_ids
-                        MATCH (a)
-                        WHERE id(a) IN node_ids
-                        OPTIONAL MATCH (a)-[r]->(b)
-                            WHERE id(b) IN node_ids
-                        RETURN a, r, b
-                    $$) AS (a AGTYPE, r AGTYPE, b AGTYPE)"""
-                results = await self._query(query)
+                # Read AGE's backing tables directly. AGE 1.8 can segfault the
+                # PostgreSQL backend on the equivalent Cypher pattern using a
+                # list variable with two ``id(...) IN node_ids`` predicates.
+                # The native join also avoids constructing an interpolated ID
+                # list and preserves isolated selected vertices.
+                query = f"""
+                    SELECT
+                        v.id AS node_id,
+                        v.properties AS node_properties,
+                        e.id AS edge_id,
+                        e.start_id,
+                        e.end_id,
+                        e.properties AS edge_properties
+                    FROM {self.graph_name}.base AS v
+                    LEFT JOIN {self.graph_name}."DIRECTED" AS e
+                      ON e.start_id = v.id
+                     AND e.end_id = ANY($1::bigint[])
+                    WHERE v.id = ANY($1::bigint[])
+                    ORDER BY v.id, e.id
+                """
+                results = await self._query(query, params={"node_ids": node_ids})
 
                 # Process query results, deduplicate nodes and edges
                 nodes_dict = {}
                 edges_dict = {}
                 for result in results:
-                    # Process node a
-                    if result.get("a") and isinstance(result["a"], dict):
-                        node_a = result["a"]
-                        node_id = str(node_a["id"])
-                        if node_id not in nodes_dict and "properties" in node_a:
-                            nodes_dict[node_id] = KnowledgeGraphNode(
-                                id=node_id,
-                                labels=[node_a["properties"]["entity_id"]],
-                                properties=node_a["properties"],
-                            )
+                    node_properties = result.get("node_properties")
+                    if isinstance(node_properties, str):
+                        node_properties = json.loads(node_properties)
+                    node_id = str(result["node_id"])
+                    if node_properties and node_id not in nodes_dict:
+                        nodes_dict[node_id] = KnowledgeGraphNode(
+                            id=node_id,
+                            labels=[node_properties["entity_id"]],
+                            properties=node_properties,
+                        )
 
-                    # Process node b
-                    if result.get("b") and isinstance(result["b"], dict):
-                        node_b = result["b"]
-                        node_id = str(node_b["id"])
-                        if node_id not in nodes_dict and "properties" in node_b:
-                            nodes_dict[node_id] = KnowledgeGraphNode(
-                                id=node_id,
-                                labels=[node_b["properties"]["entity_id"]],
-                                properties=node_b["properties"],
-                            )
-
-                    # Process edge r
-                    if result.get("r") and isinstance(result["r"], dict):
-                        edge = result["r"]
-                        edge_id = str(edge["id"])
+                    edge_id_value = result.get("edge_id")
+                    if edge_id_value is not None:
+                        edge_id = str(edge_id_value)
+                        edge_properties = result.get("edge_properties") or {}
+                        if isinstance(edge_properties, str):
+                            edge_properties = json.loads(edge_properties)
                         if edge_id not in edges_dict:
                             edges_dict[edge_id] = KnowledgeGraphEdge(
                                 id=edge_id,
-                                type=edge["label"],
-                                source=str(edge["start_id"]),
-                                target=str(edge["end_id"]),
-                                properties=edge["properties"],
+                                type="DIRECTED",
+                                source=str(result["start_id"]),
+                                target=str(result["end_id"]),
+                                properties=edge_properties,
                             )
 
                 kg = KnowledgeGraph(
