@@ -129,7 +129,9 @@ jobs:
           helm template "$RELEASE" ./helm -n "$NAMESPACE" \
             -f "$PRIVATE_VALUES" \
             --set-string image.repository="$IMAGE" \
-            --set-string image.tag="${{ steps.meta.outputs.image_tag }}" >"$rendered"
+            --set-string image.tag="${{ steps.meta.outputs.image_tag }}" \
+            --set-string database.host="postgresql.persistence.svc.cluster.local" \
+            --set-string config.mcp.statelessHttp="true" >"$rendered"
           grep -q 'value: postgresql.persistence.svc.cluster.local' "$rendered"
           grep -A1 'name: LIGHTRAG_MCP_STATELESS_HTTP' "$rendered" \
             | grep -q 'value: "true"'
@@ -155,6 +157,8 @@ jobs:
             -f "$PRIVATE_VALUES" \
             --set-string image.repository="$IMAGE" \
             --set-string image.tag="${{ steps.meta.outputs.image_tag }}" \
+            --set-string database.host="postgresql.persistence.svc.cluster.local" \
+            --set-string config.mcp.statelessHttp="true" \
             --wait --timeout 10m
 
       - name: Verify deployment
