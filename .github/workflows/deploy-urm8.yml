@@ -103,8 +103,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/lightrag"
           printf '%s' "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/lightrag/kubeconfig"
           printf '%s' "$LIGHTRAG_VALUES_B64" | base64 --decode > "$RUNNER_TEMP/lightrag/values.private.yaml"
+          printf 'image:\n  repository: %s\n  tag: %s\n  pullPolicy: IfNotPresent\n' \
+            "$IMAGE" "${{ steps.meta.outputs.image_tag }}" > "$RUNNER_TEMP/lightrag/values.image.yaml"
           echo "KUBECONFIG=$RUNNER_TEMP/lightrag/kubeconfig" >> "$GITHUB_ENV"
           echo "PRIVATE_VALUES=$RUNNER_TEMP/lightrag/values.private.yaml" >> "$GITHUB_ENV"
+          echo "IMAGE_VALUES=$RUNNER_TEMP/lightrag/values.image.yaml" >> "$GITHUB_ENV"
 
       - name: Prepare namespace and secrets
         env:
@@ -128,11 +131,7 @@ jobs:
           helm lint ./helm -f "$PRIVATE_VALUES"
           helm template "$RELEASE" ./helm -n "$NAMESPACE" \
             -f "$PRIVATE_VALUES" \
-            --set-string image.repository="$IMAGE" \
-            --set-string image.tag="${{ steps.meta.outputs.image_tag }}" \
-            --set-string database.host="postgresql.persistence.svc.cluster.local" \
-            --set-string config.auth.enabled="true" \
-            --set-string config.mcp.statelessHttp="true" >"$rendered"
+            -f "$IMAGE_VALUES" >"$rendered"
           grep -Eq 'value: "?postgresql\.persistence\.svc\.cluster\.local"?' "$rendered"
           grep -A1 'name: LIGHTRAG_MCP_STATELESS_HTTP' "$rendered" \
             | grep -q 'value: "true"'
@@ -160,11 +159,7 @@ jobs:
           helm upgrade --install "$RELEASE" ./helm \
             -n "$NAMESPACE" --create-namespace \
             -f "$PRIVATE_VALUES" \
-            --set-string image.repository="$IMAGE" \
-            --set-string image.tag="${{ steps.meta.outputs.image_tag }}" \
-            --set-string database.host="postgresql.persistence.svc.cluster.local" \
-            --set-string config.auth.enabled="true" \
-            --set-string config.mcp.statelessHttp="true" \
+            -f "$IMAGE_VALUES" \
             --wait --timeout 10m
 
       - name: Verify deployment

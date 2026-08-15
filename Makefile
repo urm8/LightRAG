@@ -597,9 +597,10 @@ IMAGE ?= $(REGISTRY)/urm8/lightrag
 TAG ?= $(shell git rev-parse HEAD)
 PLATFORM ?= linux/arm64
 GHCR_USERNAME ?= urm8
-GHCR_TOKEN ?= $(shell gh auth token 2>/dev/null)
+GHCR_TOKEN ?=
 
-.PHONY: helm-lint helm-template image-login image-build image-push image-build-push \
+.PHONY: helm-lint helm-template helm-private-image helm-upgrade helm-upgrade-build \
+	helm-build-upgrade image-login image-build image-push image-build-push \
 	build-push ensure-k3s-namespace ghcr-secret db-secret app-secret deploy \
 	deploy-status deploy-verify deploy-rollback deploy-uninstall
 
@@ -610,8 +611,9 @@ helm-template:
 	helm template $(HELM_RELEASE) $(HELM_CHART) -n $(K8S_NAMESPACE)
 
 image-login:
-	@test -n "$(GHCR_TOKEN)" || (echo "Authenticate with gh auth login first"; exit 1)
-	@printf '%s' "$(GHCR_TOKEN)" | docker login $(REGISTRY) -u "$(GHCR_USERNAME)" --password-stdin
+	@token="$${GHCR_TOKEN:-$$(gh auth token 2>/dev/null)}"; \
+		test -n "$$token" || (echo "Authenticate with gh auth login first"; exit 1); \
+		printf '%s' "$$token" | docker login $(REGISTRY) -u "$(GHCR_USERNAME)" --password-stdin
 
 image-build:
 	docker build --platform $(PLATFORM) -t $(IMAGE):$(TAG) -t $(IMAGE):latest .
@@ -627,10 +629,11 @@ ensure-k3s-namespace:
 		--dry-run=client -o yaml | kubectl --kubeconfig $(KUBECONFIG) apply -f - >/dev/null
 
 ghcr-secret: ensure-k3s-namespace
-	@test -n "$(GHCR_TOKEN)" || (echo "Authenticate with gh auth login first"; exit 1)
-	@kubectl --kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) create secret docker-registry ghcr-secret \
+	@token="$${GHCR_TOKEN:-$$(gh auth token 2>/dev/null)}"; \
+		test -n "$$token" || (echo "Authenticate with gh auth login first"; exit 1); \
+		kubectl --kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) create secret docker-registry ghcr-secret \
 		--docker-server=$(REGISTRY) --docker-username=$(GHCR_USERNAME) \
-		--docker-password="$(GHCR_TOKEN)" --dry-run=client -o yaml \
+		--docker-password="$$token" --dry-run=client -o yaml \
 		| kubectl --kubeconfig $(KUBECONFIG) apply -f - >/dev/null
 
 db-secret: ensure-k3s-namespace
@@ -645,12 +648,22 @@ app-secret:
 		(echo "$(PRIVATE_VALUES) must have mode 600"; exit 1)
 	@helm template $(HELM_RELEASE) $(HELM_CHART) -n $(K8S_NAMESPACE) -f "$(PRIVATE_VALUES)" >/dev/null
 
-deploy: ghcr-secret db-secret app-secret
+helm-private-image:
+	@test -f "$(PRIVATE_VALUES)" || (echo "Missing $(PRIVATE_VALUES)"; exit 1)
+	@PRIVATE_VALUES="$(PRIVATE_VALUES)" IMAGE="$(IMAGE)" TAG="$(TAG)" uv run python -c 'import os; from pathlib import Path; import yaml; path = Path(os.environ["PRIVATE_VALUES"]); data = yaml.safe_load(path.read_text()) or {}; image = data.setdefault("image", {}); image.update(repository=os.environ["IMAGE"], tag=os.environ["TAG"], pullPolicy="IfNotPresent"); path.write_text(yaml.safe_dump(data, sort_keys=False)); path.chmod(0o600)'
+
+helm-upgrade: ghcr-secret db-secret app-secret
 	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
 		--kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) --create-namespace \
 		-f "$(PRIVATE_VALUES)" \
-		--set-string image.repository=$(IMAGE) --set-string image.tag=$(TAG) \
-		--force-conflicts --wait --timeout 10m
+		--wait --timeout 10m
+
+helm-upgrade-build helm-build-upgrade:
+	@$(MAKE) helm-private-image
+	@$(MAKE) image-build-push
+	@$(MAKE) helm-upgrade
+
+deploy: helm-upgrade
 
 deploy-status:
 	kubectl --kubeconfig $(KUBECONFIG) -n $(K8S_NAMESPACE) get deploy,svc,ingress,pods,certificate -o wide
