@@ -133,12 +133,11 @@ jobs:
             -f "$PRIVATE_VALUES" \
             -f "$IMAGE_VALUES" >"$rendered"
           grep -Eq 'value: "?postgresql\.persistence\.svc\.cluster\.local"?' "$rendered"
-          grep -A1 'name: LIGHTRAG_MCP_STATELESS_HTTP' "$rendered" \
-            | grep -q 'value: "true"'
-          grep -A4 'name: AUTH_ACCOUNTS' "$rendered" \
-            | grep -q 'key: AUTH_ACCOUNTS'
-          grep -A4 'name: TOKEN_SECRET' "$rendered" \
-            | grep -q 'key: TOKEN_SECRET'
+          awk '/name: LIGHTRAG_MCP_STATELESS_HTTP/ { getline; if ($0 ~ /value: "true"/) found=1 } END { exit !found }' "$rendered"
+          grep -q 'name: AUTH_ACCOUNTS' "$rendered"
+          grep -q 'key: AUTH_ACCOUNTS' "$rendered"
+          grep -q 'name: TOKEN_SECRET' "$rendered"
+          grep -q 'key: TOKEN_SECRET' "$rendered"
           if grep -Eq 'value: "?pgbouncer\.persistence\.svc\.cluster\.local"?' "$rendered"; then
             echo "LightRAG must connect directly to PostgreSQL, not PgBouncer" >&2
             exit 1
