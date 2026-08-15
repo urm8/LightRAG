@@ -136,6 +136,26 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.appSecretName }}
                   key: LIGHTRAG_API_KEY
+            {{- if .Values.config.auth.enabled }}
+            - name: AUTH_ACCOUNTS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.appSecretName }}
+                  key: AUTH_ACCOUNTS
+            - name: TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.appSecretName }}
+                  key: TOKEN_SECRET
+            - name: JWT_ALGORITHM
+              value: {{ .Values.config.auth.jwtAlgorithm | quote }}
+            - name: TOKEN_EXPIRE_HOURS
+              value: {{ .Values.config.auth.tokenExpireHours | quote }}
+            - name: LOGIN_MAX_FAILED_ATTEMPTS
+              value: {{ .Values.config.auth.loginMaxFailedAttempts | quote }}
+            - name: LOGIN_LOCKOUT_WINDOW_SECONDS
+              value: {{ .Values.config.auth.loginLockoutWindowSeconds | quote }}
+            {{- end }}
             - name: LIGHTRAG_MCP_ENABLED
               value: {{ .Values.config.mcp.enabled | quote }}
             - name: LIGHTRAG_MCP_PATH

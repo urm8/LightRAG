@@ -54,6 +54,8 @@ secrets:
   llmApiKey: ""
   embeddingApiKey: ""
   lightragApiKey: ""
+  authAccounts: ""
+  tokenSecret: ""
 
 config:
   host: 0.0.0.0
@@ -78,6 +80,12 @@ config:
     maxAsync: "4"
   rerank:
     binding: "null"
+  auth:
+    enabled: false
+    jwtAlgorithm: HS256
+    tokenExpireHours: "48"
+    loginMaxFailedAttempts: "5"
+    loginLockoutWindowSeconds: "300"
   mcp:
     enabled: "true"
     path: /mcp

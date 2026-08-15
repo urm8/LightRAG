@@ -131,10 +131,15 @@ jobs:
             --set-string image.repository="$IMAGE" \
             --set-string image.tag="${{ steps.meta.outputs.image_tag }}" \
             --set-string database.host="postgresql.persistence.svc.cluster.local" \
+            --set-string config.auth.enabled="true" \
             --set-string config.mcp.statelessHttp="true" >"$rendered"
           grep -Eq 'value: "?postgresql\.persistence\.svc\.cluster\.local"?' "$rendered"
           grep -A1 'name: LIGHTRAG_MCP_STATELESS_HTTP' "$rendered" \
             | grep -q 'value: "true"'
+          grep -A4 'name: AUTH_ACCOUNTS' "$rendered" \
+            | grep -q 'key: AUTH_ACCOUNTS'
+          grep -A4 'name: TOKEN_SECRET' "$rendered" \
+            | grep -q 'key: TOKEN_SECRET'
           if grep -Eq 'value: "?pgbouncer\.persistence\.svc\.cluster\.local"?' "$rendered"; then
             echo "LightRAG must connect directly to PostgreSQL, not PgBouncer" >&2
             exit 1
@@ -158,6 +163,7 @@ jobs:
             --set-string image.repository="$IMAGE" \
             --set-string image.tag="${{ steps.meta.outputs.image_tag }}" \
             --set-string database.host="postgresql.persistence.svc.cluster.local" \
+            --set-string config.auth.enabled="true" \
             --set-string config.mcp.statelessHttp="true" \
             --wait --timeout 10m
 
