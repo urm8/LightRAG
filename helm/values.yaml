@@ -83,7 +83,7 @@ config:
     path: /mcp
     transport: streamable-http
     jsonResponse: "false"
-    statelessHttp: "false"
+    statelessHttp: "true"
 
 probes:
   startup:

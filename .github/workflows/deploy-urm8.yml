@@ -131,6 +131,8 @@ jobs:
             --set-string image.repository="$IMAGE" \
             --set-string image.tag="${{ steps.meta.outputs.image_tag }}" >"$rendered"
           grep -q 'value: postgresql.persistence.svc.cluster.local' "$rendered"
+          grep -A1 'name: LIGHTRAG_MCP_STATELESS_HTTP' "$rendered" \
+            | grep -q 'value: "true"'
           if grep -q 'value: pgbouncer.persistence.svc.cluster.local' "$rendered"; then
             echo "LightRAG must connect directly to PostgreSQL, not PgBouncer" >&2
             exit 1
