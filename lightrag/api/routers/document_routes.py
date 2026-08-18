@@ -118,7 +118,12 @@ from lightrag.utils import (
     validate_file_path_security,
 )
 from lightrag.kg.shared_storage import append_pipeline_history
-from lightrag.utils_pipeline import count_active_documents, read_source_file_basename
+from lightrag.utils_pipeline import (
+    count_active_documents,
+    doc_status_field,
+    normalize_document_tags,
+    read_source_file_basename,
+)
 from lightrag.api.admission import adopt_admission_ticket
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
@@ -736,6 +741,10 @@ class InsertTextRequest(BaseModel):
         default=None,
         description="Chunking strategy and params; omit for default fixed-token chunking",
     )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Case-insensitive tags used for exact document retrieval",
+    )
 
     @field_validator("text", mode="after")
     @classmethod
@@ -750,6 +759,11 @@ class InsertTextRequest(BaseModel):
     @classmethod
     def normalize_source_before(cls, file_source: Optional[str]) -> str:
         return normalize_file_path(file_source)
+
+    @field_validator("tags", mode="after")
+    @classmethod
+    def normalize_tags_after(cls, tags: list[str]) -> list[str]:
+        return normalize_document_tags(tags)
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -789,6 +803,10 @@ class InsertTextsRequest(BaseModel):
         default=None,
         description="Shared chunking strategy and params for all texts; omit for default fixed-token chunking",
     )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Shared case-insensitive tags for all inserted documents",
+    )
 
     @field_validator("texts", mode="after")
     @classmethod
@@ -807,6 +825,11 @@ class InsertTextsRequest(BaseModel):
             return None
 
         return [normalize_file_path(file_source) for file_source in file_sources]
+
+    @field_validator("tags", mode="after")
+    @classmethod
+    def normalize_tags_after(cls, tags: list[str]) -> list[str]:
+        return normalize_document_tags(tags)
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -1121,6 +1144,13 @@ class DocsStatusesResponse(BaseModel):
             }
         }
     )
+
+
+class DocumentContentResponse(BaseModel):
+    id: str
+    file_path: str
+    content: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class TrackStatusResponse(BaseModel):
@@ -2634,6 +2664,7 @@ async def pipeline_index_texts(
     track_id: str = None,
     chunking: Optional[TextChunkingConfig] = None,
     admission_token: str | None = None,
+    tags: list[str] | None = None,
 ):
     """Index a list of texts with track_id
 
@@ -2647,6 +2678,7 @@ async def pipeline_index_texts(
         admission_token: the endpoint's pending-enqueue reservation, forwarded so
             the admission guard re-weights that token to the deduped count
             (LR2 §9.2)
+        tags: Shared normalized metadata tags for the inserted documents.
     """
     if not texts:
         return
@@ -2667,6 +2699,7 @@ async def pipeline_index_texts(
         "track_id": track_id,
         "process_options": process_options,
         "chunk_options": chunk_options,
+        "tags": normalize_document_tags(tags),
     }
     if admission_token is not None:
         # See pipeline_enqueue_file: only forwarded when a reservation exists.
@@ -5322,6 +5355,7 @@ def create_document_routes(
                         track_id=track_id,
                         chunking=request.chunking,
                         admission_token=enqueue_token,
+                        tags=request.tags,
                     )
                 finally:
                     await _release_enqueue_slot(rag, enqueue_token)
@@ -5484,6 +5518,7 @@ def create_document_routes(
                         track_id=track_id,
                         chunking=request.chunking,
                         admission_token=enqueue_token,
+                        tags=request.tags,
                     )
                 finally:
                     await _release_enqueue_slot(rag, enqueue_token)
@@ -6467,6 +6502,49 @@ def create_document_routes(
                 total_elapsed,
             )
             logger.error(f"Error getting paginated documents: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+
+    @router.get(
+        "/{doc_id}/content",
+        response_model=DocumentContentResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_document_content(doc_id: str) -> DocumentContentResponse:
+        """Fetch a document body on demand for provenance inspection."""
+        try:
+            content_data = await rag.full_docs.get_by_id(doc_id)
+            status_doc = await rag.doc_status.get_by_id(doc_id)
+            if content_data is None and status_doc is None:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            content = str((content_data or {}).get("content", "")).strip()
+            if not content and status_doc is not None:
+                chunk_ids = doc_status_field(status_doc, "chunks_list", []) or []
+                if chunk_ids:
+                    chunk_rows = await rag.text_chunks.get_by_ids(list(chunk_ids))
+                    ordered_chunks = sorted(
+                        (chunk for chunk in chunk_rows if chunk),
+                        key=lambda chunk: int(chunk.get("chunk_order_index", 0)),
+                    )
+                    content = "\n\n".join(
+                        str(chunk.get("content", "")).strip()
+                        for chunk in ordered_chunks
+                        if str(chunk.get("content", "")).strip()
+                    )
+
+            return DocumentContentResponse(
+                id=doc_id,
+                file_path=normalize_file_path(
+                    doc_status_field(status_doc, "file_path", "")
+                ),
+                content=content,
+                metadata=doc_status_field(status_doc, "metadata", {}) or {},
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting document content for {doc_id}: {str(e)}")
             logger.error(traceback.format_exc())
             raise internal_server_error(e)
 

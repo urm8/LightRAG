@@ -357,6 +357,7 @@
         "degree": "Degree",
         "properties": "Properties",
         "relationships": "Relations(within subgraph)",
+        "sourceDocuments": "Source documents",
         "expandNode": "Expand Node",
         "pruneNode": "Hide Node",
         "deleteAllNodesError": "Refuse to delete all nodes in the graph",

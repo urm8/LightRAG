@@ -2,13 +2,16 @@
 This module contains all graph-related routes for the LightRAG API.
 """
 
+import asyncio
 from typing import Optional, Dict, Any
 import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lightrag.base import DeletionResult
+from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import logger
+from lightrag.utils_pipeline import doc_status_field
 from ..utils_api import get_combined_auth_dependency, internal_server_error
 from .document_routes import check_pipeline_busy_or_raise
 
@@ -153,6 +156,15 @@ class RelationCreateRequest(BaseModel):
         return _require_nonempty_entity_name(entity_name)
 
 
+class GraphSourceDocument(BaseModel):
+    id: str
+    file_path: str
+    status: str
+    tags: list[str] = Field(default_factory=list)
+    chunk_ids: list[str] = Field(default_factory=list)
+    excerpts: list[str] = Field(default_factory=list)
+
+
 def create_graph_routes(rag, api_key: Optional[str] = None):
     # Fresh router per call. A module-level instance would accumulate
     # duplicate routes when the factory is invoked more than once in the
@@ -277,6 +289,83 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             return {"exists": exists}
         except Exception as e:
             logger.error(f"Error checking entity existence for '{name}': {str(e)}")
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+
+    @router.get(
+        "/graph/entity/source-documents",
+        response_model=list[GraphSourceDocument],
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_entity_source_documents(
+        name: str = Query(..., description="Entity name whose provenance to resolve"),
+    ) -> list[GraphSourceDocument]:
+        """Resolve an entity's source chunks to their owning documents."""
+        try:
+            entity_name = _require_nonempty_entity_name(name)
+            node = await rag.chunk_entity_relation_graph.get_node(entity_name)
+            if node is None:
+                raise HTTPException(status_code=404, detail="Entity not found")
+
+            tracking_store = getattr(rag, "entity_chunks", None)
+            tracking = (
+                await tracking_store.get_by_id(entity_name)
+                if tracking_store is not None
+                else None
+            )
+            tracked_ids = tracking.get("chunk_ids") if tracking else None
+            if isinstance(tracked_ids, list):
+                chunk_ids = list(dict.fromkeys(str(item) for item in tracked_ids if item))
+            else:
+                raw_source_ids = node.get("source_id", "")
+                chunk_ids = list(
+                    dict.fromkeys(
+                        part.strip()
+                        for part in str(raw_source_ids).split(GRAPH_FIELD_SEP)
+                        if part.strip()
+                    )
+                )
+            chunk_rows = await asyncio.gather(
+                *(rag.text_chunks.get_by_id(chunk_id) for chunk_id in chunk_ids)
+            )
+            by_doc: dict[str, dict[str, list[str]]] = {}
+            for chunk_id, chunk in zip(chunk_ids, chunk_rows, strict=True):
+                if not chunk:
+                    continue
+                doc_id = str(chunk.get("full_doc_id", "")).strip()
+                if not doc_id:
+                    continue
+                grouped = by_doc.setdefault(doc_id, {"chunk_ids": [], "excerpts": []})
+                grouped["chunk_ids"].append(chunk_id)
+                content = str(chunk.get("content", "")).strip()
+                if content:
+                    grouped["excerpts"].append(content[:500])
+
+            documents: list[GraphSourceDocument] = []
+            for doc_id, provenance in by_doc.items():
+                status_doc = await rag.doc_status.get_by_id(doc_id)
+                if status_doc is None:
+                    continue
+                metadata = doc_status_field(status_doc, "metadata", {})
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                documents.append(
+                    GraphSourceDocument(
+                        id=doc_id,
+                        file_path=str(doc_status_field(status_doc, "file_path", "")),
+                        status=str(doc_status_field(status_doc, "status", "")),
+                        tags=list(metadata.get("tags", [])),
+                        chunk_ids=provenance["chunk_ids"],
+                        excerpts=provenance["excerpts"],
+                    )
+                )
+            return documents
+        except HTTPException:
+            raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error resolving source documents for '{name}': {str(e)}")
             logger.error(traceback.format_exc())
             raise internal_server_error(e)
 

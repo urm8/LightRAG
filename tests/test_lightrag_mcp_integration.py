@@ -169,13 +169,55 @@ async def test_runtime_insert_schedules_live_lightrag_ingestion():
     inserted = []
 
     class Rag:
-        async def ainsert(self, texts, *, file_paths, track_id):
-            inserted.append((texts, file_paths, track_id))
+        async def ainsert(self, texts, *, file_paths, track_id, tags):
+            inserted.append((texts, file_paths, track_id, tags))
 
     runtime = LightRAGMCPRuntime(lambda: Rag(), SimpleNamespace(), _args())
-    result = await runtime.insert_text("Project: LightRAG. Durable finding.")
+    result = await runtime.insert_text(
+        "Project: LightRAG. Durable finding.", ["Skill", "agentic development"]
+    )
     await asyncio.gather(*runtime.background_tasks)
 
     assert result["status"] == "success"
     assert inserted[0][0] == ["Project: LightRAG. Durable finding."]
+    assert inserted[0][3] == ["skill", "agentic-development"]
+    assert result["tags"] == ["skill", "agentic-development"]
     assert inserted[0][2] == result["track_id"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_documents_filters_by_all_tags():
+    from lightrag.base import DocProcessingStatus, DocStatus
+
+    docs = {
+        DocStatus.PROCESSED: {
+            "skill-doc": DocProcessingStatus(
+                content_summary="skill",
+                content_length=5,
+                status=DocStatus.PROCESSED,
+                created_at="2026-08-16T00:00:00Z",
+                updated_at="2026-08-16T00:00:00Z",
+                file_path="skill.md",
+                metadata={"tags": ["skill", "agentic-development"]},
+            ),
+            "workflow-doc": DocProcessingStatus(
+                content_summary="workflow",
+                content_length=8,
+                status=DocStatus.PROCESSED,
+                created_at="2026-08-16T00:00:00Z",
+                updated_at="2026-08-16T00:00:00Z",
+                file_path="workflow.md",
+                metadata={"tags": ["workflow"]},
+            ),
+        }
+    }
+
+    class Rag:
+        async def get_docs_by_status(self, status):
+            return docs.get(status, {})
+
+    runtime = LightRAGMCPRuntime(lambda: Rag(), SimpleNamespace(), _args())
+    result = await runtime.documents(["Skill", "agentic development"])
+
+    processed = result["statuses"][DocStatus.PROCESSED.value]
+    assert [doc["id"] for doc in processed] == ["skill-doc"]

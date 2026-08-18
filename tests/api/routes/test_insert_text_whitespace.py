@@ -44,3 +44,13 @@ def test_insert_texts_rejects_whitespace_only_entries(texts):
 def test_insert_texts_strips_surrounding_whitespace():
     req = InsertTextsRequest(texts=["  a  ", " b "])
     assert req.texts == ["a", "b"]
+
+
+def test_insert_text_normalizes_and_deduplicates_tags():
+    req = InsertTextRequest(text="hello", tags=[" Skill ", "agentic development", "SKILL"])
+    assert req.tags == ["skill", "agentic-development"]
+
+
+def test_insert_text_rejects_non_string_tags():
+    with pytest.raises(ValidationError):
+        InsertTextRequest.model_validate({"text": "hello", "tags": [123]})

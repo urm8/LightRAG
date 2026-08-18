@@ -359,9 +359,40 @@ def resolve_doc_status_parse_engine(
 # degraded KG recovery. The WebUI uses this key to distinguish a processed
 # document with recovery warnings from an ordinary informational metadata row.
 KG_RECOVERY_WARNINGS_METADATA_KEY = "kg_recovery_warnings"
+DOCUMENT_TAGS_METADATA_KEY = "tags"
+MAX_DOCUMENT_TAGS = 32
+MAX_DOCUMENT_TAG_LENGTH = 64
+
+
+def normalize_document_tags(tags: Any) -> list[str]:
+    """Return stable, case-insensitive document tags suitable for metadata."""
+    if tags is None:
+        return []
+    if not isinstance(tags, (list, tuple, set)):
+        raise ValueError("tags must be a list of strings")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_tag in tags:
+        if not isinstance(raw_tag, str):
+            raise ValueError("tags must contain only strings")
+        tag = "-".join(raw_tag.strip().lower().split())
+        if not tag:
+            continue
+        if len(tag) > MAX_DOCUMENT_TAG_LENGTH:
+            raise ValueError(
+                f"tags must not exceed {MAX_DOCUMENT_TAG_LENGTH} characters"
+            )
+        if tag not in seen:
+            normalized.append(tag)
+            seen.add(tag)
+    if len(normalized) > MAX_DOCUMENT_TAGS:
+        raise ValueError(f"at most {MAX_DOCUMENT_TAGS} tags are allowed")
+    return normalized
 
 
 _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
+    DOCUMENT_TAGS_METADATA_KEY,
     "process_options",
     "source_file",
     "parse_warnings",
@@ -584,6 +615,7 @@ def doc_status_transition_metadata(
 # which the next attempt regenerates and which would otherwise show stale
 # values while the document waits in PENDING.
 _DOC_STATUS_METADATA_DIRECTIVE_KEYS: tuple[str, ...] = (
+    DOCUMENT_TAGS_METADATA_KEY,
     "process_options",
     "source_file",
     # Defense in depth: journaled custom-chunk patch rows are excluded from

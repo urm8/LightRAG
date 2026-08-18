@@ -1732,6 +1732,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> str:
         """Sync Insert documents with checkpoint support
 
@@ -1756,6 +1757,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 ids,
                 file_paths,
                 track_id,
+                tags,
             ),
             sync_name="insert",
             async_name="ainsert",
@@ -1770,6 +1772,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> str:
         """Async insert documents with checkpoint support (fixed-token chunking only).
 
@@ -1800,6 +1803,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            tags: optional normalized metadata tags for exact document retrieval
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1826,6 +1830,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             file_paths,
             track_id,
             chunk_options=chunk_opts,
+            tags=tags,
         )
         await self.apipeline_process_enqueue_documents()
 

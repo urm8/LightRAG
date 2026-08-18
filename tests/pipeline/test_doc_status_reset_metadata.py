@@ -123,6 +123,22 @@ def test_reset_metadata_keeps_directives_drops_attempt_fields():
     assert result == {"process_options": "iF", "source_file": "report.pdf"}
 
 
+def test_reset_metadata_keeps_document_tags():
+    result = doc_status_reset_metadata(
+        {
+            "metadata": {
+                **_FULL_ATTEMPT_METADATA,
+                "tags": ["skill", "agentic-development"],
+            }
+        }
+    )
+    assert result == {
+        "tags": ["skill", "agentic-development"],
+        "process_options": "iF",
+        "source_file": "report.pdf",
+    }
+
+
 def test_reset_metadata_normalizes_legacy_source_file_name():
     result = doc_status_reset_metadata(
         {"metadata": {"source_file_name": "legacy.docx", "process_options": "t"}}

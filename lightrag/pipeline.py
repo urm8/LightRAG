@@ -668,6 +668,7 @@ class _PipelineMixin:
         chunk_options: dict | list[dict] | None = None,
         admission_token: str | None = None,
         from_scan: bool = False,
+        tags: list[str] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -736,6 +737,8 @@ class _PipelineMixin:
                 forwarded as a defence-in-depth bypass so an unexpected
                 scan-owned write inside the classification window is
                 allowed through.  External callers must leave this False.
+            tags: Optional document tags, normalized and stored in
+                ``doc_status.metadata['tags']`` for exact retrieval.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -847,6 +850,9 @@ class _PipelineMixin:
             process_options = [process_options] * len(input)
         if isinstance(chunk_options, dict):
             chunk_options = [chunk_options] * len(input)
+        from lightrag.utils_pipeline import normalize_document_tags
+
+        normalized_tags = normalize_document_tags(tags)
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
             if isinstance(file_paths, str):
@@ -1115,6 +1121,8 @@ class _PipelineMixin:
             metadata: dict[str, Any] = {
                 KG_WRITE_STATE_METADATA_KEY: KG_WRITE_STATE_PRE_GRAPH,
             }
+            if normalized_tags:
+                metadata["tags"] = normalized_tags
             options_str = content_data.get("process_options") or ""
             if options_str:
                 # Mirror process_options into doc_status.metadata so admin UIs

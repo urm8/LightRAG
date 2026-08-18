@@ -1,12 +1,25 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useGraphStore, RawNodeType, RawEdgeType } from '@/stores/graph'
 import { useBackendState } from '@/stores/state'
 import Text from '@/components/ui/Text'
 import Button from '@/components/ui/Button'
 import useLightragGraph from '@/hooks/useLightragGraph'
 import { useTranslation } from 'react-i18next'
-import { GitBranchPlus, Scissors, Lock } from 'lucide-react'
+import { FileText, GitBranchPlus, LoaderCircle, Scissors, Lock } from 'lucide-react'
 import EditablePropertyRow from './EditablePropertyRow'
+import {
+  getDocumentContent,
+  getEntitySourceDocuments,
+  type DocumentContent,
+  type GraphSourceDocument
+} from '@/api/lightrag'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/Dialog'
 
 /**
  * Component that view properties of elements in graph.
@@ -336,6 +349,7 @@ const NodePropertiesView = ({ node, pipelineBusy }: { node: NodeType; pipelineBu
             )
           })}
       </div>
+      <NodeSourceDocuments entityName={String(node.properties['entity_id'] || node.id)} />
       {node.relationships.length > 0 && (
         <>
           <h3 className="text-md pl-1 font-bold tracking-wide text-emerald-700">
@@ -358,6 +372,87 @@ const NodePropertiesView = ({ node, pipelineBusy }: { node: NodeType; pipelineBu
         </>
       )}
     </div>
+  )
+}
+
+const NodeSourceDocuments = ({ entityName }: { entityName: string }) => {
+  const { t } = useTranslation()
+  const [sourceState, setSourceState] = useState<{
+    entityName: string
+    documents: GraphSourceDocument[]
+  }>({ entityName: '', documents: [] })
+  const [selected, setSelected] = useState<DocumentContent | null>(null)
+  const [contentLoading, setContentLoading] = useState(false)
+  const loading = sourceState.entityName !== entityName
+  const documents = loading ? [] : sourceState.documents
+
+  useEffect(() => {
+    let active = true
+    getEntitySourceDocuments(entityName)
+      .then((result) => {
+        if (active) setSourceState({ entityName, documents: result })
+      })
+      .catch((error) => {
+        console.error('Failed to load entity source documents:', error)
+        if (active) setSourceState({ entityName, documents: [] })
+      })
+    return () => {
+      active = false
+    }
+  }, [entityName])
+
+  const openDocument = async (document: GraphSourceDocument) => {
+    setContentLoading(true)
+    try {
+      setSelected(await getDocumentContent(document.id))
+    } catch (error) {
+      console.error('Failed to load source document:', error)
+    } finally {
+      setContentLoading(false)
+    }
+  }
+
+  if (!loading && documents.length === 0) return null
+
+  return (
+    <>
+      <h3 className="text-md pl-1 font-bold tracking-wide text-cyan-700">
+        {t('graphPanel.propertiesView.node.sourceDocuments')}
+      </h3>
+      <div className="bg-primary/5 max-h-40 overflow-auto rounded p-1">
+        {loading ? (
+          <div className="flex h-8 items-center justify-center">
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+          </div>
+        ) : (
+          documents.map((document) => (
+            <Button
+              key={document.id}
+              type="button"
+              variant="ghost"
+              className="h-auto w-full justify-start gap-2 px-2 py-1 text-left"
+              onClick={() => openDocument(document)}
+              disabled={contentLoading}
+              tooltip={document.excerpts[0] || document.file_path}
+            >
+              <FileText className="h-4 w-4 shrink-0" />
+              <span className="min-w-0 truncate">{document.file_path || document.id}</span>
+            </Button>
+          ))
+        )}
+      </div>
+      <Dialog open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle className="break-all">{selected?.file_path}</DialogTitle>
+            <DialogDescription className="break-all">{selected?.id}</DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[70vh] overflow-auto rounded border bg-muted/30 p-4">
+            <pre className="whitespace-pre-wrap break-words text-sm">{selected?.content}</pre>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 

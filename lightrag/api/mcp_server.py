@@ -407,20 +407,31 @@ class LightRAGMCPRuntime:
             "history_turns": history_turns,
         }
 
-    async def insert_text(self, text: str | list[str]) -> dict[str, Any]:
+    async def insert_text(
+        self, text: str | list[str], tags: list[str] | None = None
+    ) -> dict[str, Any]:
+        from lightrag.utils_pipeline import normalize_document_tags
+
         texts = [text] if isinstance(text, str) else list(text)
         if not texts or any(not item.strip() for item in texts):
             raise ValueError("text must contain at least one non-empty document")
         track_id = f"mcp-{uuid4().hex}"
+        normalized_tags = normalize_document_tags(tags)
         file_paths = [f"mcp-memory/{track_id}-{index}.txt" for index in range(len(texts))]
         self.schedule(
-            self.rag.ainsert(texts, file_paths=file_paths, track_id=track_id),
+            self.rag.ainsert(
+                texts,
+                file_paths=file_paths,
+                track_id=track_id,
+                tags=normalized_tags,
+            ),
             name=f"mcp-insert-{track_id}",
         )
         return {
             "status": "success",
             "message": "Text accepted for background processing",
             "track_id": track_id,
+            "tags": normalized_tags,
         }
 
     async def _enqueue_file(self, file_path: Path, track_id: str) -> bool:
@@ -531,9 +542,11 @@ class LightRAGMCPRuntime:
             )
         return {"status": "scanning_started", "track_id": track_id, "accepted": accepted}
 
-    async def documents(self) -> dict[str, Any]:
+    async def documents(self, tags: list[str] | None = None) -> dict[str, Any]:
         from lightrag.base import DocStatus
+        from lightrag.utils_pipeline import normalize_document_tags
 
+        normalized_tags = set(normalize_document_tags(tags))
         statuses = tuple(DocStatus)
         rows = await asyncio.gather(
             *(self.rag.get_docs_by_status(status) for status in statuses)
@@ -543,6 +556,10 @@ class LightRAGMCPRuntime:
                 status.value: [
                     {"id": doc_id, **(_to_jsonable(doc) or {})}
                     for doc_id, doc in result.items()
+                    if not normalized_tags
+                    or normalized_tags.issubset(
+                        set((getattr(doc, "metadata", {}) or {}).get("tags", []))
+                    )
                 ]
                 for status, result in zip(statuses, rows, strict=True)
             }
@@ -688,14 +705,18 @@ def create_lightrag_mcp(
     )
     async def insert_document(
         text: str | list[str] = Field(description="Text or list of texts to insert"),
+        tags: list[str] = Field(
+            default_factory=list,
+            description="Tags such as skill, workflow, or agentic-development",
+        ),
     ) -> dict[str, Any]:
         async def _operation() -> Any:
-            return await runtime.insert_text(text)
+            return await runtime.insert_text(text, tags)
 
         return await _execute_lightrag_operation(
             "insert_document",
             _operation,
-            tool_kwargs={"text": text},
+            tool_kwargs={"text": text, "tags": tags},
         )
 
     @mcp.tool(
@@ -781,11 +802,18 @@ def create_lightrag_mcp(
         )
 
     @mcp.tool(name="get_documents", description=AGENTIC_TOOL_DESCRIPTIONS["get_documents"])
-    async def get_documents() -> dict[str, Any]:
+    async def get_documents(
+        tags: list[str] = Field(
+            default_factory=list,
+            description="Return only documents containing every requested tag",
+        ),
+    ) -> dict[str, Any]:
         async def _operation() -> Any:
-            return await runtime.documents()
+            return await runtime.documents(tags)
 
-        return await _execute_lightrag_operation("get_documents", _operation)
+        return await _execute_lightrag_operation(
+            "get_documents", _operation, tool_kwargs={"tags": tags}
+        )
 
     @mcp.tool(
         name="get_pipeline_status",

@@ -26,6 +26,22 @@ export type LightragGraphType = {
   edges: LightragEdgeType[]
 }
 
+export type GraphSourceDocument = {
+  id: string
+  file_path: string
+  status: string
+  tags: string[]
+  chunk_ids: string[]
+  excerpts: string[]
+}
+
+export type DocumentContent = {
+  id: string
+  file_path: string
+  content: string
+  metadata: Record<string, any>
+}
+
 export type LightragQueueStatus = {
   available: boolean
   queue_name?: string
@@ -579,6 +595,18 @@ export const getPopularLabels = async (limit: number = popularLabelsDefaultLimit
 
 export const searchLabels = async (query: string, limit: number = searchLabelsDefaultLimit): Promise<string[]> => {
   const response = await axiosInstance.get(`/graph/label/search?q=${encodeURIComponent(query)}&limit=${limit}`)
+  return response.data
+}
+
+export const getEntitySourceDocuments = async (entityName: string): Promise<GraphSourceDocument[]> => {
+  const response = await axiosInstance.get(
+    `/graph/entity/source-documents?name=${encodeURIComponent(entityName)}`
+  )
+  return response.data
+}
+
+export const getDocumentContent = async (docId: string): Promise<DocumentContent> => {
+  const response = await axiosInstance.get(`/documents/${encodeURIComponent(docId)}/content`)
   return response.data
 }
 
