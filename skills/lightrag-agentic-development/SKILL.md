@@ -14,7 +14,7 @@ http://127.0.0.1:9621/mcp
 ## Core Workflow
 
 1. Identify the current project before every LightRAG query or write. Use repo name, absolute path, and git remote when available.
-2. Start non-trivial work with `check_lightrag_health`, then `query_document`.
+2. Start non-trivial work directly with `query_document`; do not preflight with `check_lightrag_health`.
 3. Include the current project in every `query_document` request, for example: `Project: LightRAG (/Users/max/projs/github.com/HKUDS/LightRAG). Question: ...`.
 4. Use `query_document` with `only_need_context=true` when you need raw evidence before editing code.
 5. Use normal repository tools for source edits, tests, grep, logs, and runtime checks.
@@ -25,7 +25,7 @@ http://127.0.0.1:9621/mcp
 
 Use only tools exposed by the active MCP session. Current core tools:
 
-- `check_lightrag_health`: verify service before memory work.
+- `check_lightrag_health`: use only after an MCP timeout, connection failure, or invalid/unavailable response.
 - `query_document`: retrieve project memory. Use `only_need_context=true` before edits.
 - `insert_document`: save durable notes, decisions, incidents, validation results.
 - `insert_file`: index important repo artifacts or logs.

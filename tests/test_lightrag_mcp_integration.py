@@ -140,7 +140,17 @@ async def test_runtime_query_calls_live_lightrag_directly():
             assert param.max_total_tokens == 3000
             return {
                 "llm_response": {"content": "direct response"},
-                "data": {"references": [{"reference_id": "1", "file_path": "a.md"}]},
+                "data": {
+                    "chunks": [
+                        {
+                            "content": "matching source context",
+                            "file_path": "a.md",
+                            "reference_id": "1",
+                            "chunk_id": "chunk-1",
+                        }
+                    ],
+                    "references": [{"reference_id": "1", "file_path": "a.md"}],
+                },
             }
 
     runtime = LightRAGMCPRuntime(lambda: Rag(), SimpleNamespace(), _args())
@@ -161,7 +171,59 @@ async def test_runtime_query_calls_live_lightrag_directly():
     )
 
     assert result["response"] == "direct response"
+    assert result["matches"] == [
+        {
+            "content": "matching source context",
+            "file_path": "a.md",
+            "reference_id": "1",
+            "chunk_id": "chunk-1",
+        }
+    ]
     assert result["references"][0]["file_path"] == "a.md"
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_query_returns_matches_instead_of_raw_prompt():
+    class Rag:
+        async def aquery_llm(self, query, param):
+            assert param.only_need_context is True
+            return {
+                "llm_response": {"content": "very large graph prompt"},
+                "data": {
+                    "chunks": [
+                        {
+                            "content": "the useful matching excerpt",
+                            "file_path": "memory.md",
+                            "reference_id": "7",
+                            "chunk_id": "chunk-7",
+                        }
+                    ],
+                    "references": [
+                        {"reference_id": "7", "file_path": "memory.md"}
+                    ],
+                },
+            }
+
+    runtime = LightRAGMCPRuntime(lambda: Rag(), SimpleNamespace(), _args())
+
+    result = await runtime.query(
+        query="Project: LightRAG. Find the implementation decision",
+        mode="mix",
+        top_k=10,
+        only_need_context=True,
+        only_need_prompt=False,
+        response_type="Multiple Paragraphs",
+        max_token_for_text_unit=1000,
+        max_token_for_global_context=1000,
+        max_token_for_local_context=1000,
+        hl_keywords=[],
+        ll_keywords=[],
+        history_turns=0,
+    )
+
+    assert result["response"] == "Retrieved 1 matching context chunk(s)."
+    assert result["matches"][0]["content"] == "the useful matching excerpt"
+    assert "very large graph prompt" not in str(result)
 
 
 @pytest.mark.asyncio

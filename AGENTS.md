@@ -46,7 +46,7 @@ Top-level directories:
 - Before meaningful code changes, query LightRAG for prior decisions, architecture notes, resolved incidents, and related implementation context; prefer `only_need_context=true` when raw evidence is needed before editing. Always cite the active project in the query text, e.g. `Project: LightRAG`, `Project path: /Users/max/projs/github.com/HKUDS/LightRAG`, then the actual question.
 - After meaningful debugging, validation, design, deployment, prompt/model, or architecture work, persist durable notes back into LightRAG so future Codex sessions can reuse the result. Every saved payload must cite the active project first and make it extractable as a `Project` entity, e.g. `Project entity: Project|LightRAG`, plus repository/path when known.
 - Saved LightRAG notes should include explicit project relation hints where useful, such as `LightRAG USES ...`, `LightRAG IMPLEMENTS ...`, `LightRAG FAILS_WITH ...`, `LightRAG IMPROVES ...`, or `LightRAG PART_OF ...`, so graph extraction anchors agentic workflow facts to the current project.
-- Check LightRAG health and pipeline status before relying on newly inserted memory or when MCP calls behave unexpectedly.
+- Do not preflight LightRAG health. Call `check_lightrag_health` only after an MCP timeout, connection failure, or invalid/unavailable response; use `get_pipeline_status` before relying on newly inserted memory.
 
 ## Core Architecture
 

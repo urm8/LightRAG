@@ -38,8 +38,9 @@ AGENTIC_TOOL_DESCRIPTIONS = {
     "query_document": (
         "Agentic development memory search. Use for analytics, planning, QA, "
         "coding, design review, debugging, deployment research, incident context, "
-        "and retrieving prior project decisions from LightRAG. Prefer "
-        "only_need_context=true when you need raw evidence before changing code."
+        "and retrieving prior project decisions from LightRAG. Returns matching "
+        "source excerpts with provenance in one call. Prefer only_need_context=true "
+        "when you need raw evidence before changing code."
     ),
     "insert_document": (
         "Persist durable agent memory into LightRAG. Use after meaningful coding, "
@@ -75,8 +76,8 @@ AGENTIC_TOOL_DESCRIPTIONS = {
         "QA of extraction quality, planning graph cleanup, and debugging retrieval gaps."
     ),
     "check_lightrag_health": (
-        "Check LightRAG service health and runtime configuration before agentic "
-        "coding, QA, analytics, management, debugging, deployment, or memory operations."
+        "Check LightRAG service health after an MCP timeout, connection failure, "
+        "or invalid response. Do not use as a preflight for normal memory operations."
     ),
     "check_memory_pressure": (
         "Inspect host memory pressure, swap usage, and top resident processes. Use "
@@ -400,9 +401,22 @@ class LightRAGMCPRuntime:
         result = await self.rag.aquery_llm(query, param=param)
         llm_response = result.get("llm_response", {})
         data = result.get("data", {})
+        matches = [
+            {
+                "content": chunk.get("content", ""),
+                "file_path": chunk.get("file_path", "unknown_source"),
+                "reference_id": chunk.get("reference_id", ""),
+                "chunk_id": chunk.get("chunk_id", ""),
+            }
+            for chunk in data.get("chunks", [])
+            if chunk.get("content")
+        ]
+        response = llm_response.get("content")
+        if only_need_context:
+            response = f"Retrieved {len(matches)} matching context chunk(s)."
         return {
-            "response": llm_response.get("content")
-            or "No relevant context found for the query.",
+            "matches": matches,
+            "response": response or "No relevant context found for the query.",
             "references": data.get("references", []),
             "history_turns": history_turns,
         }
