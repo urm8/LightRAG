@@ -19,6 +19,7 @@ from typing import Any, Literal, cast
 from uuid import uuid4
 
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_access_token
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
@@ -26,6 +27,31 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
+
+_MCP_MATCH_LIMIT = 6
+_MCP_EXCERPT_CHARS = 700
+_QUERY_STOP_WORDS = {
+    "about",
+    "after",
+    "before",
+    "find",
+    "from",
+    "have",
+    "into",
+    "light",
+    "lightrag",
+    "path",
+    "project",
+    "repository",
+    "that",
+    "their",
+    "this",
+    "what",
+    "when",
+    "where",
+    "which",
+    "with",
+}
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -66,6 +92,10 @@ AGENTIC_TOOL_DESCRIPTIONS = {
     "get_documents": (
         "Inspect indexed document inventory and processing state. Use for knowledge-base "
         "management, QA of ingestion coverage, duplicate checks, and debugging missing context."
+    ),
+    "get_document_content": (
+        "Fetch one complete indexed document by the document_id returned by query_document. "
+        "Use only when the bounded matching excerpts are insufficient and the full source is required."
     ),
     "get_pipeline_status": (
         "Inspect ingestion pipeline activity and failures. Use for operations, QA, "
@@ -174,6 +204,57 @@ def _summarize_tool_kwargs(kwargs: dict[str, Any]) -> str:
     for key, value in kwargs.items():
         parts.append(f"{key}={_summarize_value(value)}")
     return "; ".join(parts)
+
+
+def _query_terms(query: str, keywords: list[str]) -> list[str]:
+    query_body = "\n".join(
+        line
+        for line in query.splitlines()
+        if not line.casefold().startswith(("project:", "project path:", "repository:"))
+    )
+    words = re.findall(r"[\w.-]{4,}", " ".join([*keywords, query_body]).casefold())
+    return list(dict.fromkeys(word for word in words if word not in _QUERY_STOP_WORDS))
+
+
+def _matching_excerpt(content: str, terms: list[str]) -> tuple[str, list[str]]:
+    """Return one small source window centered on the strongest lexical match."""
+
+    compact = content.strip()
+    if len(compact) <= _MCP_EXCERPT_CHARS:
+        matched = [term for term in terms if term in compact.casefold()]
+        return compact, matched
+
+    folded = compact.casefold()
+    positions = [(folded.find(term), term) for term in terms if term in folded]
+    if positions:
+        best_position, _ = max(
+            positions,
+            key=lambda item: sum(
+                term in folded[
+                    max(0, item[0] - _MCP_EXCERPT_CHARS // 2) : item[0]
+                    + _MCP_EXCERPT_CHARS // 2
+                ]
+                for term in terms
+            ),
+        )
+    else:
+        best_position = 0
+
+    start = max(0, best_position - _MCP_EXCERPT_CHARS // 3)
+    end = min(len(compact), start + _MCP_EXCERPT_CHARS)
+    start = max(0, end - _MCP_EXCERPT_CHARS)
+    excerpt = compact[start:end].strip()
+    matched = [term for term in terms if term in excerpt.casefold()]
+    if start:
+        excerpt = f"...{excerpt}"
+    if end < len(compact):
+        excerpt = f"{excerpt}..."
+    return excerpt, matched
+
+
+def _normalize_source_path(file_path: str | None) -> str:
+    normalized = (file_path or "").strip()
+    return normalized if normalized and normalized != "no-file-path" else "unknown_source"
 
 
 async def _execute_lightrag_operation(
@@ -401,24 +482,75 @@ class LightRAGMCPRuntime:
         result = await self.rag.aquery_llm(query, param=param)
         llm_response = result.get("llm_response", {})
         data = result.get("data", {})
-        matches = [
-            {
-                "content": chunk.get("content", ""),
-                "file_path": chunk.get("file_path", "unknown_source"),
-                "reference_id": chunk.get("reference_id", ""),
-                "chunk_id": chunk.get("chunk_id", ""),
-            }
-            for chunk in data.get("chunks", [])
-            if chunk.get("content")
+        chunks = [
+            chunk for chunk in data.get("chunks", []) if chunk.get("content")
+        ][:_MCP_MATCH_LIMIT]
+        chunk_rows: list[dict[str, Any] | None] = [None] * len(chunks)
+        text_chunks = getattr(self.rag, "text_chunks", None)
+        if chunks and text_chunks is not None:
+            chunk_rows = await text_chunks.get_by_ids(
+                [chunk.get("chunk_id", "") for chunk in chunks]
+            )
+
+        terms = _query_terms(query, [*hl_keywords, *ll_keywords])
+        matches = []
+        for chunk, stored_chunk in zip(chunks, chunk_rows, strict=True):
+            excerpt, matched_terms = _matching_excerpt(chunk["content"], terms)
+            matches.append(
+                {
+                    "content": excerpt,
+                    "file_path": chunk.get("file_path", "unknown_source"),
+                    "reference_id": chunk.get("reference_id", ""),
+                    "chunk_id": chunk.get("chunk_id", ""),
+                    "document_id": chunk.get("full_doc_id")
+                    or (stored_chunk or {}).get("full_doc_id"),
+                    "matched_terms": matched_terms,
+                    "is_excerpt": len(chunk["content"].strip()) > _MCP_EXCERPT_CHARS,
+                }
+            )
+        selected_reference_ids = {match["reference_id"] for match in matches}
+        references = [
+            reference
+            for reference in data.get("references", [])
+            if reference.get("reference_id") in selected_reference_ids
         ]
         response = llm_response.get("content")
         if only_need_context:
-            response = f"Retrieved {len(matches)} matching context chunk(s)."
+            response = f"Retrieved {len(matches)} bounded source excerpt(s)."
         return {
             "matches": matches,
             "response": response or "No relevant context found for the query.",
-            "references": data.get("references", []),
+            "references": references,
             "history_turns": history_turns,
+        }
+
+    async def document_content(self, document_id: str) -> dict[str, Any]:
+        from lightrag.utils_pipeline import doc_status_field
+
+        content_data = await self.rag.full_docs.get_by_id(document_id)
+        status_doc = await self.rag.doc_status.get_by_id(document_id)
+        if content_data is None and status_doc is None:
+            raise ValueError(f"Document not found: {document_id}")
+
+        content = str((content_data or {}).get("content", "")).strip()
+        if not content and status_doc is not None:
+            chunk_ids = doc_status_field(status_doc, "chunks_list", []) or []
+            chunk_rows = await self.rag.text_chunks.get_by_ids(list(chunk_ids))
+            content = "\n\n".join(
+                str(chunk.get("content", "")).strip()
+                for chunk in sorted(
+                    (chunk for chunk in chunk_rows if chunk),
+                    key=lambda chunk: int(chunk.get("chunk_order_index", 0)),
+                )
+                if str(chunk.get("content", "")).strip()
+            )
+        return {
+            "document_id": document_id,
+            "file_path": _normalize_source_path(
+                doc_status_field(status_doc, "file_path", "")
+            ),
+            "content": content,
+            "metadata": doc_status_field(status_doc, "metadata", {}) or {},
         }
 
     async def insert_text(
@@ -830,6 +962,29 @@ def create_lightrag_mcp(
         )
 
     @mcp.tool(
+        name="get_document_content",
+        description=AGENTIC_TOOL_DESCRIPTIONS["get_document_content"],
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
+    )
+    async def get_document_content(
+        document_id: str = Field(
+            description="Document ID returned by query_document"
+        ),
+    ) -> dict[str, Any]:
+        async def _operation() -> Any:
+            return await runtime.document_content(document_id)
+
+        return await _execute_lightrag_operation(
+            "get_document_content",
+            _operation,
+            tool_kwargs={"document_id": document_id},
+        )
+
+    @mcp.tool(
         name="get_pipeline_status",
         description=AGENTIC_TOOL_DESCRIPTIONS["get_pipeline_status"],
     )
@@ -1231,6 +1386,156 @@ def create_lightrag_mcp_http_app(
         ),
         json_response=_env_bool("LIGHTRAG_MCP_JSON_RESPONSE", False),
         stateless_http=_env_bool("LIGHTRAG_MCP_STATELESS_HTTP", False),
+    )
+
+
+def create_chatgpt_mcp_http_app(
+    rag_provider: Callable[[], Any], doc_manager: Any, args: Any, base_url: str
+) -> Any:
+    """Create the OAuth-protected, least-privilege ChatGPT memory endpoint."""
+
+    from lightrag.api.auth import auth_handler
+    from lightrag.api.chatgpt_oauth import (
+        READ_SCOPE,
+        WRITE_SCOPE,
+        LightRAGChatGPTOAuthProvider,
+    )
+
+    provider = LightRAGChatGPTOAuthProvider(
+        base_url=base_url,
+        secret=auth_handler.secret,
+        password_verifier=auth_handler.verify_password,
+        algorithm=auth_handler.algorithm,
+    )
+    runtime = LightRAGMCPRuntime(rag_provider, doc_manager, args)
+
+    @asynccontextmanager
+    async def lifespan(_server: FastMCP):
+        try:
+            yield {}
+        finally:
+            await runtime.close()
+
+    mcp = FastMCP(
+        name="LightRAG Memory",
+        instructions=(
+            "Search memory when prior context may help. Cite each factual claim with "
+            "the source returned by search_memory. Save memory only when the user asks "
+            "you to remember something or when a durable preference/decision is explicit. "
+            "Expand a full source only after its excerpt is relevant."
+        ),
+        auth=provider,
+        lifespan=lifespan,
+    )
+
+    @mcp.tool(
+        name="search_memory",
+        title="Search LightRAG memory",
+        description=(
+            "Search prior knowledge and chat memory. Returns compact relevant excerpts, "
+            "document IDs, and source references suitable for citation."
+        ),
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
+        meta={"securitySchemes": [{"type": "oauth2", "scopes": [READ_SCOPE]}]},
+    )
+    async def search_memory(
+        query: str = Field(description="What to recall from LightRAG memory"),
+    ) -> dict[str, Any]:
+        async def _operation() -> Any:
+            return await runtime.query(
+                query=query,
+                mode="mix",
+                top_k=12,
+                only_need_context=True,
+                only_need_prompt=False,
+                response_type="Multiple Paragraphs",
+                max_token_for_text_unit=2048,
+                max_token_for_global_context=2048,
+                max_token_for_local_context=2048,
+                hl_keywords=[],
+                ll_keywords=[],
+                history_turns=0,
+            )
+
+        return await _execute_lightrag_operation(
+            "chatgpt_search_memory", _operation, tool_kwargs={"query": query}
+        )
+
+    @mcp.tool(
+        name="get_memory_source",
+        title="Read a LightRAG memory source",
+        description=(
+            "Read one full source selected from search_memory by document_id. "
+            "Use only when the compact excerpt is relevant but insufficient."
+        ),
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
+        meta={"securitySchemes": [{"type": "oauth2", "scopes": [READ_SCOPE]}]},
+    )
+    async def get_memory_source(
+        document_id: str = Field(description="Document ID from search_memory"),
+    ) -> dict[str, Any]:
+        async def _operation() -> Any:
+            return await runtime.document_content(document_id)
+
+        return await _execute_lightrag_operation(
+            "chatgpt_get_memory_source",
+            _operation,
+            tool_kwargs={"document_id": document_id},
+        )
+
+    @mcp.tool(
+        name="save_memory",
+        title="Save knowledge to LightRAG",
+        description=(
+            "Save durable knowledge, a user preference, or a decision for future chats. "
+            "Use only with clear user intent; this changes persistent memory."
+        ),
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
+        meta={
+            "securitySchemes": [
+                {"type": "oauth2", "scopes": [READ_SCOPE, WRITE_SCOPE]}
+            ]
+        },
+    )
+    async def save_memory(
+        text: str = Field(description="Concise knowledge to remember"),
+        tags: list[str] = Field(
+            default_factory=list, description="Optional retrieval tags"
+        ),
+    ) -> dict[str, Any]:
+        access_token = get_access_token()
+        if access_token is None or WRITE_SCOPE not in access_token.scopes:
+            raise PermissionError("memory:write scope is required")
+        username = str(access_token.claims.get("sub", "unknown"))
+
+        async def _operation() -> Any:
+            return await runtime.insert_text(
+                f"Memory owner: {username}\n{text}", ["chatgpt-memory", *tags]
+            )
+
+        return await _execute_lightrag_operation(
+            "chatgpt_save_memory",
+            _operation,
+            tool_kwargs={"text": text, "tags": tags},
+        )
+
+    return mcp.http_app(
+        path="/mcp",
+        transport="streamable-http",
+        json_response=True,
+        stateless_http=True,
     )
 
 

@@ -16,7 +16,7 @@ http://127.0.0.1:9621/mcp
 1. Identify the current project before every LightRAG query or write. Use repo name, absolute path, and git remote when available.
 2. Start non-trivial work directly with `query_document`; do not preflight with `check_lightrag_health`.
 3. Include the current project in every `query_document` request, for example: `Project: LightRAG (/Users/max/projs/github.com/HKUDS/LightRAG). Question: ...`.
-4. Use `query_document` with `only_need_context=true` when you need raw evidence before editing code.
+4. Use `query_document` with `only_need_context=true` for small relevant excerpts. Call `get_document_content(document_id)` only when an excerpt identifies a relevant source and the full document is needed.
 5. Use normal repository tools for source edits, tests, grep, logs, and runtime checks.
 6. Persist durable findings with `insert_document` after meaningful debugging, QA, planning, design, deploy, or coding work.
 7. Check `get_pipeline_status` before assuming newly inserted memory is searchable.
@@ -26,7 +26,8 @@ http://127.0.0.1:9621/mcp
 Use only tools exposed by the active MCP session. Current core tools:
 
 - `check_lightrag_health`: use only after an MCP timeout, connection failure, or invalid/unavailable response.
-- `query_document`: retrieve project memory. Use `only_need_context=true` before edits.
+- `query_document`: retrieve bounded source excerpts and document IDs. Use `only_need_context=true` before edits.
+- `get_document_content`: deliberately expand one relevant result by its `document_id`; never use it for speculative bulk reads.
 - `insert_document`: save durable notes, decisions, incidents, validation results.
 - `insert_file`: index important repo artifacts or logs.
 - `scan_for_new_documents`: ingest newly added input docs.

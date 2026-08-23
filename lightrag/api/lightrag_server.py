@@ -27,7 +27,7 @@ from fastapi.responses import RedirectResponse
 from pathlib import Path
 from ascii_colors import ASCIIColors
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dotenv import load_dotenv
 from lightrag.api.utils_api import (
     get_combined_auth_dependency,
@@ -1412,6 +1412,7 @@ def create_app(args):
                 raise shutdown_cancel
 
     mcp_http_app = None
+    chatgpt_mcp_app = None
     mcp_mount_path = os.getenv("LIGHTRAG_MCP_PATH", "/mcp").strip() or "/mcp"
     if not mcp_mount_path.startswith("/"):
         mcp_mount_path = f"/{mcp_mount_path}"
@@ -1437,11 +1438,39 @@ def create_app(args):
             args=args,
         )
 
+    chatgpt_base_url = os.getenv("LIGHTRAG_CHATGPT_BASE_URL", "").strip().rstrip("/")
+    if os.getenv("LIGHTRAG_CHATGPT_APP_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        if not chatgpt_base_url:
+            raise ValueError(
+                "LIGHTRAG_CHATGPT_BASE_URL is required when the ChatGPT app is enabled"
+            )
+        from lightrag.api.mcp_server import create_chatgpt_mcp_http_app
+
+        chatgpt_mcp_app = create_chatgpt_mcp_http_app(
+            rag_provider=lambda: rag,
+            doc_manager=doc_manager,
+            args=args,
+            base_url=chatgpt_base_url,
+        )
+
+    mcp_lifespan_apps = [
+        child for child in (mcp_http_app, chatgpt_mcp_app) if child is not None
+    ]
+    if mcp_lifespan_apps:
+
         @asynccontextmanager
         async def app_lifespan(app: FastAPI):
-            async with lifespan(app):
-                async with mcp_http_app.router.lifespan_context(mcp_http_app):
-                    yield
+            async with lifespan(app), AsyncExitStack() as stack:
+                for child in mcp_lifespan_apps:
+                    await stack.enter_async_context(
+                        child.router.lifespan_context(child)
+                    )
+                yield
 
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
@@ -1482,6 +1511,29 @@ def create_app(args):
             app, mcp_http_app, mcp_mount_path, api_key=api_key
         )
         logger.info("Integrated LightRAG MCP mounted at %s", mcp_mount_path)
+
+    if chatgpt_mcp_app is not None:
+        from urllib.parse import urlparse
+
+        chatgpt_mount_path = urlparse(chatgpt_base_url).path.rstrip("/") or "/chatgpt"
+
+        @app.get(
+            f"/.well-known/oauth-protected-resource{chatgpt_mount_path}/mcp",
+            include_in_schema=False,
+        )
+        async def chatgpt_protected_resource_metadata():
+            return {
+                "resource": f"{chatgpt_base_url}/mcp",
+                "authorization_servers": [chatgpt_base_url],
+                "scopes_supported": ["memory:read", "memory:write"],
+                "resource_name": "LightRAG Memory",
+            }
+
+        app.mount(chatgpt_mount_path, chatgpt_mcp_app)
+        logger.info(
+            "OAuth-protected ChatGPT LightRAG MCP mounted at %s/mcp",
+            chatgpt_mount_path,
+        )
 
     # Add custom validation error handler for /query/data endpoint
     @app.exception_handler(RequestValidationError)

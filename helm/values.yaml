@@ -92,6 +92,9 @@ config:
     transport: streamable-http
     jsonResponse: "false"
     statelessHttp: "true"
+  chatgpt:
+    enabled: "false"
+    baseUrl: ""
 
 probes:
   startup:

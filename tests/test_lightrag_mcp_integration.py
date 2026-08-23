@@ -6,6 +6,7 @@ import pytest
 from lightrag.api.mcp_server import (
     AGENTIC_TOOL_DESCRIPTIONS,
     LightRAGMCPRuntime,
+    _matching_excerpt,
     create_lightrag_mcp,
     create_lightrag_mcp_http_app,
     mount_lightrag_mcp_http_app,
@@ -24,6 +25,7 @@ EXPECTED_TOOL_NAMES = {
     "insert_batch",
     "scan_for_new_documents",
     "get_documents",
+    "get_document_content",
     "get_pipeline_status",
     "get_graph_labels",
     "check_lightrag_health",
@@ -171,14 +173,9 @@ async def test_runtime_query_calls_live_lightrag_directly():
     )
 
     assert result["response"] == "direct response"
-    assert result["matches"] == [
-        {
-            "content": "matching source context",
-            "file_path": "a.md",
-            "reference_id": "1",
-            "chunk_id": "chunk-1",
-        }
-    ]
+    assert result["matches"][0]["content"] == "matching source context"
+    assert result["matches"][0]["chunk_id"] == "chunk-1"
+    assert result["matches"][0]["is_excerpt"] is False
     assert result["references"][0]["file_path"] == "a.md"
 
 
@@ -221,9 +218,103 @@ async def test_runtime_context_query_returns_matches_instead_of_raw_prompt():
         history_turns=0,
     )
 
-    assert result["response"] == "Retrieved 1 matching context chunk(s)."
+    assert result["response"] == "Retrieved 1 bounded source excerpt(s)."
     assert result["matches"][0]["content"] == "the useful matching excerpt"
     assert "very large graph prompt" not in str(result)
+
+
+def test_matching_excerpt_keeps_small_lookaround_around_query_terms():
+    content = "irrelevant " * 100 + "OAuth PKCE validation decision" + " tail" * 100
+
+    excerpt, matched_terms = _matching_excerpt(content, ["oauth", "pkce"])
+
+    assert len(excerpt) <= 706
+    assert "OAuth PKCE validation decision" in excerpt
+    assert matched_terms == ["oauth", "pkce"]
+    assert excerpt.startswith("...")
+    assert excerpt.endswith("...")
+
+
+@pytest.mark.asyncio
+async def test_runtime_query_limits_matches_and_resolves_document_ids():
+    chunks = [
+        {
+            "content": f"result {index} about OAuth",
+            "file_path": f"{index}.md",
+            "reference_id": str(index),
+            "chunk_id": f"chunk-{index}",
+        }
+        for index in range(10)
+    ]
+
+    class TextChunks:
+        async def get_by_ids(self, chunk_ids):
+            return [
+                {"full_doc_id": f"doc-{chunk_id.removeprefix('chunk-')}"}
+                for chunk_id in chunk_ids
+            ]
+
+    class Rag:
+        text_chunks = TextChunks()
+
+        async def aquery_llm(self, query, param):
+            return {
+                "llm_response": {"content": "unused"},
+                "data": {
+                    "chunks": chunks,
+                    "references": [
+                        {"reference_id": str(index), "file_path": f"{index}.md"}
+                        for index in range(10)
+                    ],
+                },
+            }
+
+    runtime = LightRAGMCPRuntime(lambda: Rag(), SimpleNamespace(), _args())
+    result = await runtime.query(
+        query="Find OAuth decisions",
+        mode="mix",
+        top_k=60,
+        only_need_context=True,
+        only_need_prompt=False,
+        response_type="Multiple Paragraphs",
+        max_token_for_text_unit=1000,
+        max_token_for_global_context=1000,
+        max_token_for_local_context=1000,
+        hl_keywords=[],
+        ll_keywords=[],
+        history_turns=0,
+    )
+
+    assert len(result["matches"]) == 6
+    assert len(result["references"]) == 6
+    assert result["matches"][0]["document_id"] == "doc-0"
+
+
+@pytest.mark.asyncio
+async def test_runtime_document_content_fetches_full_body_explicitly():
+    class Store:
+        def __init__(self, value):
+            self.value = value
+
+        async def get_by_id(self, key):
+            return self.value
+
+    rag = SimpleNamespace(
+        full_docs=Store({"content": "complete document body"}),
+        doc_status=Store(
+            {"file_path": "docs/design.md", "metadata": {"tags": ["design"]}}
+        ),
+    )
+    runtime = LightRAGMCPRuntime(lambda: rag, SimpleNamespace(), _args())
+
+    result = await runtime.document_content("doc-1")
+
+    assert result == {
+        "document_id": "doc-1",
+        "file_path": "docs/design.md",
+        "content": "complete document body",
+        "metadata": {"tags": ["design"]},
+    }
 
 
 @pytest.mark.asyncio
