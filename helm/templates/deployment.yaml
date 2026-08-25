@@ -172,6 +172,22 @@ spec:
               value: {{ .Values.config.chatgpt.baseUrl | quote }}
             - name: WHITELIST_PATHS
               value: "/health"
+            {{- if .Values.otel.enabled }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.otel.serviceName | quote }}
+            - name: LIGHTRAG_VERSION
+              value: {{ .Values.image.tag | quote }}
+            - name: OTEL_DEPLOYMENT_ENVIRONMENT
+              value: {{ .Values.otel.environment | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: {{ .Values.otel.metricExportInterval | quote }}
+            - name: OTEL_PYTHON_FASTAPI_EXCLUDED_URLS
+              value: {{ .Values.otel.excludedUrls | quote }}
+            {{- end }}
           startupProbe:
             httpGet:
               path: /health

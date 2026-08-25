@@ -78,6 +78,7 @@ from lightrag.kg.shared_storage import (
 from lightrag import pipeline_metrics
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
 from lightrag.operate import merge_nodes_and_edges
+from lightrag.observability import traced_async
 from lightrag.parser.base import ParseContext
 from lightrag.parser.llm_bridge import LLMBridgePipelineCancelled
 from lightrag.parser.registry import (
@@ -1644,6 +1645,7 @@ class _PipelineMixin:
                     f"File processing error: - ID: {doc_id} {error_doc['file_path']}"
                 )
 
+    @traced_async("lightrag.pipeline.process", metric="pipeline_duration")
     async def apipeline_process_enqueue_documents(
         self, _holding_busy: bool = False, token: str | None = None
     ) -> None:

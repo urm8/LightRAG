@@ -96,6 +96,14 @@ config:
     enabled: "false"
     baseUrl: ""
 
+otel:
+  enabled: true
+  endpoint: http://k8s-infra-otel-agent.signoz.svc.cluster.local:4318
+  serviceName: lightrag
+  environment: production
+  metricExportInterval: "60000"
+  excludedUrls: health
+
 probes:
   startup:
     failureThreshold: 60

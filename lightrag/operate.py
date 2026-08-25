@@ -75,6 +75,7 @@ from lightrag.chunk_schema import (
     strip_internal_multimodal_markup_for_extraction,
 )
 from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
+from lightrag.observability import traced_async
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -4395,6 +4396,7 @@ def _answer_cache_kv(
     return hashing_kv
 
 
+@traced_async("lightrag.query.graph", metric="query_duration")
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -6374,6 +6376,7 @@ async def naive_query(
 ) -> str | AsyncIterator[str]: ...
 
 
+@traced_async("lightrag.query.vector", metric="query_duration")
 async def naive_query(
     query: str,
     chunks_vdb: BaseVectorStorage,

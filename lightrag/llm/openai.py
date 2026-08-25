@@ -38,6 +38,7 @@ from lightrag.exceptions import EmptyTruncatedResponseError
 
 import numpy as np
 import base64
+import time
 from typing import Any, Union
 
 from dotenv import load_dotenv
@@ -350,6 +351,7 @@ async def openai_complete_if_cache(
 
     # Remove special kwargs that shouldn't be passed to OpenAI
     kwargs.pop("hashing_kv", None)
+    lightrag_role = kwargs.pop("_lightrag_role", None)
 
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
@@ -433,6 +435,7 @@ async def openai_complete_if_cache(
     # For Azure OpenAI, we must use the deployment name instead of the model name
     api_model = azure_deployment if use_azure and azure_deployment else model
 
+    request_started = time.perf_counter()
     try:
         # Single dispatch: create() covers the dict-based response_format
         # payloads used by this project. Typed/Pydantic helpers are rejected
@@ -440,9 +443,19 @@ async def openai_complete_if_cache(
         # returned unchanged so upstream tolerant JSON parsing can still
         # salvage them; finish_reason is only inspected when content is empty
         # (see the empty-content diagnostics below).
-        response = await openai_async_client.chat.completions.create(
-            model=api_model, messages=messages, **kwargs
-        )
+        from lightrag.observability import traced_operation
+
+        with traced_operation(
+            f"{api_model} chat",
+            {
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.model": api_model,
+                "lightrag.llm.role": lightrag_role or "default",
+            },
+        ):
+            response = await openai_async_client.chat.completions.create(
+                model=api_model, messages=messages, **kwargs
+            )
     except APITimeoutError as e:
         logger.error(f"OpenAI API Timeout Error: {e}")
         try:
@@ -598,7 +611,7 @@ async def openai_complete_if_cache(
                     cot_active = False
 
                 # After streaming is complete, track token usage
-                if token_tracker and final_chunk_usage:
+                if final_chunk_usage:
                     # Use actual usage from the API
                     token_counts = {
                         "prompt_tokens": getattr(final_chunk_usage, "prompt_tokens", 0),
@@ -607,7 +620,19 @@ async def openai_complete_if_cache(
                         ),
                         "total_tokens": getattr(final_chunk_usage, "total_tokens", 0),
                     }
-                    token_tracker.add_usage(token_counts)
+                    if token_tracker:
+                        token_tracker.add_usage(token_counts)
+                    from lightrag.observability import record_gen_ai_usage
+
+                    record_gen_ai_usage(
+                        operation="chat",
+                        model=api_model,
+                        base_url=base_url,
+                        input_tokens=token_counts["prompt_tokens"],
+                        output_tokens=token_counts["completion_tokens"],
+                        duration_s=time.perf_counter() - request_started,
+                        role=lightrag_role,
+                    )
                     logger.debug(f"Streaming token usage (from API): {token_counts}")
                 elif token_tracker:
                     logger.debug("No usage information available in streaming response")
@@ -694,7 +719,7 @@ async def openai_complete_if_cache(
             # reasoning model that burned the whole output budget on its
             # trace is exactly the case that raises, and omitting it would
             # under-report by a full-budget generation.
-            if token_tracker and hasattr(response, "usage"):
+            if hasattr(response, "usage") and response.usage:
                 token_counts = {
                     "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
                     "completion_tokens": getattr(
@@ -702,7 +727,19 @@ async def openai_complete_if_cache(
                     ),
                     "total_tokens": getattr(response.usage, "total_tokens", 0),
                 }
-                token_tracker.add_usage(token_counts)
+                if token_tracker:
+                    token_tracker.add_usage(token_counts)
+                from lightrag.observability import record_gen_ai_usage
+
+                record_gen_ai_usage(
+                    operation="chat",
+                    model=api_model,
+                    base_url=base_url,
+                    input_tokens=token_counts["prompt_tokens"],
+                    output_tokens=token_counts["completion_tokens"],
+                    duration_s=time.perf_counter() - request_started,
+                    role=lightrag_role,
+                )
 
             if (
                 not response
@@ -1095,14 +1132,35 @@ async def openai_embed(
             api_params["dimensions"] = embedding_dim
 
         # Make API call
-        response = await openai_async_client.embeddings.create(**api_params)
+        request_started = time.perf_counter()
+        from lightrag.observability import traced_operation
 
-        if token_tracker and hasattr(response, "usage"):
+        with traced_operation(
+            f"{api_model} embeddings",
+            {
+                "gen_ai.operation.name": "embeddings",
+                "gen_ai.request.model": api_model,
+            },
+        ):
+            response = await openai_async_client.embeddings.create(**api_params)
+
+        if hasattr(response, "usage") and response.usage:
             token_counts = {
                 "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
                 "total_tokens": getattr(response.usage, "total_tokens", 0),
             }
-            token_tracker.add_usage(token_counts)
+            if token_tracker:
+                token_tracker.add_usage(token_counts)
+            from lightrag.observability import record_gen_ai_usage
+
+            record_gen_ai_usage(
+                operation="embeddings",
+                model=api_model,
+                base_url=base_url,
+                input_tokens=token_counts["prompt_tokens"],
+                duration_s=time.perf_counter() - request_started,
+                role=context,
+            )
 
         return np.array(
             [

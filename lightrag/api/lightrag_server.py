@@ -1506,6 +1506,11 @@ def create_app(args):
 
     app = FastAPI(**app_kwargs)
 
+    from lightrag.observability import setup_telemetry
+
+    if setup_telemetry(app):
+        logger.info("OpenTelemetry initialized for traces and metrics")
+
     if mcp_http_app is not None:
         mount_lightrag_mcp_http_app(
             app, mcp_http_app, mcp_mount_path, api_key=api_key
@@ -1735,6 +1740,7 @@ def create_app(args):
                 history_messages=history_messages,
                 base_url=args.llm_binding_host,
                 api_key=args.llm_binding_api_key,
+                _lightrag_role="default",
                 **kwargs,
             )
 
@@ -2179,6 +2185,7 @@ def create_app(args):
                     history_messages=history_messages,
                     base_url=role_host,
                     api_key=role_apikey,
+                    _lightrag_role=role,
                     **kwargs,
                 )
 

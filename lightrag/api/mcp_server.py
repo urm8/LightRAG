@@ -274,6 +274,8 @@ async def _execute_lightrag_operation(
     *,
     tool_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from lightrag.observability import record_operation_duration, traced_operation
+
     started_at = time.perf_counter()
     try:
         logger.info(
@@ -281,8 +283,19 @@ async def _execute_lightrag_operation(
             operation_name,
             _summarize_tool_kwargs(tool_kwargs or {}),
         )
-        result = await operation_func()
+        with traced_operation(
+            f"execute_tool {operation_name}",
+            {
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": operation_name,
+                "gen_ai.tool.type": "datastore",
+                "rpc.system": "mcp",
+                "rpc.method": operation_name,
+            },
+        ):
+            result = await operation_func()
         elapsed_ms = (time.perf_counter() - started_at) * 1000
+        record_operation_duration("mcp_duration", elapsed_ms / 1000, "ok")
         logger.info(
             "Completed LightRAG MCP operation: %s duration_ms=%.2f response_type=%s result=%s",
             operation_name,
@@ -293,6 +306,7 @@ async def _execute_lightrag_operation(
         return _format_response(result)
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - started_at) * 1000
+        record_operation_duration("mcp_duration", elapsed_ms / 1000, "error")
         logger.exception(
             "LightRAG MCP operation failed: %s duration_ms=%.2f error_type=%s args=%s",
             operation_name,

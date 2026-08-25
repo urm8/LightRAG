@@ -100,6 +100,9 @@ api = [
     "uvicorn",
     "uvicorn-worker",
     "gunicorn",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0,<2.0.0",
+    "opentelemetry-instrumentation-fastapi>=0.48b0,<1.0.0",
+    "opentelemetry-sdk>=1.27.0,<2.0.0",
     # Document processing dependencies (required for API document upload functionality)
     "openpyxl>=3.0.0,<4.0.0",      # XLSX processing
     "pycryptodome>=3.0.0,<4.0.0",  # PDF encryption support
