@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 _MCP_MATCH_LIMIT = 6
 _MCP_EXCERPT_CHARS = 700
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _QUERY_STOP_WORDS = {
     "about",
     "after",
@@ -69,9 +70,19 @@ AGENTIC_TOOL_DESCRIPTIONS = {
         "when you need raw evidence before changing code."
     ),
     "insert_document": (
-        "Persist durable agent memory into LightRAG. Use after meaningful coding, "
-        "QA, debugging, design, planning, management, or deployment work to record "
-        "decisions, incidents, validation results, architecture notes, and reusable findings."
+        "Persist current factual project reference knowledge into LightRAG. Store "
+        "architecture, processes, dependencies, invariants, design rationale, and "
+        "source-anchored solution patterns; do not store task history or secrets."
+    ),
+    "save_skill": (
+        "Save a verified reusable agent skill in LightRAG. Use only for a repeatable "
+        "procedure with a passing check, a named failure pattern, at least one ruled-out "
+        "approach, project identity, and applicable references. Never include secrets."
+    ),
+    "search_skills": (
+        "Semantically search only reusable agent skills stored in LightRAG. Use before "
+        "re-deriving a recurring workflow. Returns bounded matching excerpts and document "
+        "IDs; call get_document_content only for a relevant skill that needs full detail."
     ),
     "upload_document": (
         "Add an external project document by file upload for later analysis, QA, "
@@ -455,8 +466,10 @@ class LightRAGMCPRuntime:
         hl_keywords: list[str],
         ll_keywords: list[str],
         history_turns: int,
+        required_tags: list[str] | None = None,
     ) -> dict[str, Any]:
         from lightrag.base import QueryParam
+        from lightrag.utils_pipeline import doc_status_field, normalize_document_tags
 
         normalized_mode = {"semantic": "naive", "keyword": "local"}.get(mode, mode)
         param = QueryParam(
@@ -482,9 +495,15 @@ class LightRAGMCPRuntime:
         result = await self.rag.aquery_llm(query, param=param)
         llm_response = result.get("llm_response", {})
         data = result.get("data", {})
-        chunks = [
+        normalized_required_tags = set(normalize_document_tags(required_tags))
+        candidate_chunks = [
             chunk for chunk in data.get("chunks", []) if chunk.get("content")
-        ][:_MCP_MATCH_LIMIT]
+        ]
+        chunks = (
+            candidate_chunks
+            if normalized_required_tags
+            else candidate_chunks[:_MCP_MATCH_LIMIT]
+        )
         chunk_rows: list[dict[str, Any] | None] = [None] * len(chunks)
         text_chunks = getattr(self.rag, "text_chunks", None)
         if chunks and text_chunks is not None:
@@ -492,9 +511,32 @@ class LightRAGMCPRuntime:
                 [chunk.get("chunk_id", "") for chunk in chunks]
             )
 
+        document_ids = [
+            chunk.get("full_doc_id") or (stored_chunk or {}).get("full_doc_id")
+            for chunk, stored_chunk in zip(chunks, chunk_rows, strict=True)
+        ]
+        tags_by_document: dict[str, list[str]] = {}
+        if normalized_required_tags:
+            unique_document_ids = list(dict.fromkeys(filter(None, document_ids)))
+            status_rows = await asyncio.gather(
+                *(self.rag.doc_status.get_by_id(doc_id) for doc_id in unique_document_ids)
+            )
+            tags_by_document = {
+                doc_id: normalize_document_tags(
+                    (doc_status_field(row, "metadata", {}) or {}).get("tags", [])
+                )
+                for doc_id, row in zip(unique_document_ids, status_rows, strict=True)
+                if row is not None
+            }
+
         terms = _query_terms(query, [*hl_keywords, *ll_keywords])
         matches = []
-        for chunk, stored_chunk in zip(chunks, chunk_rows, strict=True):
+        for chunk, document_id in zip(chunks, document_ids, strict=True):
+            document_tags = tags_by_document.get(document_id or "", [])
+            if normalized_required_tags and not normalized_required_tags.issubset(
+                document_tags
+            ):
+                continue
             excerpt, matched_terms = _matching_excerpt(chunk["content"], terms)
             matches.append(
                 {
@@ -502,12 +544,14 @@ class LightRAGMCPRuntime:
                     "file_path": chunk.get("file_path", "unknown_source"),
                     "reference_id": chunk.get("reference_id", ""),
                     "chunk_id": chunk.get("chunk_id", ""),
-                    "document_id": chunk.get("full_doc_id")
-                    or (stored_chunk or {}).get("full_doc_id"),
+                    "document_id": document_id,
+                    "tags": document_tags,
                     "matched_terms": matched_terms,
                     "is_excerpt": len(chunk["content"].strip()) > _MCP_EXCERPT_CHARS,
                 }
             )
+            if len(matches) == _MCP_MATCH_LIMIT:
+                break
         selected_reference_ids = {match["reference_id"] for match in matches}
         references = [
             reference
@@ -522,6 +566,124 @@ class LightRAGMCPRuntime:
             "response": response or "No relevant context found for the query.",
             "references": references,
             "history_turns": history_turns,
+        }
+
+    async def save_skill(
+        self,
+        *,
+        name: str,
+        description: str,
+        applicability: str,
+        procedure: str,
+        verification: str,
+        failure_pattern: str,
+        ruled_out: list[str],
+        references: list[str],
+        project_name: str,
+        project_path: str,
+        repository: str,
+        scope: Literal["project", "global"],
+    ) -> dict[str, Any]:
+        name = name.strip()
+        required_values = {
+            "description": description,
+            "applicability": applicability,
+            "procedure": procedure,
+            "verification": verification,
+            "failure_pattern": failure_pattern,
+            "project_name": project_name,
+            "project_path": project_path,
+            "repository": repository,
+        }
+        if not _SKILL_NAME_RE.fullmatch(name):
+            raise ValueError(
+                "name must contain lowercase letters, digits, and single hyphens only"
+            )
+        missing = [key for key, value in required_values.items() if not value.strip()]
+        if missing:
+            raise ValueError(f"required skill fields are blank: {', '.join(missing)}")
+        if not ruled_out or any(not item.strip() for item in ruled_out):
+            raise ValueError("ruled_out must contain at least one non-empty approach")
+        if any(not item.strip() for item in references):
+            raise ValueError("references must contain only non-empty values")
+
+        text = "\n".join(
+            [
+                f"Project: {project_name.strip()}",
+                f"Project entity: Project|{project_name.strip()}",
+                f"Project path: {project_path.strip()}",
+                f"Repository: {repository.strip()}",
+                f"Reference topic: Reusable agent skill {name}",
+                f"Skill: {name}",
+                f"Skill entity: Workflow|{name}",
+                f"Scope: {scope}",
+                f"Description: {description.strip()}",
+                f"Applicability: {applicability.strip()}",
+                "Procedure:",
+                procedure.strip(),
+                f"Verification: {verification.strip()}",
+                f"Failure pattern: {failure_pattern.strip()}",
+                "Ruled-out approaches:",
+                *(f"- {item.strip()}" for item in ruled_out),
+                "References:",
+                *(f"- {item.strip()}" for item in references),
+                f"Relations: Project|{project_name.strip()} IMPLEMENTS Workflow|{name}",
+            ]
+        )
+        result = await self.insert_text(
+            text,
+            ["skill", "agentic-development", "reusable-solution", f"skill-{name}", scope],
+        )
+        return {**result, "skill_name": name, "scope": scope}
+
+    async def search_skills(
+        self,
+        *,
+        query: str,
+        project_name: str,
+        project_path: str,
+        repository: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        if not all(
+            value.strip() for value in (query, project_name, project_path, repository)
+        ):
+            raise ValueError("query and project identity fields must not be blank")
+        if not 1 <= limit <= _MCP_MATCH_LIMIT:
+            raise ValueError(f"limit must be between 1 and {_MCP_MATCH_LIMIT}")
+        result = await self.query(
+            query=(
+                f"Project: {project_name}\nProject path: {project_path}\n"
+                f"Repository: {repository}\nReusable agent skill related to: {query}"
+            ),
+            mode="mix",
+            top_k=max(20, limit * 10),
+            only_need_context=True,
+            only_need_prompt=False,
+            response_type="Multiple Paragraphs",
+            max_token_for_text_unit=2048,
+            max_token_for_global_context=2048,
+            max_token_for_local_context=2048,
+            hl_keywords=[],
+            ll_keywords=[],
+            history_turns=0,
+            required_tags=["skill"],
+        )
+        skills = []
+        seen_document_ids: set[str] = set()
+        for match in result["matches"]:
+            document_id = match.get("document_id")
+            if document_id and document_id in seen_document_ids:
+                continue
+            if document_id:
+                seen_document_ids.add(document_id)
+            skills.append(match)
+            if len(skills) == limit:
+                break
+        return {
+            "skills": skills,
+            "response": f"Found {len(skills)} related reusable skill(s).",
+            "references": result["references"],
         }
 
     async def document_content(self, document_id: str) -> dict[str, Any]:
@@ -863,6 +1025,103 @@ def create_lightrag_mcp(
             "insert_document",
             _operation,
             tool_kwargs={"text": text, "tags": tags},
+        )
+
+    @mcp.tool(
+        name="save_skill",
+        description=AGENTIC_TOOL_DESCRIPTIONS["save_skill"],
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
+    )
+    async def save_skill(
+        name: str = Field(
+            description="Lowercase skill name using letters, digits, and hyphens"
+        ),
+        description: str = Field(description="What the skill does and when to use it"),
+        applicability: str = Field(description="Conditions where this procedure applies"),
+        procedure: str = Field(description="Reusable steps, commands, and constraints"),
+        verification: str = Field(description="Passing check that verified the procedure"),
+        failure_pattern: str = Field(
+            description="Named failure condition the procedure avoids or diagnoses"
+        ),
+        ruled_out: list[str] = Field(
+            description="At least one inapplicable approach and the reason"
+        ),
+        project_name: str = Field(description="Active project name"),
+        project_path: str = Field(description="Absolute active project path"),
+        repository: str = Field(description="Active repository remote"),
+        references: list[str] = Field(
+            default_factory=list,
+            description="Applicable source URLs, documentation, standards, or libraries",
+        ),
+        scope: Literal["project", "global"] = Field(
+            default="project",
+            description="Project-specific or cross-project applicability",
+        ),
+    ) -> dict[str, Any]:
+        async def _operation() -> Any:
+            return await runtime.save_skill(
+                name=name,
+                description=description,
+                applicability=applicability,
+                procedure=procedure,
+                verification=verification,
+                failure_pattern=failure_pattern,
+                ruled_out=ruled_out,
+                references=references,
+                project_name=project_name,
+                project_path=project_path,
+                repository=repository,
+                scope=scope,
+            )
+
+        return await _execute_lightrag_operation(
+            "save_skill",
+            _operation,
+            tool_kwargs={
+                "name": name,
+                "project_name": project_name,
+                "scope": scope,
+                "references": references,
+            },
+        )
+
+    @mcp.tool(
+        name="search_skills",
+        description=AGENTIC_TOOL_DESCRIPTIONS["search_skills"],
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
+    )
+    async def search_skills(
+        query: str = Field(description="Workflow or problem to find a reusable skill for"),
+        project_name: str = Field(description="Active project name"),
+        project_path: str = Field(description="Absolute active project path"),
+        repository: str = Field(description="Active repository remote"),
+        limit: int = Field(default=3, ge=1, le=_MCP_MATCH_LIMIT),
+    ) -> dict[str, Any]:
+        async def _operation() -> Any:
+            return await runtime.search_skills(
+                query=query,
+                project_name=project_name,
+                project_path=project_path,
+                repository=repository,
+                limit=limit,
+            )
+
+        return await _execute_lightrag_operation(
+            "search_skills",
+            _operation,
+            tool_kwargs={
+                "query": query,
+                "project_name": project_name,
+                "limit": limit,
+            },
         )
 
     @mcp.tool(

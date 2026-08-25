@@ -165,10 +165,27 @@ jobs:
         run: |
           kubectl -n "$NAMESPACE" get pods -o wide
           kubectl -n "$NAMESPACE" rollout status deployment/"$RELEASE" --timeout=5m
+          test "$(kubectl -n "$NAMESPACE" get deployment/"$RELEASE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')" \
+            = "${IMAGE}:${{ steps.meta.outputs.image_tag }}"
           test "$(kubectl -n "$NAMESPACE" get pod -l app.kubernetes.io/instance="$RELEASE" \
             -o jsonpath='{.items[0].spec.nodeName}')" != "master-node"
-          curl -fsSL --retry 24 --retry-delay 5 --retry-all-errors \
-            https://rag.urm8.org/health >/dev/null
+          health="$(curl -fsSL --retry 24 --retry-delay 5 --retry-all-errors \
+            https://rag.urm8.org/health)"
+          jq -e '.status == "healthy" and .auth_mode == "enabled"' <<<"$health" >/dev/null
+          kubectl -n "$NAMESPACE" logs deployment/"$RELEASE" \
+            | grep -q 'PostgreSQL, Connected to database at postgresql.persistence.svc.cluster.local'
+          kubectl -n "$NAMESPACE" logs deployment/"$RELEASE" \
+            | grep -q 'Integrated LightRAG MCP mounted at /mcp'
+          api_key="$(kubectl -n "$NAMESPACE" get secret lightrag-app \
+            -o jsonpath='{.data.LIGHTRAG_API_KEY}' | base64 --decode)"
+          initialize='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deployment-smoke","version":"1"}}}'
+          curl -fsSL --retry 12 --retry-delay 5 --retry-all-errors \
+            -H "X-API-Key: $api_key" \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            --data "$initialize" https://rag.urm8.org/mcp \
+            | grep -q '"serverInfo"'
 
       - name: Cluster diagnostics on failure
         if: failure()

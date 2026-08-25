@@ -58,6 +58,7 @@ inputs/
 output/
 rag_storage/
 data/
+models/
 
 # User cumstomized prompt directory
 prompts/entity_type/

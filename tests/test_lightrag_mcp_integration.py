@@ -20,6 +20,8 @@ from starlette.testclient import TestClient
 EXPECTED_TOOL_NAMES = {
     "query_document",
     "insert_document",
+    "save_skill",
+    "search_skills",
     "upload_document",
     "insert_file",
     "insert_batch",
@@ -79,7 +81,9 @@ async def test_integrated_lightrag_mcp_tool_descriptions_are_agentic():
     assert "analytics" in tools["query_document"].description
     assert "debugging" in tools["query_document"].description
     assert "deployment" in tools["query_document"].description
-    assert "durable agent memory" in tools["insert_document"].description
+    assert "factual project reference" in tools["insert_document"].description
+    assert "passing check" in tools["save_skill"].description
+    assert "only reusable agent skills" in tools["search_skills"].description
     assert "memory pressure" in tools["check_memory_pressure"].description
 
 
@@ -336,6 +340,139 @@ async def test_runtime_insert_schedules_live_lightrag_ingestion():
     assert inserted[0][3] == ["skill", "agentic-development"]
     assert result["tags"] == ["skill", "agentic-development"]
     assert inserted[0][2] == result["track_id"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_save_skill_stores_verified_tagged_reference():
+    inserted = []
+
+    class Rag:
+        async def ainsert(self, texts, *, file_paths, track_id, tags):
+            inserted.append((texts, file_paths, track_id, tags))
+
+    runtime = LightRAGMCPRuntime(lambda: Rag(), SimpleNamespace(), _args())
+    result = await runtime.save_skill(
+        name="verify-mcp-tools",
+        description="Verify every integrated MCP tool through FastMCP.",
+        applicability="An integrated MCP route or tool changes.",
+        procedure="List tools, call each read-only tool, then inspect structured output.",
+        verification="The focused MCP integration test passes.",
+        failure_pattern="A mounted MCP route advertises stale or unusable tools.",
+        ruled_out=["Health-only checks do not exercise tool schemas or handlers."],
+        references=["https://gofastmcp.com/"],
+        project_name="LightRAG",
+        project_path="/work/LightRAG",
+        repository="https://github.com/HKUDS/LightRAG",
+        scope="project",
+    )
+    await asyncio.gather(*runtime.background_tasks)
+
+    stored_text = inserted[0][0][0]
+    assert "Project entity: Project|LightRAG" in stored_text
+    assert "Skill entity: Workflow|verify-mcp-tools" in stored_text
+    assert "Verification: The focused MCP integration test passes." in stored_text
+    assert "https://gofastmcp.com/" in stored_text
+    assert inserted[0][3] == [
+        "skill",
+        "agentic-development",
+        "reusable-solution",
+        "skill-verify-mcp-tools",
+        "project",
+    ]
+    assert result["skill_name"] == "verify-mcp-tools"
+
+
+@pytest.mark.asyncio
+async def test_runtime_save_skill_enforces_promotion_gate():
+    runtime = LightRAGMCPRuntime(lambda: SimpleNamespace(), SimpleNamespace(), _args())
+
+    with pytest.raises(ValueError, match="ruled_out"):
+        await runtime.save_skill(
+            name="unverified-skill",
+            description="A procedure.",
+            applicability="A condition.",
+            procedure="Do the thing.",
+            verification="A check passed.",
+            failure_pattern="The thing fails.",
+            ruled_out=[],
+            references=[],
+            project_name="LightRAG",
+            project_path="/work/LightRAG",
+            repository="https://github.com/HKUDS/LightRAG",
+            scope="project",
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_search_skills_filters_before_match_limit_and_deduplicates():
+    chunks = [
+        {
+            "content": f"Unrelated architecture note {index}",
+            "file_path": f"note-{index}.md",
+            "reference_id": str(index),
+            "chunk_id": f"chunk-{index}",
+        }
+        for index in range(8)
+    ] + [
+        {
+            "content": "Reusable procedure for verifying FastMCP tools",
+            "file_path": "mcp-memory/skill.txt",
+            "reference_id": "8",
+            "chunk_id": "chunk-8",
+        },
+        {
+            "content": "FastMCP verification commands and constraints",
+            "file_path": "mcp-memory/skill.txt",
+            "reference_id": "9",
+            "chunk_id": "chunk-9",
+        },
+    ]
+
+    class TextChunks:
+        async def get_by_ids(self, chunk_ids):
+            return [
+                {
+                    "full_doc_id": "skill-doc"
+                    if chunk_id in {"chunk-8", "chunk-9"}
+                    else f"note-doc-{chunk_id}"
+                }
+                for chunk_id in chunk_ids
+            ]
+
+    class DocStatus:
+        async def get_by_id(self, document_id):
+            tags = ["skill", "agentic-development"] if document_id == "skill-doc" else ["note"]
+            return {"metadata": {"tags": tags}}
+
+    class Rag:
+        text_chunks = TextChunks()
+        doc_status = DocStatus()
+
+        async def aquery_llm(self, query, param):
+            assert "Reusable agent skill related to" in query
+            return {
+                "llm_response": {"content": "unused"},
+                "data": {
+                    "chunks": chunks,
+                    "references": [
+                        {"reference_id": str(index), "file_path": f"{index}.md"}
+                        for index in range(10)
+                    ],
+                },
+            }
+
+    runtime = LightRAGMCPRuntime(lambda: Rag(), SimpleNamespace(), _args())
+    result = await runtime.search_skills(
+        query="verify MCP tools",
+        project_name="LightRAG",
+        project_path="/work/LightRAG",
+        repository="https://github.com/HKUDS/LightRAG",
+        limit=3,
+    )
+
+    assert len(result["skills"]) == 1
+    assert result["skills"][0]["document_id"] == "skill-doc"
+    assert result["skills"][0]["tags"] == ["skill", "agentic-development"]
 
 
 @pytest.mark.asyncio

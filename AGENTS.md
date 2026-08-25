@@ -41,12 +41,9 @@ Top-level directories:
 - When editing setup logic, keep `.env` host-usable and treat `docker-compose.final.yml` as generated output assembled from `scripts/setup/templates/*.yml`; compose-only overrides belong in the wizard-managed compose layer rather than being persisted back into `.env`.
 
 ## LightRAG MCP & Skill Workflow
-- Use the installed Codex skill `lightrag-agentic-development` (`/Users/max/.codex/skills/lightrag-agentic-development/SKILL.md`) for non-trivial LightRAG development work involving analytics, management, QA, coding, design, planning, debugging, deployment, incident investigation, or durable project-memory updates.
-- Treat the remote MCP endpoint `https://rag.urm8.org/mcp` as the primary shared project memory surface when the `lightrag` MCP server is available.
-- Before meaningful code changes, query LightRAG for prior decisions, architecture notes, resolved incidents, and related implementation context; prefer `only_need_context=true` when raw evidence is needed before editing. Always cite the active project in the query text, e.g. `Project: LightRAG`, `Project path: /Users/max/projs/github.com/HKUDS/LightRAG`, then the actual question.
-- After meaningful debugging, validation, design, deployment, prompt/model, or architecture work, persist durable notes back into LightRAG so future Codex sessions can reuse the result. Every saved payload must cite the active project first and make it extractable as a `Project` entity, e.g. `Project entity: Project|LightRAG`, plus repository/path when known.
-- Saved LightRAG notes should include explicit project relation hints where useful, such as `LightRAG USES ...`, `LightRAG IMPLEMENTS ...`, `LightRAG FAILS_WITH ...`, `LightRAG IMPROVES ...`, or `LightRAG PART_OF ...`, so graph extraction anchors agentic workflow facts to the current project.
-- Do not preflight LightRAG health. Call `check_lightrag_health` only after an MCP timeout, connection failure, or invalid/unavailable response; use `get_pipeline_status` before relying on newly inserted memory.
+- Use the installed `lightrag-agentic-development` skill and remote MCP endpoint `https://rag.urm8.org/mcp` for non-trivial project-reference work.
+- Repository source is authoritative; every LightRAG query and write identifies the active project.
+- If LightRAG fails, follow the skill's recovery flow, continue from repository evidence, and report the failed query or write.
 
 ## Core Architecture
 
