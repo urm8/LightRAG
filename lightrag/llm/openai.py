@@ -443,19 +443,29 @@ async def openai_complete_if_cache(
         # returned unchanged so upstream tolerant JSON parsing can still
         # salvage them; finish_reason is only inspected when content is empty
         # (see the empty-content diagnostics below).
-        from lightrag.observability import traced_operation
+        from lightrag.observability import gen_ai_attributes, traced_operation
 
         with traced_operation(
             f"{api_model} chat",
-            {
-                "gen_ai.operation.name": "chat",
-                "gen_ai.request.model": api_model,
-                "lightrag.llm.role": lightrag_role or "default",
-            },
-        ):
+            gen_ai_attributes(
+                "chat", api_model, base_url, lightrag_role or "default"
+            ),
+        ) as llm_span:
             response = await openai_async_client.chat.completions.create(
                 model=api_model, messages=messages, **kwargs
             )
+            usage = getattr(response, "usage", None)
+            if llm_span is not None and usage:
+                llm_span.set_attributes(
+                    {
+                        "gen_ai.usage.input_tokens": getattr(
+                            usage, "prompt_tokens", 0
+                        ),
+                        "gen_ai.usage.output_tokens": getattr(
+                            usage, "completion_tokens", 0
+                        ),
+                    }
+                )
     except APITimeoutError as e:
         logger.error(f"OpenAI API Timeout Error: {e}")
         try:
@@ -1133,16 +1143,18 @@ async def openai_embed(
 
         # Make API call
         request_started = time.perf_counter()
-        from lightrag.observability import traced_operation
+        from lightrag.observability import gen_ai_attributes, traced_operation
 
         with traced_operation(
             f"{api_model} embeddings",
-            {
-                "gen_ai.operation.name": "embeddings",
-                "gen_ai.request.model": api_model,
-            },
-        ):
+            gen_ai_attributes("embeddings", api_model, base_url, context),
+        ) as embedding_span:
             response = await openai_async_client.embeddings.create(**api_params)
+            usage = getattr(response, "usage", None)
+            if embedding_span is not None and usage:
+                embedding_span.set_attribute(
+                    "gen_ai.usage.input_tokens", getattr(usage, "prompt_tokens", 0)
+                )
 
         if hasattr(response, "usage") and response.usage:
             token_counts = {

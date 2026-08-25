@@ -34,6 +34,19 @@ def _provider_name(base_url: str | None) -> str:
     return "openai_compatible"
 
 
+def gen_ai_attributes(
+    operation: str, model: str, base_url: str | None, role: str | None = None
+) -> dict[str, str]:
+    attributes = {
+        "gen_ai.operation.name": operation,
+        "gen_ai.provider.name": _provider_name(base_url),
+        "gen_ai.request.model": model,
+    }
+    if role:
+        attributes["lightrag.llm.role"] = role
+    return attributes
+
+
 def setup_telemetry(app: Any) -> bool:
     """Configure OTLP/HTTP tracing and metrics when an endpoint is supplied."""
     global _initialized, _instruments
@@ -131,22 +144,7 @@ def record_gen_ai_usage(
     trace, _ = _otel_api()
     if trace is None:
         return
-    attrs = {
-        "gen_ai.operation.name": operation,
-        "gen_ai.provider.name": _provider_name(base_url),
-        "gen_ai.request.model": model,
-    }
-    if role:
-        attrs["lightrag.llm.role"] = role
-    span = trace.get_current_span()
-    if span.is_recording():
-        span.set_attributes(
-            {
-                **attrs,
-                "gen_ai.usage.input_tokens": input_tokens,
-                "gen_ai.usage.output_tokens": output_tokens,
-            }
-        )
+    attrs = gen_ai_attributes(operation, model, base_url, role)
     token_histogram = _instruments.get("token_usage")
     if token_histogram:
         token_histogram.record(input_tokens, {**attrs, "gen_ai.token.type": "input"})
