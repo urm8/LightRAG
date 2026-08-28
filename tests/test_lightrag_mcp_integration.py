@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from lightrag.api.mcp_server import (
+    AGENTIC_SERVER_INSTRUCTIONS,
     AGENTIC_TOOL_DESCRIPTIONS,
     LightRAGMCPRuntime,
     _matching_excerpt,
@@ -19,6 +20,10 @@ from starlette.testclient import TestClient
 
 EXPECTED_TOOL_NAMES = {
     "query_document",
+    "query_text",
+    "query_graph",
+    "query_mixed",
+    "query_tagged",
     "insert_document",
     "save_skill",
     "search_skills",
@@ -77,7 +82,10 @@ async def test_integrated_lightrag_mcp_tool_descriptions_are_agentic():
 
     tools = await mcp.get_tools()
 
-    assert tools["query_document"].description == AGENTIC_TOOL_DESCRIPTIONS["query_document"]
+    assert (
+        tools["query_document"].description
+        == AGENTIC_TOOL_DESCRIPTIONS["query_document"]
+    )
     assert "analytics" in tools["query_document"].description
     assert "debugging" in tools["query_document"].description
     assert "deployment" in tools["query_document"].description
@@ -85,6 +93,11 @@ async def test_integrated_lightrag_mcp_tool_descriptions_are_agentic():
     assert "passing check" in tools["save_skill"].description
     assert "only reusable agent skills" in tools["search_skills"].description
     assert "memory pressure" in tools["check_memory_pressure"].description
+    assert tools["query_text"].description == AGENTIC_TOOL_DESCRIPTIONS["query_text"]
+    assert "scope=local" in tools["query_graph"].description
+    assert "conversation_history" in tools["query_mixed"].description
+    assert "every required tag" in tools["query_tagged"].description
+    assert mcp.instructions == AGENTIC_SERVER_INSTRUCTIONS
 
 
 def test_lightrag_mcp_http_app_mounts_at_root_for_fastapi_prefix():
@@ -127,14 +140,8 @@ def test_lightrag_mcp_mount_requires_configured_api_key():
 
     assert client.post("/mcp").status_code == 403
     assert client.post("/mcp", headers={"X-API-Key": "wrong"}).status_code == 403
-    assert (
-        client.post("/mcp", headers={"X-API-Key": "test-key"}).status_code
-        == 200
-    )
-    assert (
-        client.post("/mcp/", headers={"X-API-Key": "test-key"}).status_code
-        == 200
-    )
+    assert client.post("/mcp", headers={"X-API-Key": "test-key"}).status_code == 200
+    assert client.post("/mcp/", headers={"X-API-Key": "test-key"}).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -199,9 +206,7 @@ async def test_runtime_context_query_returns_matches_instead_of_raw_prompt():
                             "chunk_id": "chunk-7",
                         }
                     ],
-                    "references": [
-                        {"reference_id": "7", "file_path": "memory.md"}
-                    ],
+                    "references": [{"reference_id": "7", "file_path": "memory.md"}],
                 },
             }
 
@@ -225,6 +230,108 @@ async def test_runtime_context_query_returns_matches_instead_of_raw_prompt():
     assert result["response"] == "Retrieved 1 bounded source excerpt(s)."
     assert result["matches"][0]["content"] == "the useful matching excerpt"
     assert "very large graph prompt" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_runtime_query_supports_independent_limits_and_retrieval_history():
+    class Rag:
+        async def aquery_llm(self, query, param):
+            assert "user: Which query tool handles code?" in query
+            assert query.endswith("Current query:\nWhat about errors?")
+            assert param.top_k == 40
+            assert param.chunk_top_k == 12
+            assert param.conversation_history == [
+                {"role": "user", "content": "Which query tool handles code?"},
+                {"role": "assistant", "content": "Use query_text."},
+            ]
+            assert param.user_prompt == "Cite the implementation."
+            assert param.enable_rerank is False
+            return {"llm_response": {"content": "answer"}, "data": {}}
+
+    runtime = LightRAGMCPRuntime(lambda: Rag(), SimpleNamespace(), _args())
+    result = await runtime.query(
+        query="What about errors?",
+        mode="mix",
+        top_k=40,
+        chunk_top_k=12,
+        only_need_context=False,
+        only_need_prompt=False,
+        response_type="Multiple Paragraphs",
+        max_token_for_text_unit=1000,
+        max_token_for_global_context=1000,
+        max_token_for_local_context=1000,
+        hl_keywords=[],
+        ll_keywords=[],
+        history_turns=1,
+        conversation_history=[
+            {"role": "user", "content": "Which query tool handles code?"},
+            {"role": "assistant", "content": "Use query_text."},
+        ],
+        user_prompt="Cite the implementation.",
+        enable_rerank=False,
+    )
+
+    assert result["retrieval"] == {
+        "mode": "mix",
+        "top_k": 40,
+        "chunk_top_k": 12,
+        "history_messages_used": 2,
+        "history_used_for_retrieval": True,
+        "required_tags": [],
+        "enable_rerank": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_runtime_tag_filter_forces_context_only_output():
+    class TextChunks:
+        async def get_by_ids(self, chunk_ids):
+            return [{"full_doc_id": "doc-1"}]
+
+    class DocStatus:
+        async def get_by_id(self, document_id):
+            return {"metadata": {"tags": ["project", "decision"]}}
+
+    class Rag:
+        text_chunks = TextChunks()
+        doc_status = DocStatus()
+
+        async def aquery_llm(self, query, param):
+            assert param.only_need_context is True
+            return {
+                "llm_response": {"content": "must not escape"},
+                "data": {
+                    "chunks": [
+                        {
+                            "content": "Tagged decision",
+                            "reference_id": "1",
+                            "chunk_id": "chunk-1",
+                        }
+                    ],
+                    "references": [{"reference_id": "1"}],
+                },
+            }
+
+    runtime = LightRAGMCPRuntime(lambda: Rag(), SimpleNamespace(), _args())
+    result = await runtime.query(
+        query="Find the decision",
+        mode="mix",
+        top_k=20,
+        chunk_top_k=10,
+        only_need_context=False,
+        only_need_prompt=False,
+        response_type="Multiple Paragraphs",
+        max_token_for_text_unit=1000,
+        max_token_for_global_context=1000,
+        max_token_for_local_context=1000,
+        hl_keywords=[],
+        ll_keywords=[],
+        history_turns=0,
+        required_tags=["Decision"],
+    )
+
+    assert result["response"] == "Retrieved 1 bounded source excerpt(s)."
+    assert result["matches"][0]["tags"] == ["project", "decision"]
 
 
 def test_matching_excerpt_keeps_small_lookaround_around_query_terms():
@@ -441,7 +548,11 @@ async def test_runtime_search_skills_filters_before_match_limit_and_deduplicates
 
     class DocStatus:
         async def get_by_id(self, document_id):
-            tags = ["skill", "agentic-development"] if document_id == "skill-doc" else ["note"]
+            tags = (
+                ["skill", "agentic-development"]
+                if document_id == "skill-doc"
+                else ["note"]
+            )
             return {"metadata": {"tags": tags}}
 
     class Rag:

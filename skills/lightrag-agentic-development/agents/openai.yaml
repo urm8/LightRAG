@@ -1,14 +1,14 @@
 interface:
   display_name: "LightRAG Agentic Development"
-  short_description: "Maintain project memory and reusable skills"
+  short_description: "Route source-grounded LightRAG project queries"
   brand_color: "#2563EB"
-  default_prompt: "Use $lightrag-agentic-development to retrieve and maintain current factual project knowledge and verified reusable agent skills."
+  default_prompt: "Use $lightrag-agentic-development to choose the right LightRAG query tool and retrieve source-grounded project knowledge."
 dependencies:
   tools:
     - type: "mcp"
       value: "lightrag"
-      description: "Local LightRAG MCP server for factual project reference queries and maintenance"
+      description: "LightRAG MCP server for source-grounded project queries and memory maintenance"
       transport: "streamable_http"
-      url: "http://127.0.0.1:9621/mcp"
+      url: "https://rag.urm8.org/mcp"
 policy:
   allow_implicit_invocation: true

@@ -61,13 +61,38 @@ def _env_bool(name: str, default: bool) -> bool:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
+
 AGENTIC_TOOL_DESCRIPTIONS = {
     "query_document": (
-        "Agentic development memory search. Use for analytics, planning, QA, "
-        "coding, design review, debugging, deployment research, incident context, "
-        "and retrieving prior project decisions from LightRAG. Returns matching "
-        "source excerpts with provenance in one call. Prefer only_need_context=true "
-        "when you need raw evidence before changing code."
+        "Advanced LightRAG query with independent graph and chunk limits, optional "
+        "conversation-aware retrieval, reranking, answer instructions, and tag-scoped "
+        "evidence. Use this only when query_text, query_graph, query_mixed, or query_tagged "
+        "does not expose enough control. Set only_need_context=true for analytics, "
+        "debugging, deployment review, evaluation, or inspecting sources before changing code."
+    ),
+    "query_text": (
+        "Search source text chunks directly without using the knowledge graph. Best "
+        "for exact code symbols, file paths, error messages, quotations, configuration "
+        "keys, and narrowly scoped semantic lookup. Start here when relationships between "
+        "entities are irrelevant; use query_mixed if direct text evidence is incomplete."
+    ),
+    "query_graph": (
+        "Search the LightRAG knowledge graph in local, global, or hybrid mode. Use "
+        "scope=local for facts about named entities, scope=global for broad themes and "
+        "relationships, and scope=hybrid for connections between multiple entities. "
+        "Use query_mixed when supporting source text matters as much as graph structure."
+    ),
+    "query_mixed": (
+        "Combine graph retrieval with direct text-chunk retrieval. Best default for "
+        "coding, architecture, debugging, chat, and questions whose retrieval shape is "
+        "not known in advance. Pass conversation_history for dependent follow-up questions; "
+        "use query_text instead for exact strings and query_tagged for mandatory tag scope."
+    ),
+    "query_tagged": (
+        "Return source evidence only from documents containing every required tag. Use "
+        "for project, memory type, workflow, or security scope that must not leak into the "
+        "result. Filtering occurs after candidate retrieval, so broaden top_k when recall "
+        "is low; this tool never generates from potentially out-of-scope context."
     ),
     "insert_document": (
         "Persist current factual project reference knowledge into LightRAG. Store "
@@ -156,6 +181,16 @@ AGENTIC_TOOL_DESCRIPTIONS = {
     ),
 }
 
+AGENTIC_SERVER_INSTRUCTIONS = """Use the narrowest LightRAG query tool that fits:
+- query_text for code symbols, paths, errors, quotes, config keys, and direct source chunks.
+- query_graph for entity facts or relationships: local=named entities, global=broad themes, hybrid=multiple entities.
+- query_mixed as the default for coding, architecture, debugging, chat, or uncertain retrieval shape.
+- query_tagged when every returned source must contain all requested tags; it returns evidence only.
+- query_document only for advanced overrides such as custom token budgets, prompts, reranking, or history behavior.
+Use only_need_context=true when gathering evidence for code changes or evaluation. Include the active project name,
+absolute path, and repository in project-memory queries. Treat repository source as authoritative. Search skills before
+re-deriving repeatable workflows, and store only verified durable facts or reusable procedures, never secrets or task logs."""
+
 
 def _to_jsonable(value: Any) -> Any:
     if value is None or isinstance(value, str | int | float | bool):
@@ -241,7 +276,8 @@ def _matching_excerpt(content: str, terms: list[str]) -> tuple[str, list[str]]:
         best_position, _ = max(
             positions,
             key=lambda item: sum(
-                term in folded[
+                term
+                in folded[
                     max(0, item[0] - _MCP_EXCERPT_CHARS // 2) : item[0]
                     + _MCP_EXCERPT_CHARS // 2
                 ]
@@ -265,7 +301,9 @@ def _matching_excerpt(content: str, terms: list[str]) -> tuple[str, list[str]]:
 
 def _normalize_source_path(file_path: str | None) -> str:
     normalized = (file_path or "").strip()
-    return normalized if normalized and normalized != "no-file-path" else "unknown_source"
+    return (
+        normalized if normalized and normalized != "no-file-path" else "unknown_source"
+    )
 
 
 async def _execute_lightrag_operation(
@@ -471,6 +509,7 @@ class LightRAGMCPRuntime:
         query: str,
         mode: str,
         top_k: int,
+        chunk_top_k: int | None = None,
         only_need_context: bool,
         only_need_prompt: bool,
         response_type: str,
@@ -480,36 +519,83 @@ class LightRAGMCPRuntime:
         hl_keywords: list[str],
         ll_keywords: list[str],
         history_turns: int,
+        conversation_history: list[dict[str, str]] | None = None,
+        use_history_for_retrieval: bool = True,
+        user_prompt: str | None = None,
+        enable_rerank: bool = True,
+        max_total_tokens: int | None = None,
         required_tags: list[str] | None = None,
     ) -> dict[str, Any]:
         from lightrag.base import QueryParam
         from lightrag.utils_pipeline import doc_status_field, normalize_document_tags
 
         normalized_mode = {"semantic": "naive", "keyword": "local"}.get(mode, mode)
+        if normalized_mode not in {"local", "global", "hybrid", "naive", "mix"}:
+            raise ValueError(f"Unsupported query mode: {mode}")
+        if top_k < 1 or (chunk_top_k is not None and chunk_top_k < 1):
+            raise ValueError("top_k and chunk_top_k must be positive")
+        if history_turns < 0:
+            raise ValueError("history_turns must not be negative")
+        if only_need_context and only_need_prompt:
+            raise ValueError(
+                "only_need_context and only_need_prompt are mutually exclusive"
+            )
+
+        effective_chunk_top_k = chunk_top_k if chunk_top_k is not None else top_k
+        history = conversation_history or []
+        for message in history:
+            if message.get("role") not in {"user", "assistant", "system"}:
+                raise ValueError(
+                    "conversation history roles must be user, assistant, or system"
+                )
+            if not isinstance(message.get("content"), str):
+                raise ValueError("conversation history content must be a string")
+        if history_turns == 0:
+            history = []
+        else:
+            history = history[-(history_turns * 2) :]
+
+        retrieval_query = query
+        if history and use_history_for_retrieval:
+            history_context = "\n".join(
+                f"{message['role']}: {message['content']}" for message in history
+            )
+            retrieval_query = (
+                f"Conversation context:\n{history_context}\nCurrent query:\n{query}"
+            )
+
+        normalized_required_tags = set(normalize_document_tags(required_tags))
+        if normalized_required_tags and only_need_prompt:
+            raise ValueError("required_tags cannot be combined with only_need_prompt")
+        effective_only_need_context = only_need_context or bool(
+            normalized_required_tags
+        )
         param = QueryParam(
             mode=normalized_mode,
             stream=False,
             top_k=top_k,
-            chunk_top_k=top_k,
-            only_need_context=only_need_context,
+            chunk_top_k=effective_chunk_top_k,
+            only_need_context=effective_only_need_context,
             only_need_prompt=only_need_prompt,
             response_type=response_type,
             max_entity_tokens=max_token_for_local_context,
             max_relation_tokens=max_token_for_global_context,
-            max_total_tokens=(
+            max_total_tokens=max_total_tokens
+            or (
                 max_token_for_text_unit
                 + max_token_for_global_context
                 + max_token_for_local_context
             ),
             hl_keywords=hl_keywords,
             ll_keywords=ll_keywords,
-            conversation_history=[],
+            conversation_history=history,
+            user_prompt=user_prompt,
+            enable_rerank=enable_rerank,
             include_references=True,
         )
-        result = await self.rag.aquery_llm(query, param=param)
+        result = await self.rag.aquery_llm(retrieval_query, param=param)
         llm_response = result.get("llm_response", {})
         data = result.get("data", {})
-        normalized_required_tags = set(normalize_document_tags(required_tags))
         candidate_chunks = [
             chunk for chunk in data.get("chunks", []) if chunk.get("content")
         ]
@@ -533,7 +619,10 @@ class LightRAGMCPRuntime:
         if normalized_required_tags:
             unique_document_ids = list(dict.fromkeys(filter(None, document_ids)))
             status_rows = await asyncio.gather(
-                *(self.rag.doc_status.get_by_id(doc_id) for doc_id in unique_document_ids)
+                *(
+                    self.rag.doc_status.get_by_id(doc_id)
+                    for doc_id in unique_document_ids
+                )
             )
             tags_by_document = {
                 doc_id: normalize_document_tags(
@@ -543,7 +632,7 @@ class LightRAGMCPRuntime:
                 if row is not None
             }
 
-        terms = _query_terms(query, [*hl_keywords, *ll_keywords])
+        terms = _query_terms(retrieval_query, [*hl_keywords, *ll_keywords])
         matches = []
         for chunk, document_id in zip(chunks, document_ids, strict=True):
             document_tags = tags_by_document.get(document_id or "", [])
@@ -573,13 +662,24 @@ class LightRAGMCPRuntime:
             if reference.get("reference_id") in selected_reference_ids
         ]
         response = llm_response.get("content")
-        if only_need_context:
+        if effective_only_need_context:
             response = f"Retrieved {len(matches)} bounded source excerpt(s)."
         return {
             "matches": matches,
             "response": response or "No relevant context found for the query.",
             "references": references,
             "history_turns": history_turns,
+            "retrieval": {
+                "mode": normalized_mode,
+                "top_k": top_k,
+                "chunk_top_k": effective_chunk_top_k,
+                "history_messages_used": len(history),
+                "history_used_for_retrieval": bool(
+                    history and use_history_for_retrieval
+                ),
+                "required_tags": sorted(normalized_required_tags),
+                "enable_rerank": enable_rerank,
+            },
         }
 
     async def save_skill(
@@ -646,7 +746,13 @@ class LightRAGMCPRuntime:
         )
         result = await self.insert_text(
             text,
-            ["skill", "agentic-development", "reusable-solution", f"skill-{name}", scope],
+            [
+                "skill",
+                "agentic-development",
+                "reusable-solution",
+                f"skill-{name}",
+                scope,
+            ],
         )
         return {**result, "skill_name": name, "scope": scope}
 
@@ -739,7 +845,9 @@ class LightRAGMCPRuntime:
             raise ValueError("text must contain at least one non-empty document")
         track_id = f"mcp-{uuid4().hex}"
         normalized_tags = normalize_document_tags(tags)
-        file_paths = [f"mcp-memory/{track_id}-{index}.txt" for index in range(len(texts))]
+        file_paths = [
+            f"mcp-memory/{track_id}-{index}.txt" for index in range(len(texts))
+        ]
         self.schedule(
             self.rag.ainsert(
                 texts,
@@ -862,7 +970,11 @@ class LightRAGMCPRuntime:
                 self.rag.apipeline_process_enqueue_documents(),
                 name=f"mcp-process-{track_id}",
             )
-        return {"status": "scanning_started", "track_id": track_id, "accepted": accepted}
+        return {
+            "status": "scanning_started",
+            "track_id": track_id,
+            "accepted": accepted,
+        }
 
     async def documents(self, tags: list[str] | None = None) -> dict[str, Any]:
         from lightrag.base import DocStatus
@@ -941,10 +1053,77 @@ def create_lightrag_mcp(
 
     mcp = FastMCP(
         name=os.getenv("LIGHTRAG_MCP_NAME", "LightRAG"),
+        instructions=AGENTIC_SERVER_INSTRUCTIONS,
         lifespan=lifespan,
     )
 
-    @mcp.tool(name="query_document", description=AGENTIC_TOOL_DESCRIPTIONS["query_document"])
+    async def _run_query_tool(
+        operation_name: str,
+        *,
+        query: str,
+        mode: str,
+        top_k: int,
+        chunk_top_k: int | None,
+        only_need_context: bool = True,
+        only_need_prompt: bool = False,
+        response_type: str = "Multiple Paragraphs",
+        max_token_for_text_unit: int = 4096,
+        max_token_for_global_context: int = 4096,
+        max_token_for_local_context: int = 4096,
+        max_total_tokens: int | None = None,
+        hl_keywords: list[str] | None = None,
+        ll_keywords: list[str] | None = None,
+        conversation_history: list[dict[str, str]] | None = None,
+        history_turns: int = 0,
+        use_history_for_retrieval: bool = True,
+        user_prompt: str | None = None,
+        enable_rerank: bool = True,
+        required_tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        async def _operation() -> Any:
+            return await runtime.query(
+                query=query,
+                mode=mode,
+                top_k=top_k,
+                chunk_top_k=chunk_top_k,
+                only_need_context=only_need_context,
+                only_need_prompt=only_need_prompt,
+                response_type=response_type,
+                max_token_for_text_unit=max_token_for_text_unit,
+                max_token_for_global_context=max_token_for_global_context,
+                max_token_for_local_context=max_token_for_local_context,
+                max_total_tokens=max_total_tokens,
+                hl_keywords=hl_keywords or [],
+                ll_keywords=ll_keywords or [],
+                conversation_history=conversation_history,
+                history_turns=history_turns,
+                use_history_for_retrieval=use_history_for_retrieval,
+                user_prompt=user_prompt,
+                enable_rerank=enable_rerank,
+                required_tags=required_tags,
+            )
+
+        return await _execute_lightrag_operation(
+            operation_name,
+            _operation,
+            tool_kwargs={
+                "query": query,
+                "mode": mode,
+                "top_k": top_k,
+                "chunk_top_k": chunk_top_k,
+                "only_need_context": only_need_context,
+                "only_need_prompt": only_need_prompt,
+                "response_type": response_type,
+                "hl_keywords": hl_keywords or [],
+                "ll_keywords": ll_keywords or [],
+                "history_turns": history_turns,
+                "required_tags": required_tags or [],
+            },
+        )
+
+    @mcp.tool(
+        name="query_document", description=AGENTIC_TOOL_DESCRIPTIONS["query_document"]
+    )
     async def query_document(
         query: str = Field(description="Query text"),
         mode: str = Field(
@@ -952,6 +1131,10 @@ def create_lightrag_mcp(
             description="Search mode: mix, semantic, keyword, global, hybrid, local, or naive",
         ),
         top_k: int = Field(default=60, description="Number of candidate results"),
+        chunk_top_k: int | None = Field(
+            default=None,
+            description="Text chunks to retrieve and retain; defaults to top_k for compatibility",
+        ),
         only_need_context: bool = Field(
             default=False,
             description="Return retrieved context without generating an answer",
@@ -976,6 +1159,10 @@ def create_lightrag_mcp(
             default=4096,
             description="Maximum tokens for local graph context",
         ),
+        max_total_tokens: int | None = Field(
+            default=None,
+            description="Total context budget; defaults to the sum of the three context budgets",
+        ),
         hl_keywords: list[str] = Field(
             default_factory=list,
             description="High-level keywords for prioritization",
@@ -986,39 +1173,168 @@ def create_lightrag_mcp(
         ),
         history_turns: int = Field(
             default=10,
-            description="Conversation turns included in response context",
+            description="Most recent conversation turn pairs to include; 0 disables history",
+        ),
+        conversation_history: list[dict[str, str]] = Field(
+            default_factory=list,
+            description="Prior user/assistant messages used for response context and query disambiguation",
+        ),
+        use_history_for_retrieval: bool = Field(
+            default=True,
+            description="Include selected history in the retrieval query so dependent questions can resolve",
+        ),
+        user_prompt: str | None = Field(
+            default=None,
+            description="Additional answer-generation instructions",
+        ),
+        enable_rerank: bool = Field(
+            default=True,
+            description="Rerank retrieved chunks when a reranker is configured",
+        ),
+        required_tags: list[str] = Field(
+            default_factory=list,
+            description="Require all tags on returned evidence; forces context-only output",
         ),
     ) -> dict[str, Any]:
-        async def _operation() -> Any:
-            return await runtime.query(
-                query=query,
-                mode=mode,
-                top_k=top_k,
-                only_need_context=only_need_context,
-                only_need_prompt=only_need_prompt,
-                response_type=response_type,
-                max_token_for_text_unit=max_token_for_text_unit,
-                max_token_for_global_context=max_token_for_global_context,
-                max_token_for_local_context=max_token_for_local_context,
-                hl_keywords=hl_keywords,
-                ll_keywords=ll_keywords,
-                history_turns=history_turns,
-            )
-
-        return await _execute_lightrag_operation(
+        return await _run_query_tool(
             "query_document",
-            _operation,
-            tool_kwargs={
-                "query": query,
-                "mode": mode,
-                "top_k": top_k,
-                "only_need_context": only_need_context,
-                "only_need_prompt": only_need_prompt,
-                "response_type": response_type,
-                "hl_keywords": hl_keywords,
-                "ll_keywords": ll_keywords,
-                "history_turns": history_turns,
-            },
+            query=query,
+            mode=mode,
+            top_k=top_k,
+            chunk_top_k=chunk_top_k,
+            only_need_context=only_need_context,
+            only_need_prompt=only_need_prompt,
+            response_type=response_type,
+            max_token_for_text_unit=max_token_for_text_unit,
+            max_token_for_global_context=max_token_for_global_context,
+            max_token_for_local_context=max_token_for_local_context,
+            max_total_tokens=max_total_tokens,
+            hl_keywords=hl_keywords,
+            ll_keywords=ll_keywords,
+            conversation_history=conversation_history,
+            history_turns=history_turns,
+            use_history_for_retrieval=use_history_for_retrieval,
+            user_prompt=user_prompt,
+            enable_rerank=enable_rerank,
+            required_tags=required_tags,
+        )
+
+    @mcp.tool(name="query_text", description=AGENTIC_TOOL_DESCRIPTIONS["query_text"])
+    async def query_text(
+        query: str = Field(description="Text, code, path, quote, or error to find"),
+        chunk_top_k: int = Field(default=20, description="Text chunks to retrieve"),
+        only_need_context: bool = Field(
+            default=True, description="Return source evidence only"
+        ),
+        enable_rerank: bool = Field(
+            default=True, description="Rerank retrieved chunks"
+        ),
+    ) -> dict[str, Any]:
+        return await _run_query_tool(
+            "query_text",
+            query=query,
+            mode="naive",
+            top_k=1,
+            chunk_top_k=chunk_top_k,
+            only_need_context=only_need_context,
+            max_token_for_text_unit=8192,
+            max_token_for_global_context=1024,
+            max_token_for_local_context=1024,
+            enable_rerank=enable_rerank,
+        )
+
+    @mcp.tool(name="query_graph", description=AGENTIC_TOOL_DESCRIPTIONS["query_graph"])
+    async def query_graph(
+        query: str = Field(description="Entity or relationship question"),
+        scope: Literal["local", "global", "hybrid"] = Field(
+            default="hybrid", description="Graph retrieval scope"
+        ),
+        top_k: int = Field(default=40, description="Entity or relationship candidates"),
+        chunk_top_k: int = Field(default=20, description="Supporting text chunks"),
+        hl_keywords: list[str] = Field(
+            default_factory=list, description="Themes and relationships"
+        ),
+        ll_keywords: list[str] = Field(
+            default_factory=list, description="Named entities and identifiers"
+        ),
+        only_need_context: bool = Field(
+            default=True, description="Return source evidence only"
+        ),
+    ) -> dict[str, Any]:
+        return await _run_query_tool(
+            "query_graph",
+            query=query,
+            mode=scope,
+            top_k=top_k,
+            chunk_top_k=chunk_top_k,
+            only_need_context=only_need_context,
+            max_token_for_global_context=8192 if scope != "local" else 2048,
+            max_token_for_local_context=6144 if scope != "global" else 2048,
+            max_token_for_text_unit=6144,
+            hl_keywords=hl_keywords,
+            ll_keywords=ll_keywords,
+        )
+
+    @mcp.tool(name="query_mixed", description=AGENTIC_TOOL_DESCRIPTIONS["query_mixed"])
+    async def query_mixed(
+        query: str = Field(
+            description="Question requiring graph and source-text retrieval"
+        ),
+        top_k: int = Field(default=36, description="Graph candidates"),
+        chunk_top_k: int = Field(default=24, description="Text chunks"),
+        only_need_context: bool = Field(
+            default=True, description="Return source evidence only"
+        ),
+        conversation_history: list[dict[str, str]] = Field(
+            default_factory=list, description="Prior user/assistant messages"
+        ),
+        history_turns: int = Field(
+            default=5, description="Recent conversation turn pairs"
+        ),
+    ) -> dict[str, Any]:
+        return await _run_query_tool(
+            "query_mixed",
+            query=query,
+            mode="mix",
+            top_k=top_k,
+            chunk_top_k=chunk_top_k,
+            only_need_context=only_need_context,
+            max_token_for_text_unit=8192,
+            max_token_for_global_context=6144,
+            max_token_for_local_context=6144,
+            conversation_history=conversation_history,
+            history_turns=history_turns,
+        )
+
+    @mcp.tool(
+        name="query_tagged", description=AGENTIC_TOOL_DESCRIPTIONS["query_tagged"]
+    )
+    async def query_tagged(
+        query: str = Field(description="Question to answer from tagged documents"),
+        required_tags: list[str] = Field(
+            description="Tags every returned document must contain"
+        ),
+        mode: Literal["naive", "local", "global", "hybrid", "mix"] = Field(
+            default="mix", description="Retrieval mode before strict result filtering"
+        ),
+        top_k: int = Field(default=60, description="Graph candidates to inspect"),
+        chunk_top_k: int = Field(
+            default=60, description="Chunks to inspect before tag filtering"
+        ),
+    ) -> dict[str, Any]:
+        if not required_tags:
+            raise ValueError("required_tags must not be empty")
+        return await _run_query_tool(
+            "query_tagged",
+            query=query,
+            mode=mode,
+            top_k=top_k,
+            chunk_top_k=chunk_top_k,
+            only_need_context=True,
+            max_token_for_text_unit=8192,
+            max_token_for_global_context=6144,
+            max_token_for_local_context=6144,
+            required_tags=required_tags,
         )
 
     @mcp.tool(
@@ -1055,9 +1371,13 @@ def create_lightrag_mcp(
             description="Lowercase skill name using letters, digits, and hyphens"
         ),
         description: str = Field(description="What the skill does and when to use it"),
-        applicability: str = Field(description="Conditions where this procedure applies"),
+        applicability: str = Field(
+            description="Conditions where this procedure applies"
+        ),
         procedure: str = Field(description="Reusable steps, commands, and constraints"),
-        verification: str = Field(description="Passing check that verified the procedure"),
+        verification: str = Field(
+            description="Passing check that verified the procedure"
+        ),
         failure_pattern: str = Field(
             description="Named failure condition the procedure avoids or diagnoses"
         ),
@@ -1113,7 +1433,9 @@ def create_lightrag_mcp(
         },
     )
     async def search_skills(
-        query: str = Field(description="Workflow or problem to find a reusable skill for"),
+        query: str = Field(
+            description="Workflow or problem to find a reusable skill for"
+        ),
         project_name: str = Field(description="Active project name"),
         project_path: str = Field(description="Absolute active project path"),
         repository: str = Field(description="Active repository remote"),
@@ -1167,7 +1489,9 @@ def create_lightrag_mcp(
             tool_kwargs={"file_path": file_path},
         )
 
-    @mcp.tool(name="insert_batch", description=AGENTIC_TOOL_DESCRIPTIONS["insert_batch"])
+    @mcp.tool(
+        name="insert_batch", description=AGENTIC_TOOL_DESCRIPTIONS["insert_batch"]
+    )
     async def insert_batch(
         directory_path: str = Field(description="Directory containing files to insert"),
         recursive: bool = Field(default=False, description="Walk subdirectories"),
@@ -1216,11 +1540,11 @@ def create_lightrag_mcp(
         async def _operation() -> Any:
             return await runtime.scan()
 
-        return await _execute_lightrag_operation(
-            "scan_for_new_documents", _operation
-        )
+        return await _execute_lightrag_operation("scan_for_new_documents", _operation)
 
-    @mcp.tool(name="get_documents", description=AGENTIC_TOOL_DESCRIPTIONS["get_documents"])
+    @mcp.tool(
+        name="get_documents", description=AGENTIC_TOOL_DESCRIPTIONS["get_documents"]
+    )
     async def get_documents(
         tags: list[str] = Field(
             default_factory=list,
@@ -1244,9 +1568,7 @@ def create_lightrag_mcp(
         },
     )
     async def get_document_content(
-        document_id: str = Field(
-            description="Document ID returned by query_document"
-        ),
+        document_id: str = Field(description="Document ID returned by query_document"),
     ) -> dict[str, Any]:
         async def _operation() -> Any:
             return await runtime.document_content(document_id)
@@ -1265,9 +1587,7 @@ def create_lightrag_mcp(
         async def _operation() -> Any:
             return await runtime.pipeline_status()
 
-        return await _execute_lightrag_operation(
-            "get_pipeline_status", _operation
-        )
+        return await _execute_lightrag_operation("get_pipeline_status", _operation)
 
     @mcp.tool(
         name="get_graph_labels",
@@ -1287,9 +1607,7 @@ def create_lightrag_mcp(
         async def _operation() -> Any:
             return await runtime.health()
 
-        return await _execute_lightrag_operation(
-            "check_lightrag_health", _operation
-        )
+        return await _execute_lightrag_operation("check_lightrag_health", _operation)
 
     @mcp.tool(
         name="check_memory_pressure",
@@ -1303,7 +1621,9 @@ def create_lightrag_mcp(
     ) -> dict[str, Any]:
         return _format_response(_memory_pressure_snapshot(top_process_limit))
 
-    @mcp.tool(name="merge_entities", description=AGENTIC_TOOL_DESCRIPTIONS["merge_entities"])
+    @mcp.tool(
+        name="merge_entities", description=AGENTIC_TOOL_DESCRIPTIONS["merge_entities"]
+    )
     async def merge_entities(
         source_entities: list[str] = Field(description="Entity names to merge"),
         target_entity: str = Field(description="Target entity name"),
@@ -1313,7 +1633,9 @@ def create_lightrag_mcp(
         ),
     ) -> dict[str, Any]:
         async def _operation() -> Any:
-            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+            from lightrag.api.routers.document_routes import (
+                check_pipeline_busy_or_raise,
+            )
 
             await check_pipeline_busy_or_raise(runtime.rag)
             return await runtime.rag.amerge_entities(
@@ -1372,7 +1694,9 @@ def create_lightrag_mcp(
                 }
 
         async def _operation() -> Any:
-            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+            from lightrag.api.routers.document_routes import (
+                check_pipeline_busy_or_raise,
+            )
 
             await check_pipeline_busy_or_raise(runtime.rag)
             results = await asyncio.gather(
@@ -1407,10 +1731,16 @@ def create_lightrag_mcp(
                     "result": _to_jsonable(result),
                 }
             except Exception as exc:
-                return {"entity_name": entity_name, "status": "error", "error": str(exc)}
+                return {
+                    "entity_name": entity_name,
+                    "status": "error",
+                    "error": str(exc),
+                }
 
         async def _operation() -> Any:
-            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+            from lightrag.api.routers.document_routes import (
+                check_pipeline_busy_or_raise,
+            )
 
             await check_pipeline_busy_or_raise(runtime.rag)
             results = await asyncio.gather(
@@ -1439,7 +1769,11 @@ def create_lightrag_mcp(
         async def _delete_by_doc_id(doc_id: str) -> dict[str, Any]:
             try:
                 result = await runtime.rag.adelete_by_doc_id(doc_id)
-                return {"doc_id": doc_id, "status": "success", "result": _to_jsonable(result)}
+                return {
+                    "doc_id": doc_id,
+                    "status": "success",
+                    "result": _to_jsonable(result),
+                }
             except Exception as exc:
                 return {"doc_id": doc_id, "status": "error", "error": str(exc)}
 
@@ -1460,7 +1794,9 @@ def create_lightrag_mcp(
             tool_kwargs={"doc_ids": doc_ids},
         )
 
-    @mcp.tool(name="edit_entities", description=AGENTIC_TOOL_DESCRIPTIONS["edit_entities"])
+    @mcp.tool(
+        name="edit_entities", description=AGENTIC_TOOL_DESCRIPTIONS["edit_entities"]
+    )
     async def edit_entities(
         entities: list[dict[str, Any]] = Field(
             description="Entities with entity_name, entity_type, description, source_id"
@@ -1500,7 +1836,9 @@ def create_lightrag_mcp(
                 }
 
         async def _operation() -> Any:
-            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+            from lightrag.api.routers.document_routes import (
+                check_pipeline_busy_or_raise,
+            )
 
             await check_pipeline_busy_or_raise(runtime.rag)
             results = await asyncio.gather(
@@ -1563,7 +1901,9 @@ def create_lightrag_mcp(
                 return {"relation": label, "status": "error", "error": str(exc)}
 
         async def _operation() -> Any:
-            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+            from lightrag.api.routers.document_routes import (
+                check_pipeline_busy_or_raise,
+            )
 
             await check_pipeline_busy_or_raise(runtime.rag)
             results = await asyncio.gather(
@@ -1582,7 +1922,9 @@ def create_lightrag_mcp(
             tool_kwargs={"relations": relations},
         )
 
-    @mcp.tool(name="edit_relations", description=AGENTIC_TOOL_DESCRIPTIONS["edit_relations"])
+    @mcp.tool(
+        name="edit_relations", description=AGENTIC_TOOL_DESCRIPTIONS["edit_relations"]
+    )
     async def edit_relations(
         relations: list[dict[str, Any]] = Field(
             description="Relations with source, target, description, keywords, relation_type, optional source_id and weight"
@@ -1625,7 +1967,9 @@ def create_lightrag_mcp(
                 return {"relation": label, "status": "error", "error": str(exc)}
 
         async def _operation() -> Any:
-            from lightrag.api.routers.document_routes import check_pipeline_busy_or_raise
+            from lightrag.api.routers.document_routes import (
+                check_pipeline_busy_or_raise,
+            )
 
             await check_pipeline_busy_or_raise(runtime.rag)
             results = await asyncio.gather(
@@ -1705,8 +2049,10 @@ def create_chatgpt_mcp_http_app(
         name="search_memory",
         title="Search LightRAG memory",
         description=(
-            "Search prior knowledge and chat memory. Returns compact relevant excerpts, "
-            "document IDs, and source references suitable for citation."
+            "Search prior knowledge and chat memory with independently tunable graph and "
+            "chunk limits. Use mix by default, naive for direct text, local for named "
+            "entities, global for broad relationships, or hybrid for multiple entities. "
+            "Add required_tags when every returned source must match the memory scope."
         ),
         annotations={
             "readOnlyHint": True,
@@ -1717,25 +2063,48 @@ def create_chatgpt_mcp_http_app(
     )
     async def search_memory(
         query: str = Field(description="What to recall from LightRAG memory"),
+        mode: Literal["naive", "local", "global", "hybrid", "mix"] = Field(
+            default="mix", description="Retrieval mode"
+        ),
+        top_k: int = Field(default=36, description="Entity or relationship candidates"),
+        chunk_top_k: int = Field(default=24, description="Text chunks to retrieve"),
+        required_tags: list[str] = Field(
+            default_factory=list,
+            description="Require all tags on returned memory evidence",
+        ),
+        enable_rerank: bool = Field(
+            default=True, description="Rerank retrieved chunks"
+        ),
     ) -> dict[str, Any]:
         async def _operation() -> Any:
             return await runtime.query(
                 query=query,
-                mode="mix",
-                top_k=12,
+                mode=mode,
+                top_k=top_k,
+                chunk_top_k=chunk_top_k,
                 only_need_context=True,
                 only_need_prompt=False,
                 response_type="Multiple Paragraphs",
-                max_token_for_text_unit=2048,
-                max_token_for_global_context=2048,
-                max_token_for_local_context=2048,
+                max_token_for_text_unit=8192,
+                max_token_for_global_context=6144,
+                max_token_for_local_context=6144,
                 hl_keywords=[],
                 ll_keywords=[],
                 history_turns=0,
+                enable_rerank=enable_rerank,
+                required_tags=required_tags,
             )
 
         return await _execute_lightrag_operation(
-            "chatgpt_search_memory", _operation, tool_kwargs={"query": query}
+            "chatgpt_search_memory",
+            _operation,
+            tool_kwargs={
+                "query": query,
+                "mode": mode,
+                "top_k": top_k,
+                "chunk_top_k": chunk_top_k,
+                "required_tags": required_tags,
+            },
         )
 
     @mcp.tool(
@@ -1777,9 +2146,7 @@ def create_chatgpt_mcp_http_app(
             "openWorldHint": False,
         },
         meta={
-            "securitySchemes": [
-                {"type": "oauth2", "scopes": [READ_SCOPE, WRITE_SCOPE]}
-            ]
+            "securitySchemes": [{"type": "oauth2", "scopes": [READ_SCOPE, WRITE_SCOPE]}]
         },
     )
     async def save_memory(

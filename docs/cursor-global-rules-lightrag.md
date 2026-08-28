@@ -9,9 +9,14 @@ system before relying on unstated memory or guessing prior project decisions.
 
 Before non-trivial planning, debugging, code changes, QA, deployment work, or
 architecture answers:
-- Check LightRAG health when a health/status tool is available.
-- Query LightRAG for prior project context, decisions, incidents, validation
-  results, and implementation notes.
+- Query LightRAG without a health preflight; use health only after a timeout,
+  connection failure, or invalid response.
+- Choose `query_text` for code symbols, paths, errors, quotes, and config keys;
+  `query_graph` for entity/relationship questions; `query_mixed` for coding,
+  architecture, debugging, chat, or uncertain retrieval; and `query_tagged`
+  when every returned source must have all requested tags.
+- Use advanced `query_document` only for custom token budgets, answer prompts,
+  reranking, or history behavior not exposed by the specialized tools.
 - Include the active project name, absolute project path, and repository remote
   in every LightRAG query. Example:
   "Project: <repo name>
@@ -25,8 +30,10 @@ Use LightRAG as memory, not as a replacement for repository inspection:
   directly in the workspace.
 - Prefer project-local instructions such as AGENTS.md, README files, Makefile
   targets, and test scripts when they conflict with generic habits.
-- Do not invent unavailable LightRAG tools. Use the active MCP/tool names, such
-  as query_document, insert_document, get_pipeline_status, or their equivalents.
+- Pass `conversation_history` for dependent follow-up questions. Tune graph
+  `top_k` and text `chunk_top_k` independently instead of increasing both.
+- Do not invent unavailable LightRAG tools; inspect the active MCP schema when
+  the server version does not expose the specialized names above.
 
 After meaningful work, persist durable knowledge back into LightRAG:
 - Save architecture decisions, root causes, fixes, validation results, runtime

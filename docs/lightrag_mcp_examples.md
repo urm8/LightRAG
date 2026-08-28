@@ -10,7 +10,7 @@ uncaught failures return `{"status":"error","error":"..."}`.
 Request:
 
 ```json
-{"query":"Project: LightRAG\nProject path: /repo/LightRAG\nQuestion: How is MCP mounted?","mode":"mix","top_k":10,"only_need_context":true}
+{"query":"Project: LightRAG\nProject path: /repo/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: How is MCP mounted?","mode":"mix","top_k":36,"chunk_top_k":24,"only_need_context":true}
 ```
 
 Response (content-first; one retrieval call):
@@ -21,6 +21,20 @@ Response (content-first; one retrieval call):
 
 With `only_need_context=false`, `matches` is unchanged and `response` contains the
 generated answer. With `only_need_context=true`, the raw graph prompt is omitted.
+`top_k` controls graph candidates while `chunk_top_k` independently controls text
+chunks. `conversation_history` affects retrieval when
+`use_history_for_retrieval=true`.
+
+### Specialized query tools
+
+- `query_text`: direct chunks for symbols, paths, errors, quotes, and config keys.
+  Example: `{"query":"RecoveryAnchorMissingError","chunk_top_k":20}`.
+- `query_graph`: entities and relationships. Example:
+  `{"query":"How do purge anchors protect graph attribution?","scope":"hybrid","top_k":40,"chunk_top_k":20,"hl_keywords":["graph attribution"],"ll_keywords":["kg_purge","full_entities","full_relations"]}`.
+- `query_mixed`: default coding/chat retrieval. Example:
+  `{"query":"Why does this retry remain FAILED?","top_k":36,"chunk_top_k":24,"only_need_context":true}`.
+- `query_tagged`: evidence only from documents containing every tag. Example:
+  `{"query":"Find the verified MCP deployment procedure","required_tags":["skill","agentic-development"],"mode":"mix"}`.
 
 ## 2. `insert_document`
 
