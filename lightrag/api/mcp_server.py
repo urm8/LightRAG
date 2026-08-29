@@ -14,6 +14,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from html import escape
 from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -22,7 +23,7 @@ from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_access_token
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -100,14 +101,17 @@ AGENTIC_TOOL_DESCRIPTIONS = {
         "source-anchored solution patterns; do not store task history or secrets."
     ),
     "save_skill": (
-        "Save a verified reusable agent skill in LightRAG. Use only for a repeatable "
-        "procedure with a passing check, a named failure pattern, at least one ruled-out "
-        "approach, project identity, and applicable references. Never include secrets."
+        "Capture the verified golden path from a hard-won task as a reusable LightRAG "
+        "skill. Use proactively after multi-attempt debugging or a recurring non-obvious "
+        "workflow, but search_skills first to avoid duplicates. Requires a passing check, "
+        "a named failure pattern, at least one ruled-out approach, project identity, and "
+        "applicable references. Never include secrets."
     ),
     "search_skills": (
-        "Semantically search only reusable agent skills stored in LightRAG. Use before "
-        "re-deriving a recurring workflow. Returns bounded matching excerpts and document "
-        "IDs; call get_document_content only for a relevant skill that needs full detail."
+        "Reuse verified agent workflows stored in LightRAG. Call before re-deriving a "
+        "recurring workflow and before save_skill so capture does not create a duplicate. "
+        "Returns bounded matching excerpts and document IDs; call get_document_content "
+        "only for the selected skill when its full procedure is needed."
     ),
     "upload_document": (
         "Add an external project document by file upload for later analysis, QA, "
@@ -188,8 +192,10 @@ AGENTIC_SERVER_INSTRUCTIONS = """Use the narrowest LightRAG query tool that fits
 - query_tagged when every returned source must contain all requested tags; it returns evidence only.
 - query_document only for advanced overrides such as custom token budgets, prompts, reranking, or history behavior.
 Use only_need_context=true when gathering evidence for code changes or evaluation. Include the active project name,
-absolute path, and repository in project-memory queries. Treat repository source as authoritative. Search skills before
-re-deriving repeatable workflows, and store only verified durable facts or reusable procedures, never secrets or task logs."""
+absolute path, and repository in project-memory queries; pass the project name in the project field. Treat repository source as authoritative. Search skills before
+re-deriving repeatable workflows. After a hard-won task, recognize whether its verified golden path will recur; search
+for an existing skill, capture a missing one with save_skill, and tell the user what was stored. Save only verified durable
+facts or reusable procedures, never secrets or task logs."""
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -1061,6 +1067,7 @@ def create_lightrag_mcp(
         operation_name: str,
         *,
         query: str,
+        project: str | None,
         mode: str,
         top_k: int,
         chunk_top_k: int | None,
@@ -1080,9 +1087,13 @@ def create_lightrag_mcp(
         enable_rerank: bool = True,
         required_tags: list[str] | None = None,
     ) -> dict[str, Any]:
+        scoped_query = (
+            f"Project: {project.strip()}\n{query}" if project and project.strip() else query
+        )
+
         async def _operation() -> Any:
             return await runtime.query(
-                query=query,
+                query=scoped_query,
                 mode=mode,
                 top_k=top_k,
                 chunk_top_k=chunk_top_k,
@@ -1108,6 +1119,7 @@ def create_lightrag_mcp(
             _operation,
             tool_kwargs={
                 "query": query,
+                "project": project,
                 "mode": mode,
                 "top_k": top_k,
                 "chunk_top_k": chunk_top_k,
@@ -1126,6 +1138,9 @@ def create_lightrag_mcp(
     )
     async def query_document(
         query: str = Field(description="Query text"),
+        project: str | None = Field(
+            default=None, description="Active project name used to scope retrieval"
+        ),
         mode: str = Field(
             default="mix",
             description="Search mode: mix, semantic, keyword, global, hybrid, local, or naive",
@@ -1199,6 +1214,7 @@ def create_lightrag_mcp(
         return await _run_query_tool(
             "query_document",
             query=query,
+            project=project,
             mode=mode,
             top_k=top_k,
             chunk_top_k=chunk_top_k,
@@ -1222,6 +1238,9 @@ def create_lightrag_mcp(
     @mcp.tool(name="query_text", description=AGENTIC_TOOL_DESCRIPTIONS["query_text"])
     async def query_text(
         query: str = Field(description="Text, code, path, quote, or error to find"),
+        project: str | None = Field(
+            default=None, description="Active project name used to scope retrieval"
+        ),
         chunk_top_k: int = Field(default=20, description="Text chunks to retrieve"),
         only_need_context: bool = Field(
             default=True, description="Return source evidence only"
@@ -1233,6 +1252,7 @@ def create_lightrag_mcp(
         return await _run_query_tool(
             "query_text",
             query=query,
+            project=project,
             mode="naive",
             top_k=1,
             chunk_top_k=chunk_top_k,
@@ -1246,6 +1266,9 @@ def create_lightrag_mcp(
     @mcp.tool(name="query_graph", description=AGENTIC_TOOL_DESCRIPTIONS["query_graph"])
     async def query_graph(
         query: str = Field(description="Entity or relationship question"),
+        project: str | None = Field(
+            default=None, description="Active project name used to scope retrieval"
+        ),
         scope: Literal["local", "global", "hybrid"] = Field(
             default="hybrid", description="Graph retrieval scope"
         ),
@@ -1264,6 +1287,7 @@ def create_lightrag_mcp(
         return await _run_query_tool(
             "query_graph",
             query=query,
+            project=project,
             mode=scope,
             top_k=top_k,
             chunk_top_k=chunk_top_k,
@@ -1280,6 +1304,9 @@ def create_lightrag_mcp(
         query: str = Field(
             description="Question requiring graph and source-text retrieval"
         ),
+        project: str | None = Field(
+            default=None, description="Active project name used to scope retrieval"
+        ),
         top_k: int = Field(default=36, description="Graph candidates"),
         chunk_top_k: int = Field(default=24, description="Text chunks"),
         only_need_context: bool = Field(
@@ -1295,6 +1322,7 @@ def create_lightrag_mcp(
         return await _run_query_tool(
             "query_mixed",
             query=query,
+            project=project,
             mode="mix",
             top_k=top_k,
             chunk_top_k=chunk_top_k,
@@ -1314,6 +1342,9 @@ def create_lightrag_mcp(
         required_tags: list[str] = Field(
             description="Tags every returned document must contain"
         ),
+        project: str | None = Field(
+            default=None, description="Active project name used to scope retrieval"
+        ),
         mode: Literal["naive", "local", "global", "hybrid", "mix"] = Field(
             default="mix", description="Retrieval mode before strict result filtering"
         ),
@@ -1327,6 +1358,7 @@ def create_lightrag_mcp(
         return await _run_query_tool(
             "query_tagged",
             query=query,
+            project=project,
             mode=mode,
             top_k=top_k,
             chunk_top_k=chunk_top_k,
@@ -2180,13 +2212,37 @@ def create_chatgpt_mcp_http_app(
 
 
 class _MCPMountRootEndpoint:
-    """Forward exact /mcp requests to a mounted FastMCP app without redirecting."""
+    """Serve browser setup or forward exact MCP requests without redirecting."""
 
     def __init__(self, app: ASGIApp, mount_path: str):
         self.app = app
         self.mount_path = mount_path.rstrip("/") or "/"
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        headers = Headers(scope=scope)
+        accept = headers.get("accept", "").casefold()
+        if (
+            scope.get("method") == "GET"
+            and "application/json" not in accept
+            and "text/event-stream" not in accept
+        ):
+            configured_url = os.getenv("LIGHTRAG_MCP_PUBLIC_URL", "").strip()
+            if configured_url:
+                mcp_url = configured_url
+            else:
+                scheme = headers.get("x-forwarded-proto", scope.get("scheme", "http"))
+                scheme = scheme.split(",", 1)[0].strip()
+                host = headers.get("x-forwarded-host", headers.get("host", "localhost"))
+                host = host.split(",", 1)[0].strip()
+                root_path = str(scope.get("root_path", "")).rstrip("/")
+                mcp_url = f"{scheme}://{host}{root_path}{self.mount_path}"
+            template_path = Path(__file__).parent / "static" / "mcp-setup.html"
+            page = template_path.read_text(encoding="utf-8").replace(
+                "{{MCP_URL}}", escape(mcp_url, quote=True)
+            )
+            await HTMLResponse(page)(scope, receive, send)
+            return
+
         child_scope = dict(scope)
         root_path = scope.get("root_path", "")
         child_scope["root_path"] = f"{root_path}{self.mount_path}"
@@ -2232,13 +2288,15 @@ def mount_lightrag_mcp_http_app(
         normalized_path = f"/{normalized_path}"
 
     protected_mcp_app = _MCPAPIKeyMiddleware(mcp_http_app, api_key)
-    app.router.routes.insert(
-        0,
-        Route(
-            normalized_path,
-            endpoint=_MCPMountRootEndpoint(protected_mcp_app, normalized_path),
-            methods=["GET", "POST", "DELETE"],
-            include_in_schema=False,
-        ),
-    )
+    root_endpoint = _MCPMountRootEndpoint(protected_mcp_app, normalized_path)
+    for route_path in (normalized_path, f"{normalized_path}/"):
+        app.router.routes.insert(
+            0,
+            Route(
+                route_path,
+                endpoint=root_endpoint,
+                methods=["GET", "POST", "DELETE"],
+                include_in_schema=False,
+            ),
+        )
     app.mount(normalized_path, protected_mcp_app)

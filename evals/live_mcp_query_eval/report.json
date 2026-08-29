@@ -1,0 +1,4182 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-28T16:00:06.828679+00:00",
+  "endpoint": "https://rag.urm8.org/mcp",
+  "project": {
+    "name": "LightRAG",
+    "path": "/Users/max/projs/github.com/HKUDS/LightRAG",
+    "repository": "https://github.com/urm8/LightRAG"
+  },
+  "policy": {
+    "production_safe": true,
+    "mutating_tools_executed": false,
+    "secret_recorded": false,
+    "judge": "Aurora API"
+  },
+  "tool_schema": {
+    "latency_ms": 242.19,
+    "tool_count": 25
+  },
+  "method_coverage": [
+    {
+      "tool": "query_document",
+      "execution": "executed_read_only",
+      "description": "Advanced LightRAG query with independent graph and chunk limits, optional conversation-aware retrieval, reranking, answer instructions, and tag-scoped evidence. Use this only when query_text, query_graph, query_mixed, or query_tagged does not expose enough control. Set only_need_context=true for analytics, debugging, deployment review, evaluation, or inspecting sources before changing code.",
+      "required": [
+        "query"
+      ],
+      "parameters": [
+        "chunk_top_k",
+        "conversation_history",
+        "enable_rerank",
+        "history_turns",
+        "hl_keywords",
+        "ll_keywords",
+        "max_token_for_global_context",
+        "max_token_for_local_context",
+        "max_token_for_text_unit",
+        "max_total_tokens",
+        "mode",
+        "only_need_context",
+        "only_need_prompt",
+        "query",
+        "required_tags",
+        "response_type",
+        "top_k",
+        "use_history_for_retrieval",
+        "user_prompt"
+      ]
+    },
+    {
+      "tool": "query_text",
+      "execution": "executed_read_only",
+      "description": "Search source text chunks directly without using the knowledge graph. Best for exact code symbols, file paths, error messages, quotations, configuration keys, and narrowly scoped semantic lookup. Start here when relationships between entities are irrelevant; use query_mixed if direct text evidence is incomplete.",
+      "required": [
+        "query"
+      ],
+      "parameters": [
+        "chunk_top_k",
+        "enable_rerank",
+        "only_need_context",
+        "query"
+      ]
+    },
+    {
+      "tool": "query_graph",
+      "execution": "executed_read_only",
+      "description": "Search the LightRAG knowledge graph in local, global, or hybrid mode. Use scope=local for facts about named entities, scope=global for broad themes and relationships, and scope=hybrid for connections between multiple entities. Use query_mixed when supporting source text matters as much as graph structure.",
+      "required": [
+        "query"
+      ],
+      "parameters": [
+        "chunk_top_k",
+        "hl_keywords",
+        "ll_keywords",
+        "only_need_context",
+        "query",
+        "scope",
+        "top_k"
+      ]
+    },
+    {
+      "tool": "query_mixed",
+      "execution": "executed_read_only",
+      "description": "Combine graph retrieval with direct text-chunk retrieval. Best default for coding, architecture, debugging, chat, and questions whose retrieval shape is not known in advance. Pass conversation_history for dependent follow-up questions; use query_text instead for exact strings and query_tagged for mandatory tag scope.",
+      "required": [
+        "query"
+      ],
+      "parameters": [
+        "chunk_top_k",
+        "conversation_history",
+        "history_turns",
+        "only_need_context",
+        "query",
+        "top_k"
+      ]
+    },
+    {
+      "tool": "query_tagged",
+      "execution": "executed_read_only",
+      "description": "Return source evidence only from documents containing every required tag. Use for project, memory type, workflow, or security scope that must not leak into the result. Filtering occurs after candidate retrieval, so broaden top_k when recall is low; this tool never generates from potentially out-of-scope context.",
+      "required": [
+        "query",
+        "required_tags"
+      ],
+      "parameters": [
+        "chunk_top_k",
+        "mode",
+        "query",
+        "required_tags",
+        "top_k"
+      ]
+    },
+    {
+      "tool": "insert_document",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Persist current factual project reference knowledge into LightRAG. Store architecture, processes, dependencies, invariants, design rationale, and source-anchored solution patterns; do not store task history or secrets.",
+      "required": [
+        "text"
+      ],
+      "parameters": [
+        "tags",
+        "text"
+      ]
+    },
+    {
+      "tool": "save_skill",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Save a verified reusable agent skill in LightRAG. Use only for a repeatable procedure with a passing check, a named failure pattern, at least one ruled-out approach, project identity, and applicable references. Never include secrets.",
+      "required": [
+        "name",
+        "description",
+        "applicability",
+        "procedure",
+        "verification",
+        "failure_pattern",
+        "ruled_out",
+        "project_name",
+        "project_path",
+        "repository"
+      ],
+      "parameters": [
+        "applicability",
+        "description",
+        "failure_pattern",
+        "name",
+        "procedure",
+        "project_name",
+        "project_path",
+        "references",
+        "repository",
+        "ruled_out",
+        "scope",
+        "verification"
+      ]
+    },
+    {
+      "tool": "search_skills",
+      "execution": "executed_read_only",
+      "description": "Semantically search only reusable agent skills stored in LightRAG. Use before re-deriving a recurring workflow. Returns bounded matching excerpts and document IDs; call get_document_content only for a relevant skill that needs full detail.",
+      "required": [
+        "query",
+        "project_name",
+        "project_path",
+        "repository"
+      ],
+      "parameters": [
+        "limit",
+        "project_name",
+        "project_path",
+        "query",
+        "repository"
+      ]
+    },
+    {
+      "tool": "upload_document",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Add an external project document by file upload for later analysis, QA, planning, debugging, design review, or deployment research.",
+      "required": [
+        "file_path"
+      ],
+      "parameters": [
+        "file_path"
+      ]
+    },
+    {
+      "tool": "insert_file",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Index a local repository file or artifact directly into LightRAG for agentic coding, QA, analytics, design, debugging, or deployment context.",
+      "required": [
+        "file_path"
+      ],
+      "parameters": [
+        "file_path"
+      ]
+    },
+    {
+      "tool": "insert_batch",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Bulk-index a local directory of project artifacts. Use for onboarding repositories, specs, logs, test reports, design docs, runbooks, and deployment notes.",
+      "required": [
+        "directory_path"
+      ],
+      "parameters": [
+        "depth",
+        "directory_path",
+        "ignore_directories",
+        "ignore_files",
+        "include_only",
+        "recursive"
+      ]
+    },
+    {
+      "tool": "scan_for_new_documents",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Start ingestion for newly added input documents. Use after adding specs, logs, QA reports, planning notes, or deployment artifacts to LightRAG inputs.",
+      "required": [],
+      "parameters": []
+    },
+    {
+      "tool": "get_documents",
+      "execution": "executed_read_only",
+      "description": "Inspect indexed document inventory and processing state. Use for knowledge-base management, QA of ingestion coverage, duplicate checks, and debugging missing context.",
+      "required": [],
+      "parameters": [
+        "tags"
+      ]
+    },
+    {
+      "tool": "get_document_content",
+      "execution": "executed_read_only",
+      "description": "Fetch one complete indexed document by the document_id returned by query_document. Use only when the bounded matching excerpts are insufficient and the full source is required.",
+      "required": [
+        "document_id"
+      ],
+      "parameters": [
+        "document_id"
+      ]
+    },
+    {
+      "tool": "get_pipeline_status",
+      "execution": "executed_read_only",
+      "description": "Inspect ingestion pipeline activity and failures. Use for operations, QA, debugging stuck indexing, and deciding whether newly inserted memory is searchable.",
+      "required": [],
+      "parameters": []
+    },
+    {
+      "tool": "get_graph_labels",
+      "execution": "executed_read_only",
+      "description": "Inspect available graph labels. Use for analytics, ontology management, QA of extraction quality, planning graph cleanup, and debugging retrieval gaps.",
+      "required": [],
+      "parameters": []
+    },
+    {
+      "tool": "check_lightrag_health",
+      "execution": "executed_read_only",
+      "description": "Check LightRAG service health after an MCP timeout, connection failure, or invalid response. Do not use as a preflight for normal memory operations.",
+      "required": [],
+      "parameters": []
+    },
+    {
+      "tool": "check_memory_pressure",
+      "execution": "executed_read_only",
+      "description": "Inspect host memory pressure, swap usage, and top resident processes. Use when debugging Apple Silicon unified-memory pressure, MLX throughput collapse, or runtime restarts caused by memory contention.",
+      "required": [],
+      "parameters": [
+        "top_process_limit"
+      ]
+    },
+    {
+      "tool": "merge_entities",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Merge duplicate graph entities during knowledge-base management. Use for QA cleanup after extraction, analytics normalization, and improving retrieval quality.",
+      "required": [
+        "source_entities",
+        "target_entity"
+      ],
+      "parameters": [
+        "merge_strategy",
+        "source_entities",
+        "target_entity"
+      ]
+    },
+    {
+      "tool": "create_entities",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Create validated project graph entities in bulk. Use to curate architecture, coding, design, planning, QA, debugging, deployment, or management knowledge.",
+      "required": [
+        "entities"
+      ],
+      "parameters": [
+        "entities"
+      ]
+    },
+    {
+      "tool": "delete_by_entities",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Delete obsolete or incorrect graph entities by name. Use for graph QA, cleanup, failed extraction repair, and management of stale project knowledge.",
+      "required": [
+        "entity_names"
+      ],
+      "parameters": [
+        "entity_names"
+      ]
+    },
+    {
+      "tool": "delete_by_doc_ids",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Delete graph data associated with specific documents. Use for reindexing, QA cleanup, removing bad imports, and deployment or debugging data resets.",
+      "required": [
+        "doc_ids"
+      ],
+      "parameters": [
+        "doc_ids"
+      ]
+    },
+    {
+      "tool": "edit_entities",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Edit existing graph entities in bulk. Use to correct types/descriptions for coding, design, QA, analytics, planning, debugging, or deployment knowledge.",
+      "required": [
+        "entities"
+      ],
+      "parameters": [
+        "entities"
+      ]
+    },
+    {
+      "tool": "create_relations",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Create validated graph relations in bulk. Use to capture dependencies, ownership, failure causes, design links, QA findings, deployment topology, and coding relationships between project entities.",
+      "required": [
+        "relations"
+      ],
+      "parameters": [
+        "relations"
+      ]
+    },
+    {
+      "tool": "edit_relations",
+      "execution": "schema_validated_execution_skipped_mutation",
+      "description": "Edit graph relations in bulk. Use for QA cleanup, analytics normalization, debugging retrieval gaps, and maintaining accurate project dependency knowledge.",
+      "required": [
+        "relations"
+      ],
+      "parameters": [
+        "relations"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "text-code-symbol",
+      "use_case": "exact_source_lookup",
+      "tool": "query_text",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: Find LightRAGMCPRuntime and explain its query responsibility.",
+        "chunk_top_k": 12,
+        "only_need_context": true
+      },
+      "expected_terms": [
+        "LightRAGMCPRuntime",
+        "FastMCP",
+        "query"
+      ],
+      "status": "success",
+      "latency_ms": 431.41,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: urm8/LightRAG\nDate: 2026-08-14\nDeployment verification fact: LightRAG serves its FastMCP endpoint at /mcp by directly invoking the live in-process LightRAG runtime. It does not use the removed lightrag-mcp generated REST client or an MCP sidecar.\nRelations: LightRAG IMPLEMENTS direct FastMCP runtime adapter. LightRAG NO_LONGER_DEPENDS_ON generated MCP REST client.",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9-chunk-000",
+              "document_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": false
+            },
+            {
+              "content": "...; generated-answer queries retain response while also returning matches. This fixes MCP/client truncation that previously exposed graph noise and opaque mcp file IDs before useful evidence. Implementation: lightrag/api/mcp_server.py LightRAGMCPRuntime.query. Regression: tests/test_lightrag_mcp_integration.py; 9 tests passed and Ruff passed. Deployment: commit 681570b88b3a06529112d367b707e0be69d40622, pod ready with zero restarts. Live query returned two matching content excerpts in one call.\n\nSUPERSEDES: prior assumptions that query_document only needs to forward raw only_need_context prompt output.\nRelations: LightRAG IMPROVES MCP agent retrieval. query_document RETURNS source excerpts. Lig...",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-4e80b6c15709f10b1f295538c5d3cce8-chunk-000",
+              "document_id": "doc-4e80b6c15709f10b1f295538c5d3cce8",
+              "tags": [],
+              "matched_terms": [
+                "lightragmcpruntime",
+                "query"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...roject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nDate: 2026-08-23\nScope: MCP retrieval and ChatGPT plugin authentication\n\nObservation: LightRAG MCP query_document and ChatGPT search_memory return at most six query-centered source excerpts, each bounded to about 700 characters and carrying document_id, file_path, matched_terms, excerpt state, and filtered references. Agents expand a source only after relevance is established by calling get_document_content(document_id) or get_memory_source(document_id). This replaces whole-chunk query payloads that consumed agent context.\n\nObservation: LightRAG exposes a dedi...",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-41397e031dce399133dc0ef3d0ab3801-chunk-000",
+              "document_id": "doc-41397e031dce399133dc0ef3d0ab3801",
+              "tags": [],
+              "matched_terms": [
+                "query"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\n\nImplementation observation (2026-08-16): LightRAG now has first-class normalized document tags for agent memory. REST text/texts insertion and SDK insert/ainsert accept tags; tags are lowercase, whitespace-hyphenated, deduplicated, limited to 32 tags of 64 characters, stored in doc_status.metadata.tags, and carried across pipeline transitions/retries. Integrated MCP insert_document accepts tags and get_documents accepts exact all-tag filtering, enabling skill/workflow/agentic-development inventory retrieval. Graph provenance navigation now...",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt",
+              "reference_id": "4",
+              "chunk_id": "doc-da00f425c04f7ecce4a250dd9925a855-chunk-000",
+              "document_id": "doc-da00f425c04f7ecce4a250dd9925a855",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nDate: 2026-08-21\nDeployment validation: commit c6d4b31330f7fc3f413aed7b8add36640baff595 deployed successfully to the Hetzner k3s cluster as ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595. Pod is Ready 1/1 on worker-node-0 with zero restarts. Public health is healthy. The graph source-document endpoint resolved entity LightRAG to six documents, and GET /documents/doc-9d3a5099941e17f4aab75a3c4c0cfed9/content returned 486 characters, proving graph document clicks now resolve actual content rather than only an ID. The deployed We...",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt",
+              "reference_id": "5",
+              "chunk_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112-chunk-000",
+              "document_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "...ls, call/data/control flow, dependencies and purpose, lifecycle and persistence, operational processes, design rationale and tradeoffs, invariants, constraints, rules, exceptions, and reproducible failure conditions.\n\nProcess: Every query and write identifies the active Project entity, absolute project path, and repository remote. query_document with only_need_context=true supplies bounded relevant excerpts before broad source reads. get_document_content(document_id) expands only a source already shown to be relevant. Repository source remains authoritative. Missing current reference knowledge is inserted; stale entries are corrected, replaced, or deleted. get_pipeline_status is used only wh...",
+              "file_path": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8-0.txt",
+              "reference_id": "6",
+              "chunk_id": "doc-6a89f2319f85fd775c3bc0c575b217f8-chunk-000",
+              "document_id": "doc-6a89f2319f85fd775c3bc0c575b217f8",
+              "tags": [],
+              "matched_terms": [
+                "query"
+              ],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 6 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt"
+            },
+            {
+              "reference_id": "4",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt"
+            },
+            {
+              "reference_id": "5",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt"
+            },
+            {
+              "reference_id": "6",
+              "file_path": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8-0.txt"
+            }
+          ],
+          "history_turns": 0,
+          "retrieval": {
+            "mode": "naive",
+            "top_k": 1,
+            "chunk_top_k": 12,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 6,
+        "reference_count": 6,
+        "expected_term_hits": [
+          "LightRAGMCPRuntime",
+          "FastMCP",
+          "query"
+        ],
+        "expected_term_recall": 1.0,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {},
+        "retrieval_parameter_compliance": null,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "text-code-symbol",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          1
+        ],
+        "verdict": "PASS",
+        "reason": "Returned excerpts directly identify LightRAGMCPRuntime, FastMCP usage, and query behavior."
+      }
+    },
+    {
+      "id": "text-error-symbol",
+      "use_case": "error_and_invariant_lookup",
+      "tool": "query_text",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: Find RecoveryAnchorMissingError and explain why purge must fail closed.",
+        "chunk_top_k": 20,
+        "only_need_context": true
+      },
+      "expected_terms": [
+        "RecoveryAnchorMissingError",
+        "purge",
+        "anchor"
+      ],
+      "status": "success",
+      "latency_ms": 410.31,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: urm8/LightRAG\nDate: 2026-08-14\nDeployment verification fact: LightRAG serves its FastMCP endpoint at /mcp by directly invoking the live in-process LightRAG runtime. It does not use the removed lightrag-mcp generated REST client or an MCP sidecar.\nRelations: LightRAG IMPLEMENTS direct FastMCP runtime adapter. LightRAG NO_LONGER_DEPENDS_ON generated MCP REST client.",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9-chunk-000",
+              "document_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": false
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nDate: 2026-08-21\nDeployment validation: commit c6d4b31330f7fc3f413aed7b8add36640baff595 deployed successfully to the Hetzner k3s cluster as ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595. Pod is Ready 1/1 on worker-node-0 with zero restarts. Public health is healthy. The graph source-document endpoint resolved entity LightRAG to six documents, and GET /documents/doc-9d3a5099941e17f4aab75a3c4c0cfed9/content returned 486 characters, proving graph document clicks now resolve actual content rather than only an ID. The deployed We...",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112-chunk-000",
+              "document_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\n\nImplementation observation (2026-08-16): LightRAG now has first-class normalized document tags for agent memory. REST text/texts insertion and SDK insert/ainsert accept tags; tags are lowercase, whitespace-hyphenated, deduplicated, limited to 32 tags of 64 characters, stored in doc_status.metadata.tags, and carried across pipeline transitions/retries. Integrated MCP insert_document accepts tags and get_documents accepts exact all-tag filtering, enabling skill/workflow/agentic-development inventory retrieval. Graph provenance navigation now...",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-da00f425c04f7ecce4a250dd9925a855-chunk-000",
+              "document_id": "doc-da00f425c04f7ecce4a250dd9925a855",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "..., and tolerant startup/readiness/liveness probes. LightRAG production is forced to connect directly to postgresql.persistence.svc.cluster.local and uses stateless FastMCP HTTP so pod restarts do not invalidate client sessions.\nGraph failure: GET /graphs?label=* used Apache AGE Cypher `WITH [ids] AS node_ids ... id(a) IN node_ids`, which caused PostgreSQL backend SIGSEGV loops on AGE 1.8. The wildcard graph path now reads `_ag_label_vertex` and `_ag_label_edge` through parameterized native SQL. The empty AGE graph left by crashes had postgres-owned parent tables; it was dropped and recreated by the lightrag role without touching document/KV/vector tables.\nValidation: MCP health completed in 0...",
+              "file_path": "mcp-b064ce2ca62f41359c71e854fb8946a5-0.txt",
+              "reference_id": "4",
+              "chunk_id": "doc-aec0ed9f01ad6b9fee37033ad6244f91-chunk-000",
+              "document_id": "doc-aec0ed9f01ad6b9fee37033ad6244f91",
+              "tags": [],
+              "matched_terms": [
+                "fail"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...tation, standards, APIs, or libraries when available.\n\nDesign rationale: Recording the general approach rather than session chronology makes similar future problems searchable while preserving evidence needed to re-evaluate the solution.\n\nInvariants and failure conditions: A solution pattern is written in present tense and excludes task progress, debugging chronology, command logs, and narratives about what was changed. An unverified idea or intended approach is not stored as a viable solution.\n\nSource anchors: skills/lightrag-agentic-development/SKILL.md.\n\nRelations: Reusable Solution Pattern PART_OF LightRAG project reference memory. LightRAG STORES_IN referenced implementation approaches.",
+              "file_path": "mcp-fec79ca7daca46769d68c91ce4cd0da2-0.txt",
+              "reference_id": "5",
+              "chunk_id": "doc-650b2496343a67eeaab069e70113c114-chunk-000",
+              "document_id": "doc-650b2496343a67eeaab069e70113c114",
+              "tags": [],
+              "matched_terms": [
+                "fail"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nDate: 2026-08-15\nDeployment update: Production WebUI username/password login is enabled with AUTH_ACCOUNTS and an independent TOKEN_SECRET stored only in the lightrag-app Kubernetes Secret. The admin login password intentionally matches the existing LIGHTRAG_API_KEY, but AUTH_ACCOUNTS stores only its bcrypt hash; API-key authentication remains supported. Helm configuration now comes from ignored helm/values.private.yaml: image, direct database host, config.auth.enabled, and complete MCP settings. Local target `make helm-upgrade` performs val...",
+              "file_path": "mcp-987272869bb2469bb49440710b86c013-0.txt",
+              "reference_id": "6",
+              "chunk_id": "doc-cfb34f389c0f65837955af1541028cca-chunk-000",
+              "document_id": "doc-cfb34f389c0f65837955af1541028cca",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 6 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt"
+            },
+            {
+              "reference_id": "4",
+              "file_path": "mcp-b064ce2ca62f41359c71e854fb8946a5-0.txt"
+            },
+            {
+              "reference_id": "5",
+              "file_path": "mcp-fec79ca7daca46769d68c91ce4cd0da2-0.txt"
+            },
+            {
+              "reference_id": "6",
+              "file_path": "mcp-987272869bb2469bb49440710b86c013-0.txt"
+            }
+          ],
+          "history_turns": 0,
+          "retrieval": {
+            "mode": "naive",
+            "top_k": 1,
+            "chunk_top_k": 20,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 6,
+        "reference_count": 6,
+        "expected_term_hits": [
+          "anchor"
+        ],
+        "expected_term_recall": 0.3333,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {},
+        "retrieval_parameter_compliance": null,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "text-error-symbol",
+        "tool_fit": 5,
+        "retrieval_relevance": 1,
+        "context_precision": 1,
+        "completeness": 1,
+        "groundedness": 3,
+        "relevant_match_indices": [],
+        "verdict": "FAIL",
+        "reason": "Results mention general project facts but do not contain RecoveryAnchorMissingError, purge, or the requested anchor invariant."
+      }
+    },
+    {
+      "id": "graph-local-entity",
+      "use_case": "named_entity_fact",
+      "tool": "query_graph",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: What is the LightRAG MCP runtime and where is it mounted?",
+        "scope": "local",
+        "top_k": 24,
+        "chunk_top_k": 16,
+        "ll_keywords": [
+          "LightRAG MCP",
+          "FastMCP",
+          "/mcp"
+        ],
+        "only_need_context": true
+      },
+      "expected_terms": [
+        "FastMCP",
+        "/mcp",
+        "LightRAG"
+      ],
+      "status": "success",
+      "latency_ms": 700.93,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: urm8/LightRAG\nDate: 2026-08-14\nDeployment verification fact: LightRAG serves its FastMCP endpoint at /mcp by directly invoking the live in-process LightRAG runtime. It does not use the removed lightrag-mcp generated REST client or an MCP sidecar.\nRelations: LightRAG IMPLEMENTS direct FastMCP runtime adapter. LightRAG NO_LONGER_DEPENDS_ON generated MCP REST client.",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9-chunk-000",
+              "document_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9",
+              "tags": [],
+              "matched_terms": [
+                "fastmcp",
+                "runtime"
+              ],
+              "is_excerpt": false
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nDate: 2026-08-23\nScope: MCP retrieval and ChatGPT plugin authentication\n\nObservation: LightRAG MCP query_document and ChatGPT search_memory return at most six query-centered source excerpts, each bounded to about 700 characters and carrying document_id, file_path, matched_terms, excerpt state, and filtered references. Agents expand a source only after relevance is established by calling get_document_content(document_id) or get_memory_source(document_id). This replaces whole-chunk query payloads that consumed agent context.\n\nObservation: Ligh...",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-41397e031dce399133dc0ef3d0ab3801-chunk-000",
+              "document_id": "doc-41397e031dce399133dc0ef3d0ab3801",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nDate: 2026-08-15\nDeployment update: Production WebUI username/password login is enabled with AUTH_ACCOUNTS and an independent TOKEN_SECRET stored only in the lightrag-app Kubernetes Secret. The admin login password intentionally matches the existing LIGHTRAG_API_KEY, but AUTH_ACCOUNTS stores only its bcrypt hash; API-key authentication remains supported. Helm configuration now comes from ignored helm/values.private.yaml: image, direct database host, config.auth.enabled, and complete MCP settings. Local target `make helm-upgrade` performs val...",
+              "file_path": "mcp-987272869bb2469bb49440710b86c013-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-cfb34f389c0f65837955af1541028cca-chunk-000",
+              "document_id": "doc-cfb34f389c0f65837955af1541028cca",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "...-answer queries retain response while also returning matches. This fixes MCP/client truncation that previously exposed graph noise and opaque mcp file IDs before useful evidence. Implementation: lightrag/api/mcp_server.py LightRAGMCPRuntime.query. Regression: tests/test_lightrag_mcp_integration.py; 9 tests passed and Ruff passed. Deployment: commit 681570b88b3a06529112d367b707e0be69d40622, pod ready with zero restarts. Live query returned two matching content excerpts in one call.\n\nSUPERSEDES: prior assumptions that query_document only needs to forward raw only_need_context prompt output.\nRelations: LightRAG IMPROVES MCP agent retrieval. query_document RETURNS source excerpts. LightRAG DEPLO...",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt",
+              "reference_id": "4",
+              "chunk_id": "doc-4e80b6c15709f10b1f295538c5d3cce8-chunk-000",
+              "document_id": "doc-4e80b6c15709f10b1f295538c5d3cce8",
+              "tags": [],
+              "matched_terms": [
+                "runtime"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nDate: 2026-08-21\nDeployment validation: commit c6d4b31330f7fc3f413aed7b8add36640baff595 deployed successfully to the Hetzner k3s cluster as ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595. Pod is Ready 1/1 on worker-node-0 with zero restarts. Public health is healthy. The graph source-document endpoint resolved entity LightRAG to six documents, and GET /documents/doc-9d3a5099941e17f4aab75a3c4c0cfed9/content returned 486 characters, proving graph document clicks now resolve actual content rather than only an ID. The deployed We...",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt",
+              "reference_id": "5",
+              "chunk_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112-chunk-000",
+              "document_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nReference topic: SigNoz observability\n\nThe deployed LightRAG service emits application traces and metrics through OpenTelemetry OTLP/HTTP to the cluster SigNoz collector. Kubernetes stdout collection remains the single log ingestion path. HTTP and MCP requests, graph/vector retrieval, OpenAI-compatible chat and embedding calls, and document pipeline runs are traced. Model spans record gen_ai operation, provider, model, role, and provider-reported input/output token usage without prompt or document content. Histograms record token usage and o...",
+              "file_path": "mcp-d7388a2027624b4fa1559546e6ae75d4-0.txt",
+              "reference_id": "6",
+              "chunk_id": "doc-8d7b391028c3f42ab21244569e2d9984-chunk-000",
+              "document_id": "doc-8d7b391028c3f42ab21244569e2d9984",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 6 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-987272869bb2469bb49440710b86c013-0.txt"
+            },
+            {
+              "reference_id": "4",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt"
+            },
+            {
+              "reference_id": "5",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt"
+            },
+            {
+              "reference_id": "6",
+              "file_path": "mcp-d7388a2027624b4fa1559546e6ae75d4-0.txt"
+            }
+          ],
+          "history_turns": 0,
+          "retrieval": {
+            "mode": "local",
+            "top_k": 24,
+            "chunk_top_k": 16,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 6,
+        "reference_count": 6,
+        "expected_term_hits": [
+          "FastMCP",
+          "/mcp",
+          "LightRAG"
+        ],
+        "expected_term_recall": 1.0,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {},
+        "retrieval_parameter_compliance": null,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "graph-local-entity",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          3
+        ],
+        "verdict": "PASS",
+        "reason": "Matches directly describe the MCP runtime, FastMCP endpoint, and mounted /mcp path."
+      }
+    },
+    {
+      "id": "graph-global-architecture",
+      "use_case": "broad_relationship_synthesis",
+      "tool": "query_graph",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: Describe the major LightRAG storage roles and how they relate.",
+        "scope": "global",
+        "top_k": 40,
+        "chunk_top_k": 20,
+        "hl_keywords": [
+          "storage architecture",
+          "data persistence"
+        ],
+        "only_need_context": true
+      },
+      "expected_terms": [
+        "vector",
+        "graph",
+        "document",
+        "storage"
+      ],
+      "status": "success",
+      "latency_ms": 563.25,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "...st-class normalized document tags for agent memory. REST text/texts insertion and SDK insert/ainsert accept tags; tags are lowercase, whitespace-hyphenated, deduplicated, limited to 32 tags of 64 characters, stored in doc_status.metadata.tags, and carried across pipeline transitions/retries. Integrated MCP insert_document accepts tags and get_documents accepts exact all-tag filtering, enabling skill/workflow/agentic-development inventory retrieval. Graph provenance navigation now prefers authoritative entity_chunks tracking, falls back to graph source_id for legacy data, resolves chunk full_doc_id ownership through GET /graph/entity/source-documents, and fetches complete bodies on demand thr...",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-da00f425c04f7ecce4a250dd9925a855-chunk-000",
+              "document_id": "doc-da00f425c04f7ecce4a250dd9925a855",
+              "tags": [],
+              "matched_terms": [
+                "data"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...: Svelte 5 SPA in frontend/ (landing /, live /editor, gallery /gallery). The previous vanilla editor is /demo.html. Django REST lives at /api/ via videos.api.UserVideoViewSet.\n\nUpload uses presigned S3 PUT from videos.service.object_storage (same pattern as sosync media router). If AWS_STORAGE_BUCKET_NAME is unset, files go to MEDIA_ROOT/studio/ and /api/videos/{id}/local-upload/.\n\nSTT: POST /api/videos/{id}/transcribe/ runs videos.studio_tasks.transcribe_user_video (sync when STAND!=PROD, Celery delay in PROD). ffmpeg extracts mono 16k AAC, AssemblyAI transcribes, words JSON saved to S3 and UserVideo.transcript.\n\nEditor settings are columns on videos.user_video.UserVideo. Compile is client...",
+              "file_path": "mcp-c06b025d724241f89c0269f305f76208-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-162e1a84234ad52c337b9a8f18dffb40-chunk-000",
+              "document_id": "doc-162e1a84234ad52c337b9a8f18dffb40",
+              "tags": [],
+              "matched_terms": [
+                "storage"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nDate: 2026-08-21\nDeployment validation: commit c6d4b31330f7fc3f413aed7b8add36640baff595 deployed successfully to the Hetzner k3s cluster as ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595. Pod is Ready 1/1 on worker-node-0 with zero restarts. Public health is healthy. The graph source-document endpoint resolved entity LightRAG to six documents, and GET /documents/doc-9d3a5099941e17f4aab75a3c4c0cfed9/content returned 486 characters, proving graph document clicks now resolve actual content rather than only an ID. The deployed We...",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112-chunk-000",
+              "document_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "...ness is hands/eyes/memory/safety. ohmo is the packaged personal agent on top (channels, ~/.ohmo) and can use Claude Code or Codex auth. Local clone exists at the path above (git cu). Version in pyproject: 0.1.9. Python >=3.10. MIT.\n\nArchitecture (src/openharness):\n- engine/ QueryEngine + run_query: query → stream → tool_use → permission → hook → execute → append results → loop. Default max_turns=8. Auto-compact, cost tracking.\n- tools/ 43 tools: Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, LSP, MCP adapters, Agent/Team, Task*, Cron*, Skill, AskUser, plan/worktree.\n- permissions/ multi-level modes, path rules, command deny, approval dialogs.\n- hooks/ PreToolUse PostToolUse.\n- mcp...",
+              "file_path": "mcp-815d02770e1548b194185c1641bd6c47-0.txt",
+              "reference_id": "4",
+              "chunk_id": "doc-3c828b7d5e77545ebe350d9345798e7e-chunk-000",
+              "document_id": "doc-3c828b7d5e77545ebe350d9345798e7e",
+              "tags": [],
+              "matched_terms": [
+                "architecture"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: urm8/LightRAG\nDate: 2026-08-14\nDeployment verification fact: LightRAG serves its FastMCP endpoint at /mcp by directly invoking the live in-process LightRAG runtime. It does not use the removed lightrag-mcp generated REST client or an MCP sidecar.\nRelations: LightRAG IMPLEMENTS direct FastMCP runtime adapter. LightRAG NO_LONGER_DEPENDS_ON generated MCP REST client.",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt",
+              "reference_id": "5",
+              "chunk_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9-chunk-000",
+              "document_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": false
+            },
+            {
+              "content": "Project: aurora-api skill\nProject entity: Project|aurora-api skill\nProject path: /Users/max/.cursor/skills/aurora-api\nRepository: local personal Cursor skill (mirrored at /Users/max/.codex/skills/aurora-api)\n\nDecision SUPERSEDES session-file-per-call guidance: chat and ask-file reuse one Aurora thread per project and named task.\n\nIndex: SQLite at ~/.local/share/aurora-api/sessions.db (override AURORA_SESSION_DB). Tables: projects(path unique, remote), tasks(project_id, name, conversation_id, transcript_path, model, updated_at). Transcripts JSON under ~/.local/share/aurora-api/transcripts/. Never store tokens.\n\nLookup: git toplevel or --project / AURORA_PROJECT plus --task / AURORA_TASK (defa...",
+              "file_path": "mcp-10cd09138ba1487cb26f56419ef5c623-0.txt",
+              "reference_id": "6",
+              "chunk_id": "doc-e7be2f8cd890272d0e0c9e6c4b89b5d9-chunk-000",
+              "document_id": "doc-e7be2f8cd890272d0e0c9e6c4b89b5d9",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 6 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-c06b025d724241f89c0269f305f76208-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt"
+            },
+            {
+              "reference_id": "4",
+              "file_path": "mcp-815d02770e1548b194185c1641bd6c47-0.txt"
+            },
+            {
+              "reference_id": "5",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt"
+            },
+            {
+              "reference_id": "6",
+              "file_path": "mcp-10cd09138ba1487cb26f56419ef5c623-0.txt"
+            }
+          ],
+          "history_turns": 0,
+          "retrieval": {
+            "mode": "global",
+            "top_k": 40,
+            "chunk_top_k": 20,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 6,
+        "reference_count": 6,
+        "expected_term_hits": [
+          "graph",
+          "document",
+          "storage"
+        ],
+        "expected_term_recall": 0.75,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {},
+        "retrieval_parameter_compliance": null,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "graph-global-architecture",
+        "tool_fit": 5,
+        "retrieval_relevance": 4,
+        "context_precision": 4,
+        "completeness": 3,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          2,
+          4
+        ],
+        "verdict": "PARTIAL",
+        "reason": "Provides some architecture evidence but lacks a complete storage-role relationship explanation."
+      }
+    },
+    {
+      "id": "graph-hybrid-purge",
+      "use_case": "multi_entity_relationship",
+      "tool": "query_graph",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: How do recovery anchors, kg_write_state, chunks, and graph attribution interact during purge?",
+        "scope": "hybrid",
+        "top_k": 40,
+        "chunk_top_k": 24,
+        "hl_keywords": [
+          "purge recovery",
+          "graph attribution"
+        ],
+        "ll_keywords": [
+          "kg_write_state",
+          "full_entities",
+          "full_relations"
+        ],
+        "only_need_context": true
+      },
+      "expected_terms": [
+        "anchor",
+        "kg_write_state",
+        "chunk",
+        "graph"
+      ],
+      "status": "success",
+      "latency_ms": 646.0,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "...c_status.metadata.tags, and carried across pipeline transitions/retries. Integrated MCP insert_document accepts tags and get_documents accepts exact all-tag filtering, enabling skill/workflow/agentic-development inventory retrieval. Graph provenance navigation now prefers authoritative entity_chunks tracking, falls back to graph source_id for legacy data, resolves chunk full_doc_id ownership through GET /graph/entity/source-documents, and fetches complete bodies on demand through GET /documents/{doc_id}/content. The WebUI node inspector lists source documents and opens full content in a scrollable dialog. Validation: 21 focused pytest cases passed, changed frontend ESLint passed, production...",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-da00f425c04f7ecce4a250dd9925a855-chunk-000",
+              "document_id": "doc-da00f425c04f7ecce4a250dd9925a855",
+              "tags": [],
+              "matched_terms": [
+                "graph",
+                "chunks"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...6d4b31330f7fc3f413aed7b8add36640baff595 deployed successfully to the Hetzner k3s cluster as ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595. Pod is Ready 1/1 on worker-node-0 with zero restarts. Public health is healthy. The graph source-document endpoint resolved entity LightRAG to six documents, and GET /documents/doc-9d3a5099941e17f4aab75a3c4c0cfed9/content returned 486 characters, proving graph document clicks now resolve actual content rather than only an ID. The deployed WebUI bundle contains the source-documents integration.\nRelations: LightRAG IMPLEMENTS graph source document resolution. LightRAG IMPROVES graph node document inspection. LightRAG DEPLOYS_TO Hetzner k3s.",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112-chunk-000",
+              "document_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112",
+              "tags": [],
+              "matched_terms": [
+                "graph"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...urge=0, and tolerant startup/readiness/liveness probes. LightRAG production is forced to connect directly to postgresql.persistence.svc.cluster.local and uses stateless FastMCP HTTP so pod restarts do not invalidate client sessions.\nGraph failure: GET /graphs?label=* used Apache AGE Cypher `WITH [ids] AS node_ids ... id(a) IN node_ids`, which caused PostgreSQL backend SIGSEGV loops on AGE 1.8. The wildcard graph path now reads `_ag_label_vertex` and `_ag_label_edge` through parameterized native SQL. The empty AGE graph left by crashes had postgres-owned parent tables; it was dropped and recreated by the lightrag role without touching document/KV/vector tables.\nValidation: MCP health complete...",
+              "file_path": "mcp-b064ce2ca62f41359c71e854fb8946a5-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-aec0ed9f01ad6b9fee37033ad6244f91-chunk-000",
+              "document_id": "doc-aec0ed9f01ad6b9fee37033ad6244f91",
+              "tags": [],
+              "matched_terms": [
+                "graph"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: urm8/LightRAG\nDate: 2026-08-14\nDeployment verification fact: LightRAG serves its FastMCP endpoint at /mcp by directly invoking the live in-process LightRAG runtime. It does not use the removed lightrag-mcp generated REST client or an MCP sidecar.\nRelations: LightRAG IMPLEMENTS direct FastMCP runtime adapter. LightRAG NO_LONGER_DEPENDS_ON generated MCP REST client.",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt",
+              "reference_id": "4",
+              "chunk_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9-chunk-000",
+              "document_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": false
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nDate: 2026-08-23\nScope: MCP retrieval and ChatGPT plugin authentication\n\nObservation: LightRAG MCP query_document and ChatGPT search_memory return at most six query-centered source excerpts, each bounded to about 700 characters and carrying document_id, file_path, matched_terms, excerpt state, and filtered references. Agents expand a source only after relevance is established by calling get_document_content(document_id) or get_memory_source(document_id). This replaces whole-chunk query payloads that consumed agent context.\n\nObservation: Ligh...",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt",
+              "reference_id": "5",
+              "chunk_id": "doc-41397e031dce399133dc0ef3d0ab3801-chunk-000",
+              "document_id": "doc-41397e031dce399133dc0ef3d0ab3801",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "...erves: LightRAG-first shared memory; source authority; health/unavailable branches; query-before-broad-read and only_need_context; current-source verification; mandatory maintained observations; observation taxonomy; source/revision anchors; stale-note correction, SUPERSEDES/INVALIDATES, and deletion; exact query/write project headers; relation hints; pipeline-status check; durable-note categories; and secret/privacy prohibition. Measured with tiktoken o200k_base: previous English section 3238 characters, 20 lines, 627 tokens; compressed section 838 characters, 13 lines, 468 tokens; reduction 159 tokens (25.4%) and 2400 characters (74.1%).\n\nSUPERSEDES: the prior Global AGENTS.md policy obser...",
+              "file_path": "mcp-354c8015a8c346978e5969394ce84c6e-0.txt",
+              "reference_id": "6",
+              "chunk_id": "doc-fe7115d67408fa8a8adc5b9c52be5660-chunk-000",
+              "document_id": "doc-fe7115d67408fa8a8adc5b9c52be5660",
+              "tags": [],
+              "matched_terms": [
+                "anchors"
+              ],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 6 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-b064ce2ca62f41359c71e854fb8946a5-0.txt"
+            },
+            {
+              "reference_id": "4",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt"
+            },
+            {
+              "reference_id": "5",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt"
+            },
+            {
+              "reference_id": "6",
+              "file_path": "mcp-354c8015a8c346978e5969394ce84c6e-0.txt"
+            }
+          ],
+          "history_turns": 0,
+          "retrieval": {
+            "mode": "hybrid",
+            "top_k": 40,
+            "chunk_top_k": 24,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 6,
+        "reference_count": 6,
+        "expected_term_hits": [
+          "anchor",
+          "chunk",
+          "graph"
+        ],
+        "expected_term_recall": 0.75,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {},
+        "retrieval_parameter_compliance": null,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "graph-hybrid-purge",
+        "tool_fit": 5,
+        "retrieval_relevance": 2,
+        "context_precision": 2,
+        "completeness": 2,
+        "groundedness": 3,
+        "relevant_match_indices": [
+          0
+        ],
+        "verdict": "PARTIAL",
+        "reason": "Contains graph and chunk provenance information but not the requested recovery anchors or kg_write_state purge interaction."
+      }
+    },
+    {
+      "id": "mixed-coding",
+      "use_case": "coding_and_architecture",
+      "tool": "query_mixed",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: How does the integrated MCP query path call the live LightRAG runtime and return source provenance?",
+        "top_k": 36,
+        "chunk_top_k": 24,
+        "only_need_context": true
+      },
+      "expected_terms": [
+        "MCP",
+        "runtime",
+        "reference",
+        "source"
+      ],
+      "status": "success",
+      "latency_ms": 617.6,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: urm8/LightRAG\nDate: 2026-08-14\nDeployment verification fact: LightRAG serves its FastMCP endpoint at /mcp by directly invoking the live in-process LightRAG runtime. It does not use the removed lightrag-mcp generated REST client or an MCP sidecar.\nRelations: LightRAG IMPLEMENTS direct FastMCP runtime adapter. LightRAG NO_LONGER_DEPENDS_ON generated MCP REST client.",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9-chunk-000",
+              "document_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9",
+              "tags": [],
+              "matched_terms": [
+                "does",
+                "live",
+                "runtime"
+              ],
+              "is_excerpt": false
+            },
+            {
+              "content": "...tain response while also returning matches. This fixes MCP/client truncation that previously exposed graph noise and opaque mcp file IDs before useful evidence. Implementation: lightrag/api/mcp_server.py LightRAGMCPRuntime.query. Regression: tests/test_lightrag_mcp_integration.py; 9 tests passed and Ruff passed. Deployment: commit 681570b88b3a06529112d367b707e0be69d40622, pod ready with zero restarts. Live query returned two matching content excerpts in one call.\n\nSUPERSEDES: prior assumptions that query_document only needs to forward raw only_need_context prompt output.\nRelations: LightRAG IMPROVES MCP agent retrieval. query_document RETURNS source excerpts. LightRAG DEPLOYS_TO Hetzner k3s.",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-4e80b6c15709f10b1f295538c5d3cce8-chunk-000",
+              "document_id": "doc-4e80b6c15709f10b1f295538c5d3cce8",
+              "tags": [],
+              "matched_terms": [
+                "query",
+                "call",
+                "live",
+                "runtime",
+                "return",
+                "source"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...roject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nDate: 2026-08-23\nScope: MCP retrieval and ChatGPT plugin authentication\n\nObservation: LightRAG MCP query_document and ChatGPT search_memory return at most six query-centered source excerpts, each bounded to about 700 characters and carrying document_id, file_path, matched_terms, excerpt state, and filtered references. Agents expand a source only after relevance is established by calling get_document_content(document_id) or get_memory_source(document_id). This replaces whole-chunk query payloads that consumed agent context.\n\nObservation: LightRAG exposes a dedi...",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-41397e031dce399133dc0ef3d0ab3801-chunk-000",
+              "document_id": "doc-41397e031dce399133dc0ef3d0ab3801",
+              "tags": [],
+              "matched_terms": [
+                "query",
+                "call",
+                "return",
+                "source"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...t/texts insertion and SDK insert/ainsert accept tags; tags are lowercase, whitespace-hyphenated, deduplicated, limited to 32 tags of 64 characters, stored in doc_status.metadata.tags, and carried across pipeline transitions/retries. Integrated MCP insert_document accepts tags and get_documents accepts exact all-tag filtering, enabling skill/workflow/agentic-development inventory retrieval. Graph provenance navigation now prefers authoritative entity_chunks tracking, falls back to graph source_id for legacy data, resolves chunk full_doc_id ownership through GET /graph/entity/source-documents, and fetches complete bodies on demand through GET /documents/{doc_id}/content. The WebUI node inspect...",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt",
+              "reference_id": "4",
+              "chunk_id": "doc-da00f425c04f7ecce4a250dd9925a855-chunk-000",
+              "document_id": "doc-da00f425c04f7ecce4a250dd9925a855",
+              "tags": [],
+              "matched_terms": [
+                "integrated",
+                "source",
+                "provenance"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...6d4b31330f7fc3f413aed7b8add36640baff595 deployed successfully to the Hetzner k3s cluster as ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595. Pod is Ready 1/1 on worker-node-0 with zero restarts. Public health is healthy. The graph source-document endpoint resolved entity LightRAG to six documents, and GET /documents/doc-9d3a5099941e17f4aab75a3c4c0cfed9/content returned 486 characters, proving graph document clicks now resolve actual content rather than only an ID. The deployed WebUI bundle contains the source-documents integration.\nRelations: LightRAG IMPLEMENTS graph source document resolution. LightRAG IMPROVES graph node document inspection. LightRAG DEPLOYS_TO Hetzner k3s.",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt",
+              "reference_id": "5",
+              "chunk_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112-chunk-000",
+              "document_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112",
+              "tags": [],
+              "matched_terms": [
+                "return",
+                "source"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...ls, call/data/control flow, dependencies and purpose, lifecycle and persistence, operational processes, design rationale and tradeoffs, invariants, constraints, rules, exceptions, and reproducible failure conditions.\n\nProcess: Every query and write identifies the active Project entity, absolute project path, and repository remote. query_document with only_need_context=true supplies bounded relevant excerpts before broad source reads. get_document_content(document_id) expands only a source already shown to be relevant. Repository source remains authoritative. Missing current reference knowledge is inserted; stale entries are corrected, replaced, or deleted. get_pipeline_status is used only wh...",
+              "file_path": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8-0.txt",
+              "reference_id": "6",
+              "chunk_id": "doc-6a89f2319f85fd775c3bc0c575b217f8-chunk-000",
+              "document_id": "doc-6a89f2319f85fd775c3bc0c575b217f8",
+              "tags": [],
+              "matched_terms": [
+                "query",
+                "call",
+                "source"
+              ],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 6 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt"
+            },
+            {
+              "reference_id": "4",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt"
+            },
+            {
+              "reference_id": "5",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt"
+            },
+            {
+              "reference_id": "6",
+              "file_path": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8-0.txt"
+            }
+          ],
+          "history_turns": 5,
+          "retrieval": {
+            "mode": "mix",
+            "top_k": 36,
+            "chunk_top_k": 24,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 6,
+        "reference_count": 6,
+        "expected_term_hits": [
+          "MCP",
+          "runtime",
+          "reference",
+          "source"
+        ],
+        "expected_term_recall": 1.0,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {},
+        "retrieval_parameter_compliance": null,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "mixed-coding",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          1,
+          2,
+          5
+        ],
+        "verdict": "PASS",
+        "reason": "Evidence covers direct runtime invocation, query implementation, and source provenance behavior."
+      }
+    },
+    {
+      "id": "mixed-deployment-debug",
+      "use_case": "deployment_debugging",
+      "tool": "query_mixed",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: What must production deployment verify for health, Helm, PostgreSQL, and the MCP endpoint?",
+        "top_k": 36,
+        "chunk_top_k": 24,
+        "only_need_context": true
+      },
+      "expected_terms": [
+        "Helm",
+        "PostgreSQL",
+        "MCP",
+        "health"
+      ],
+      "status": "success",
+      "latency_ms": 728.91,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "...helm/values.private.yaml: image, direct database host, config.auth.enabled, and complete MCP settings. Local target `make helm-upgrade` performs values-only upgrade; `make helm-upgrade-build` updates the private image tag to current commit, builds/pushes ARM64 image, then upgrades. CI uses the production environment LIGHTRAG_VALUES_B64 plus a generated image-only values file and no Helm --set-string flags. Commit 75d4b0e2 deployed successfully; pod has zero restarts, /auth-status reports enabled, /login succeeds, and MCP is healthy.\nRelations: LightRAG IMPLEMENTS WebUI JWT login. LightRAG USES values-driven Helm deployment. LightRAG USES bcrypt AUTH_ACCOUNTS. LightRAG DEPLOYS_TO Hetzner k3s.",
+              "file_path": "mcp-987272869bb2469bb49440710b86c013-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-cfb34f389c0f65837955af1541028cca-chunk-000",
+              "document_id": "doc-cfb34f389c0f65837955af1541028cca",
+              "tags": [],
+              "matched_terms": [
+                "production",
+                "deployment",
+                "health",
+                "helm"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: urm8/LightRAG\nDate: 2026-08-14\nDeployment verification fact: LightRAG serves its FastMCP endpoint at /mcp by directly invoking the live in-process LightRAG runtime. It does not use the removed lightrag-mcp generated REST client or an MCP sidecar.\nRelations: LightRAG IMPLEMENTS direct FastMCP runtime adapter. LightRAG NO_LONGER_DEPENDS_ON generated MCP REST client.",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9-chunk-000",
+              "document_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9",
+              "tags": [],
+              "matched_terms": [
+                "deployment",
+                "endpoint"
+              ],
+              "is_excerpt": false
+            },
+            {
+              "content": "...one-second probes forced restart loops during a node interruption. The cluster-addons HAProxy deployment now uses required hostname anti-affinity, maxUnavailable=1/maxSurge=0, and tolerant startup/readiness/liveness probes. LightRAG production is forced to connect directly to postgresql.persistence.svc.cluster.local and uses stateless FastMCP HTTP so pod restarts do not invalidate client sessions.\nGraph failure: GET /graphs?label=* used Apache AGE Cypher `WITH [ids] AS node_ids ... id(a) IN node_ids`, which caused PostgreSQL backend SIGSEGV loops on AGE 1.8. The wildcard graph path now reads `_ag_label_vertex` and `_ag_label_edge` through parameterized native SQL. The empty AGE graph left by...",
+              "file_path": "mcp-b064ce2ca62f41359c71e854fb8946a5-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-aec0ed9f01ad6b9fee37033ad6244f91-chunk-000",
+              "document_id": "doc-aec0ed9f01ad6b9fee37033ad6244f91",
+              "tags": [],
+              "matched_terms": [
+                "production",
+                "deployment",
+                "postgresql"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nDate: 2026-08-21\nDeployment validation: commit c6d4b31330f7fc3f413aed7b8add36640baff595 deployed successfully to the Hetzner k3s cluster as ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595. Pod is Ready 1/1 on worker-node-0 with zero restarts. Public health is healthy. The graph source-document endpoint resolved entity LightRAG to six documents, and GET /documents/doc-9d3a5099941e17f4aab75a3c4c0cfed9/content returned 486 characters, proving graph document clicks now resolve actual content rather than only an ID. The deployed We...",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt",
+              "reference_id": "4",
+              "chunk_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112-chunk-000",
+              "document_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112",
+              "tags": [],
+              "matched_terms": [
+                "deployment",
+                "health",
+                "endpoint"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...usage without prompt or document content. Histograms record token usage and operation duration by model and role. Currency estimates are derived in SigNoz from token metrics and an operator-maintained per-model price table because provider prices change.\n\nImplementation anchors: lightrag/observability.py; lightrag/api/mcp_server.py::_execute_lightrag_operation; lightrag/llm/openai.py; lightrag/operate.py::kg_query; lightrag/pipeline.py::apipeline_process_enqueue_documents; helm/templates/deployment.yaml.\nReferences: https://signoz.io/docs/llm-observability/ ; https://signoz.io/docs/instrumentation/opentelemetry-python/ ; https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/",
+              "file_path": "mcp-d7388a2027624b4fa1559546e6ae75d4-0.txt",
+              "reference_id": "5",
+              "chunk_id": "doc-8d7b391028c3f42ab21244569e2d9984-chunk-000",
+              "document_id": "doc-8d7b391028c3f42ab21244569e2d9984",
+              "tags": [],
+              "matched_terms": [
+                "deployment",
+                "helm"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...kill/workflow/agentic-development inventory retrieval. Graph provenance navigation now prefers authoritative entity_chunks tracking, falls back to graph source_id for legacy data, resolves chunk full_doc_id ownership through GET /graph/entity/source-documents, and fetches complete bodies on demand through GET /documents/{doc_id}/content. The WebUI node inspector lists source documents and opens full content in a scrollable dialog. Validation: 21 focused pytest cases passed, changed frontend ESLint passed, production WebUI build passed, temporary server health/OpenAPI/UI smoke passed. LightRAG IMPLEMENTS tagged agent-memory retrieval. LightRAG IMPROVES graph-to-document provenance navigation.",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt",
+              "reference_id": "6",
+              "chunk_id": "doc-da00f425c04f7ecce4a250dd9925a855-chunk-000",
+              "document_id": "doc-da00f425c04f7ecce4a250dd9925a855",
+              "tags": [],
+              "matched_terms": [
+                "production",
+                "health"
+              ],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 6 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-987272869bb2469bb49440710b86c013-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-b064ce2ca62f41359c71e854fb8946a5-0.txt"
+            },
+            {
+              "reference_id": "4",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt"
+            },
+            {
+              "reference_id": "5",
+              "file_path": "mcp-d7388a2027624b4fa1559546e6ae75d4-0.txt"
+            },
+            {
+              "reference_id": "6",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt"
+            }
+          ],
+          "history_turns": 5,
+          "retrieval": {
+            "mode": "mix",
+            "top_k": 36,
+            "chunk_top_k": 24,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 6,
+        "reference_count": 6,
+        "expected_term_hits": [
+          "Helm",
+          "PostgreSQL",
+          "MCP",
+          "health"
+        ],
+        "expected_term_recall": 1.0,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {},
+        "retrieval_parameter_compliance": null,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "mixed-deployment-debug",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "verdict": "PASS",
+        "reason": "Matches cover Helm, PostgreSQL, MCP endpoint, and health validation details."
+      }
+    },
+    {
+      "id": "mixed-chat-history",
+      "use_case": "dependent_chat_followup",
+      "tool": "query_mixed",
+      "arguments": {
+        "query": "How does it filter them?",
+        "top_k": 24,
+        "chunk_top_k": 16,
+        "conversation_history": [
+          {
+            "role": "user",
+            "content": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: How are document tags stored in LightRAG?"
+          },
+          {
+            "role": "assistant",
+            "content": "They are normalized and stored in document status metadata."
+          }
+        ],
+        "history_turns": 1,
+        "only_need_context": true
+      },
+      "expected_terms": [
+        "tag",
+        "metadata",
+        "document"
+      ],
+      "expected_retrieval": {
+        "history_messages_used": 2,
+        "history_used_for_retrieval": true
+      },
+      "status": "success",
+      "latency_ms": 647.28,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "...oject: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\n\nImplementation observation (2026-08-16): LightRAG now has first-class normalized document tags for agent memory. REST text/texts insertion and SDK insert/ainsert accept tags; tags are lowercase, whitespace-hyphenated, deduplicated, limited to 32 tags of 64 characters, stored in doc_status.metadata.tags, and carried across pipeline transitions/retries. Integrated MCP insert_document accepts tags and get_documents accepts exact all-tag filtering, enabling skill/workflow/agentic-development inventory retrieval. Graph provenance navigation now pr...",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-da00f425c04f7ecce4a250dd9925a855-chunk-000",
+              "document_id": "doc-da00f425c04f7ecce4a250dd9925a855",
+              "tags": [],
+              "matched_terms": [
+                "user",
+                "document",
+                "tags",
+                "stored",
+                "normalized",
+                "status",
+                "metadata.",
+                "filter"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...offs, invariants, constraints, rules, exceptions, and reproducible failure conditions.\n\nProcess: Every query and write identifies the active Project entity, absolute project path, and repository remote. query_document with only_need_context=true supplies bounded relevant excerpts before broad source reads. get_document_content(document_id) expands only a source already shown to be relevant. Repository source remains authoritative. Missing current reference knowledge is inserted; stale entries are corrected, replaced, or deleted. get_pipeline_status is used only when newly inserted knowledge must be queried immediately.\n\nDesign rationale: Current-state, source-anchored entries reduce repeated...",
+              "file_path": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-6a89f2319f85fd775c3bc0c575b217f8-chunk-000",
+              "document_id": "doc-6a89f2319f85fd775c3bc0c575b217f8",
+              "tags": [],
+              "matched_terms": [
+                "context",
+                "document",
+                "status",
+                "current",
+                "query"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nDate: 2026-08-21\nDeployment validation: commit c6d4b31330f7fc3f413aed7b8add36640baff595 deployed successfully to the Hetzner k3s cluster as ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595. Pod is Ready 1/1 on worker-node-0 with zero restarts. Public health is healthy. The graph source-document endpoint resolved entity LightRAG to six documents, and GET /documents/doc-9d3a5099941e17f4aab75a3c4c0cfed9/content returned 486 characters, proving graph document clicks now resolve actual content rather than only an ID. The deployed We...",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112-chunk-000",
+              "document_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112",
+              "tags": [],
+              "matched_terms": [
+                "user",
+                "document"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...ghtRAG.git\nDate: 2026-08-23\nScope: MCP agent retrieval\n\nObservation: Integrated MCP query_document now returns selected source chunks first in response.matches, each with content, file_path, reference_id, and chunk_id. For only_need_context=true it replaces the large internal graph/entity/relation prompt string with a compact retrieved-count message; generated-answer queries retain response while also returning matches. This fixes MCP/client truncation that previously exposed graph noise and opaque mcp file IDs before useful evidence. Implementation: lightrag/api/mcp_server.py LightRAGMCPRuntime.query. Regression: tests/test_lightrag_mcp_integration.py; 9 tests passed and Ruff passed. Deploy...",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt",
+              "reference_id": "4",
+              "chunk_id": "doc-4e80b6c15709f10b1f295538c5d3cce8-chunk-000",
+              "document_id": "doc-4e80b6c15709f10b1f295538c5d3cce8",
+              "tags": [],
+              "matched_terms": [
+                "context",
+                "document",
+                "query"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...ject-memory policy as a compact Simplified Chinese XML-like <LRG> block with an explicit decision flow. It preserves: LightRAG-first shared memory; source authority; health/unavailable branches; query-before-broad-read and only_need_context; current-source verification; mandatory maintained observations; observation taxonomy; source/revision anchors; stale-note correction, SUPERSEDES/INVALIDATES, and deletion; exact query/write project headers; relation hints; pipeline-status check; durable-note categories; and secret/privacy prohibition. Measured with tiktoken o200k_base: previous English section 3238 characters, 20 lines, 627 tokens; compressed section 838 characters, 13 lines, 468 tokens;...",
+              "file_path": "mcp-354c8015a8c346978e5969394ce84c6e-0.txt",
+              "reference_id": "5",
+              "chunk_id": "doc-fe7115d67408fa8a8adc5b9c52be5660-chunk-000",
+              "document_id": "doc-fe7115d67408fa8a8adc5b9c52be5660",
+              "tags": [],
+              "matched_terms": [
+                "context",
+                "status",
+                "current",
+                "query"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...state, and filtered references. Agents expand a source only after relevance is established by calling get_document_content(document_id) or get_memory_source(document_id). This replaces whole-chunk query payloads that consumed agent context.\n\nObservation: LightRAG exposes a dedicated OAuth 2.1 ChatGPT MCP at https://rag.urm8.org/chatgpt/mcp. It uses PKCE S256, dynamic client registration, existing LightRAG WebUI accounts, signed access/refresh tokens, resource/audience/scope validation, and least-privilege tools search_memory, get_memory_source, and save_memory. The administrative API-key MCP remains at /mcp.\n\nFiles: lightrag/api/mcp_server.py; lightrag/api/chatgpt_oauth.py; lightrag/api/lig...",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt",
+              "reference_id": "6",
+              "chunk_id": "doc-41397e031dce399133dc0ef3d0ab3801-chunk-000",
+              "document_id": "doc-41397e031dce399133dc0ef3d0ab3801",
+              "tags": [],
+              "matched_terms": [
+                "context",
+                "document",
+                "query",
+                "filter"
+              ],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 6 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt"
+            },
+            {
+              "reference_id": "4",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt"
+            },
+            {
+              "reference_id": "5",
+              "file_path": "mcp-354c8015a8c346978e5969394ce84c6e-0.txt"
+            },
+            {
+              "reference_id": "6",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt"
+            }
+          ],
+          "history_turns": 1,
+          "retrieval": {
+            "mode": "mix",
+            "top_k": 24,
+            "chunk_top_k": 16,
+            "history_messages_used": 2,
+            "history_used_for_retrieval": true,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 6,
+        "reference_count": 6,
+        "expected_term_hits": [
+          "tag",
+          "metadata",
+          "document"
+        ],
+        "expected_term_recall": 1.0,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {
+          "history_messages_used": true,
+          "history_used_for_retrieval": true
+        },
+        "retrieval_parameter_compliance": true,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "mixed-chat-history",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          5
+        ],
+        "verdict": "PASS",
+        "reason": "History-aware retrieval returns tag metadata and document filtering evidence matching the follow-up."
+      }
+    },
+    {
+      "id": "tagged-skill-memory",
+      "use_case": "strict_tag_scope",
+      "tool": "query_tagged",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: Find a reusable procedure for verifying an MCP deployment.",
+        "required_tags": [
+          "skill",
+          "agentic-development"
+        ],
+        "mode": "mix",
+        "top_k": 60,
+        "chunk_top_k": 60
+      },
+      "expected_terms": [
+        "verification",
+        "MCP"
+      ],
+      "required_tags": [
+        "skill",
+        "agentic-development"
+      ],
+      "status": "success",
+      "latency_ms": 746.55,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "...use present-tense factual language and source anchors. They do not contain intentions, TODOs, backlog items, task descriptions, progress, debugging chronology, command logs, validation diaries, or narratives about fixes and changes. Reusable bug knowledge is represented as a current constraint or reproducible failure condition. check_lightrag_health is called only after an MCP timeout, connection failure, or invalid response. Secrets and unrelated personal data are never stored.\n\nSource anchors: AGENTS.md; skills/lightrag-agentic-development/SKILL.md; /Users/max/.codex/AGENTS.md; /Users/max/.cursor/AGENTS.md; /Users/max/.config/opencode/AGENTS.md.\n\nRelations: LightRAG STORES_IN project refer...",
+              "file_path": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8-0.txt",
+              "reference_id": "11",
+              "chunk_id": "doc-6a89f2319f85fd775c3bc0c575b217f8-chunk-000",
+              "document_id": "doc-6a89f2319f85fd775c3bc0c575b217f8",
+              "tags": [
+                "agentic-development",
+                "project-reference",
+                "skill"
+              ],
+              "matched_terms": [
+                "reusable"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nReference topic: Agent skill distribution\n\nDefinition: skills/lightrag-agentic-development/SKILL.md is the single authored policy for LightRAG project-reference memory across Codex, Cursor, and OpenCode on this workstation.\n\nProcess: /Users/max/.codex/skills/lightrag-agentic-development/SKILL.md and /Users/max/.agents/skills/lightrag-agentic-development/SKILL.md are symbolic links to the repository skill. Platform-specific MCP connection metadata remains beside the installed skill. Global AGENTS files only activate the shared skill, require...",
+              "file_path": "mcp-1272313e1ba94582814da89b06504497-0.txt",
+              "reference_id": "12",
+              "chunk_id": "doc-6eacbf704aed9d6e70abe967aaf3c8b1-chunk-000",
+              "document_id": "doc-6eacbf704aed9d6e70abe967aaf3c8b1",
+              "tags": [
+                "agentic-development",
+                "project-reference",
+                "skill"
+              ],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: ht\nProject entity: Project|ht\nProject path: /Users/max/projs/github.com/urm8/ht\nRepository: github.com/urm8/ht\nReference topic: Reusable agent skill hetzner-k3s-helm-service-deploy\nSkill: hetzner-k3s-helm-service-deploy\nSkill entity: Workflow|hetzner-k3s-helm-service-deploy\nScope: project\nDescription: Create and upgrade Helm charts for urm8 Hetzner k3s services: scheduling pools, HAProxy ingress, shared Postgres via PgBouncer, sticky values overlays, and safe rollout checks.\nApplicability: Use when creating a new service Helm chart for the urm8 Hetzner k3s cluster, updating an existing app chart, or diagnosing a deploy that schedules wrong, cannot reach Postgres, or loses config on...",
+              "file_path": "mcp-81a7199b4dd5488d9526716cae6897c1-0.txt",
+              "reference_id": "17",
+              "chunk_id": "doc-6b1bfd74b0e6df0aab9b7cc59196eb08-chunk-000",
+              "document_id": "doc-6b1bfd74b0e6df0aab9b7cc59196eb08",
+              "tags": [
+                "skill",
+                "agentic-development",
+                "reusable-solution",
+                "skill-hetzner-k3s-helm-service-deploy",
+                "project"
+              ],
+              "matched_terms": [
+                "reusable"
+              ],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 3 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "11",
+              "file_path": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8-0.txt"
+            },
+            {
+              "reference_id": "12",
+              "file_path": "mcp-1272313e1ba94582814da89b06504497-0.txt"
+            },
+            {
+              "reference_id": "17",
+              "file_path": "mcp-81a7199b4dd5488d9526716cae6897c1-0.txt"
+            }
+          ],
+          "history_turns": 0,
+          "retrieval": {
+            "mode": "mix",
+            "top_k": 60,
+            "chunk_top_k": 60,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [
+              "agentic-development",
+              "skill"
+            ],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 3,
+        "reference_count": 3,
+        "expected_term_hits": [
+          "MCP"
+        ],
+        "expected_term_recall": 0.5,
+        "tag_compliance": true,
+        "retrieval_parameter_checks": {},
+        "retrieval_parameter_compliance": null,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "tagged-skill-memory",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 4,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          1
+        ],
+        "verdict": "PASS",
+        "reason": "Required tags are respected and results provide reusable skill memory related to MCP verification."
+      }
+    },
+    {
+      "id": "tagged-empty-scope",
+      "use_case": "strict_tag_negative_control",
+      "tool": "query_tagged",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: Return any project memory.",
+        "required_tags": [
+          "definitely-absent-eval-tag"
+        ],
+        "mode": "mix",
+        "top_k": 20,
+        "chunk_top_k": 20
+      },
+      "expected_terms": [],
+      "required_tags": [
+        "definitely-absent-eval-tag"
+      ],
+      "expect_zero_matches": true,
+      "status": "success",
+      "latency_ms": 797.18,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [],
+          "response": "Retrieved 0 bounded source excerpt(s).",
+          "references": [],
+          "history_turns": 0,
+          "retrieval": {
+            "mode": "mix",
+            "top_k": 20,
+            "chunk_top_k": 20,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [
+              "definitely-absent-eval-tag"
+            ],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 0,
+        "reference_count": 0,
+        "expected_term_hits": [],
+        "expected_term_recall": null,
+        "tag_compliance": true,
+        "retrieval_parameter_checks": {},
+        "retrieval_parameter_compliance": null,
+        "zero_match_check": true,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "tagged-empty-scope",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [],
+        "verdict": "PASS",
+        "reason": "Correctly returns zero matches for an absent required tag scope."
+      }
+    },
+    {
+      "id": "advanced-independent-limits",
+      "use_case": "advanced_parameter_control",
+      "tool": "query_document",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: Find the MCP deployment verification facts.",
+        "mode": "mix",
+        "top_k": 7,
+        "chunk_top_k": 3,
+        "only_need_context": true,
+        "max_total_tokens": 10000
+      },
+      "expected_terms": [
+        "MCP",
+        "deployment"
+      ],
+      "expected_retrieval": {
+        "mode": "mix",
+        "top_k": 7,
+        "chunk_top_k": 3
+      },
+      "status": "success",
+      "latency_ms": 588.97,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: urm8/LightRAG\nDate: 2026-08-14\nDeployment verification fact: LightRAG serves its FastMCP endpoint at /mcp by directly invoking the live in-process LightRAG runtime. It does not use the removed lightrag-mcp generated REST client or an MCP sidecar.\nRelations: LightRAG IMPLEMENTS direct FastMCP runtime adapter. LightRAG NO_LONGER_DEPENDS_ON generated MCP REST client.",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9-chunk-000",
+              "document_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9",
+              "tags": [],
+              "matched_terms": [
+                "deployment",
+                "verification"
+              ],
+              "is_excerpt": false
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nDate: 2026-08-15\nDeployment update: Production WebUI username/password login is enabled with AUTH_ACCOUNTS and an independent TOKEN_SECRET stored only in the lightrag-app Kubernetes Secret. The admin login password intentionally matches the existing LIGHTRAG_API_KEY, but AUTH_ACCOUNTS stores only its bcrypt hash; API-key authentication remains supported. Helm configuration now comes from ignored helm/values.private.yaml: image, direct database host, config.auth.enabled, and complete MCP settings. Local target `make helm-upgrade` performs val...",
+              "file_path": "mcp-987272869bb2469bb49440710b86c013-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-cfb34f389c0f65837955af1541028cca-chunk-000",
+              "document_id": "doc-cfb34f389c0f65837955af1541028cca",
+              "tags": [],
+              "matched_terms": [
+                "deployment"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nDate: 2026-08-21\nDeployment validation: commit c6d4b31330f7fc3f413aed7b8add36640baff595 deployed successfully to the Hetzner k3s cluster as ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595. Pod is Ready 1/1 on worker-node-0 with zero restarts. Public health is healthy. The graph source-document endpoint resolved entity LightRAG to six documents, and GET /documents/doc-9d3a5099941e17f4aab75a3c4c0cfed9/content returned 486 characters, proving graph document clicks now resolve actual content rather than only an ID. The deployed We...",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112-chunk-000",
+              "document_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112",
+              "tags": [],
+              "matched_terms": [
+                "deployment"
+              ],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 3 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-987272869bb2469bb49440710b86c013-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt"
+            }
+          ],
+          "history_turns": 10,
+          "retrieval": {
+            "mode": "mix",
+            "top_k": 7,
+            "chunk_top_k": 3,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 3,
+        "reference_count": 3,
+        "expected_term_hits": [
+          "MCP",
+          "deployment"
+        ],
+        "expected_term_recall": 1.0,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {
+          "mode": true,
+          "top_k": true,
+          "chunk_top_k": true
+        },
+        "retrieval_parameter_compliance": true,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "advanced-independent-limits",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 4,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          1,
+          2
+        ],
+        "verdict": "PASS",
+        "reason": "Retrieval parameters pass and excerpts contain MCP deployment verification facts."
+      }
+    },
+    {
+      "id": "advanced-semantic-alias",
+      "use_case": "compatibility_semantic_alias",
+      "tool": "query_document",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: Find direct source text about document tags.",
+        "mode": "semantic",
+        "top_k": 5,
+        "chunk_top_k": 4,
+        "only_need_context": true
+      },
+      "expected_terms": [
+        "tag",
+        "document"
+      ],
+      "expected_retrieval": {
+        "mode": "naive",
+        "top_k": 5,
+        "chunk_top_k": 4
+      },
+      "status": "success",
+      "latency_ms": 386.78,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "...ument accepts tags and get_documents accepts exact all-tag filtering, enabling skill/workflow/agentic-development inventory retrieval. Graph provenance navigation now prefers authoritative entity_chunks tracking, falls back to graph source_id for legacy data, resolves chunk full_doc_id ownership through GET /graph/entity/source-documents, and fetches complete bodies on demand through GET /documents/{doc_id}/content. The WebUI node inspector lists source documents and opens full content in a scrollable dialog. Validation: 21 focused pytest cases passed, changed frontend ESLint passed, production WebUI build passed, temporary server health/OpenAPI/UI smoke passed. LightRAG IMPLEMENTS tagged ag...",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-da00f425c04f7ecce4a250dd9925a855-chunk-000",
+              "document_id": "doc-da00f425c04f7ecce4a250dd9925a855",
+              "tags": [],
+              "matched_terms": [
+                "source",
+                "document"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...6d4b31330f7fc3f413aed7b8add36640baff595 deployed successfully to the Hetzner k3s cluster as ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595. Pod is Ready 1/1 on worker-node-0 with zero restarts. Public health is healthy. The graph source-document endpoint resolved entity LightRAG to six documents, and GET /documents/doc-9d3a5099941e17f4aab75a3c4c0cfed9/content returned 486 characters, proving graph document clicks now resolve actual content rather than only an ID. The deployed WebUI bundle contains the source-documents integration.\nRelations: LightRAG IMPLEMENTS graph source document resolution. LightRAG IMPROVES graph node document inspection. LightRAG DEPLOYS_TO Hetzner k3s.",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112-chunk-000",
+              "document_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112",
+              "tags": [],
+              "matched_terms": [
+                "source",
+                "document"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...cible failure conditions.\n\nProcess: Every query and write identifies the active Project entity, absolute project path, and repository remote. query_document with only_need_context=true supplies bounded relevant excerpts before broad source reads. get_document_content(document_id) expands only a source already shown to be relevant. Repository source remains authoritative. Missing current reference knowledge is inserted; stale entries are corrected, replaced, or deleted. get_pipeline_status is used only when newly inserted knowledge must be queried immediately.\n\nDesign rationale: Current-state, source-anchored entries reduce repeated source discovery while avoiding retrieval pollution from bac...",
+              "file_path": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-6a89f2319f85fd775c3bc0c575b217f8-chunk-000",
+              "document_id": "doc-6a89f2319f85fd775c3bc0c575b217f8",
+              "tags": [],
+              "matched_terms": [
+                "source",
+                "text",
+                "document"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...ression\n\nObservation: /Users/max/.codex/AGENTS.md now expresses the full LightRAG project-memory policy as a compact Simplified Chinese XML-like <LRG> block with an explicit decision flow. It preserves: LightRAG-first shared memory; source authority; health/unavailable branches; query-before-broad-read and only_need_context; current-source verification; mandatory maintained observations; observation taxonomy; source/revision anchors; stale-note correction, SUPERSEDES/INVALIDATES, and deletion; exact query/write project headers; relation hints; pipeline-status check; durable-note categories; and secret/privacy prohibition. Measured with tiktoken o200k_base: previous English section 3238 chara...",
+              "file_path": "mcp-354c8015a8c346978e5969394ce84c6e-0.txt",
+              "reference_id": "4",
+              "chunk_id": "doc-fe7115d67408fa8a8adc5b9c52be5660-chunk-000",
+              "document_id": "doc-fe7115d67408fa8a8adc5b9c52be5660",
+              "tags": [],
+              "matched_terms": [
+                "source",
+                "text"
+              ],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 4 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8-0.txt"
+            },
+            {
+              "reference_id": "4",
+              "file_path": "mcp-354c8015a8c346978e5969394ce84c6e-0.txt"
+            }
+          ],
+          "history_turns": 10,
+          "retrieval": {
+            "mode": "naive",
+            "top_k": 5,
+            "chunk_top_k": 4,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 4,
+        "reference_count": 4,
+        "expected_term_hits": [
+          "tag",
+          "document"
+        ],
+        "expected_term_recall": 1.0,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {
+          "mode": true,
+          "top_k": true,
+          "chunk_top_k": true
+        },
+        "retrieval_parameter_compliance": true,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "advanced-semantic-alias",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 4,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          2
+        ],
+        "verdict": "PASS",
+        "reason": "Finds document tag content and related document handling evidence."
+      }
+    },
+    {
+      "id": "advanced-keyword-alias",
+      "use_case": "compatibility_keyword_alias",
+      "tool": "query_document",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: Find the LightRAG MCP entity.",
+        "mode": "keyword",
+        "top_k": 8,
+        "chunk_top_k": 5,
+        "only_need_context": true,
+        "ll_keywords": [
+          "LightRAG MCP"
+        ]
+      },
+      "expected_terms": [
+        "LightRAG",
+        "MCP"
+      ],
+      "expected_retrieval": {
+        "mode": "local",
+        "top_k": 8,
+        "chunk_top_k": 5
+      },
+      "status": "success",
+      "latency_ms": 678.4,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: urm8/LightRAG\nDate: 2026-08-14\nDeployment verification fact: LightRAG serves its FastMCP endpoint at /mcp by directly invoking the live in-process LightRAG runtime. It does not use the removed lightrag-mcp generated REST client or an MCP sidecar.\nRelations: LightRAG IMPLEMENTS direct FastMCP runtime adapter. LightRAG NO_LONGER_DEPENDS_ON generated MCP REST client.",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9-chunk-000",
+              "document_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": false
+            },
+            {
+              "content": "Project: ht\nProject entity: Project|ht\nProject path: /Users/max/projs/github.com/urm8/ht\nRepository: github.com/urm8/ht\nReference topic: Reusable agent skill cluster-otel-signoz-telemetry\nSkill: cluster-otel-signoz-telemetry\nSkill entity: Workflow|cluster-otel-signoz-telemetry\nScope: project\nDescription: Wire urm8 cluster services to SigNoz: sticky Helm OTEL env to k8s-infra OTLP agent :4317, app SDK init, and verification via SigNoz APM — without wiping on helm upgrade.\nApplicability: Use when wiring a cluster app to SigNoz (traces/metrics), adding otel: to Helm charts, initializing Python OTEL SDKs, or diagnosing missing APM services after a deploy.\nProcedure:\nProject identity: Project|ht,...",
+              "file_path": "mcp-cd86a218b6394c3abd992e4755a04ce9-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-41cf041734461c1f345a1e86c83ab2c0-chunk-000",
+              "document_id": "doc-41cf041734461c1f345a1e86c83ab2c0",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nDate: 2026-08-23\nScope: MCP retrieval and ChatGPT plugin authentication\n\nObservation: LightRAG MCP query_document and ChatGPT search_memory return at most six query-centered source excerpts, each bounded to about 700 characters and carrying document_id, file_path, matched_terms, excerpt state, and filtered references. Agents expand a source only after relevance is established by calling get_document_content(document_id) or get_memory_source(document_id). This replaces whole-chunk query payloads that consumed agent context.\n\nObservation: Ligh...",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-41397e031dce399133dc0ef3d0ab3801-chunk-000",
+              "document_id": "doc-41397e031dce399133dc0ef3d0ab3801",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nDate: 2026-08-23\nScope: MCP agent retrieval\n\nObservation: Integrated MCP query_document now returns selected source chunks first in response.matches, each with content, file_path, reference_id, and chunk_id. For only_need_context=true it replaces the large internal graph/entity/relation prompt string with a compact retrieved-count message; generated-answer queries retain response while also returning matches. This fixes MCP/client truncation that previously exposed graph noise and opaque mcp file IDs before useful evidence. Implementation: l...",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt",
+              "reference_id": "4",
+              "chunk_id": "doc-4e80b6c15709f10b1f295538c5d3cce8-chunk-000",
+              "document_id": "doc-4e80b6c15709f10b1f295538c5d3cce8",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\n\nImplementation observation (2026-08-16): LightRAG now has first-class normalized document tags for agent memory. REST text/texts insertion and SDK insert/ainsert accept tags; tags are lowercase, whitespace-hyphenated, deduplicated, limited to 32 tags of 64 characters, stored in doc_status.metadata.tags, and carried across pipeline transitions/retries. Integrated MCP insert_document accepts tags and get_documents accepts exact all-tag filtering, enabling skill/workflow/agentic-development inventory retrieval. Graph provenance navigation now...",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt",
+              "reference_id": "5",
+              "chunk_id": "doc-da00f425c04f7ecce4a250dd9925a855-chunk-000",
+              "document_id": "doc-da00f425c04f7ecce4a250dd9925a855",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Retrieved 5 bounded source excerpt(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-cd86a218b6394c3abd992e4755a04ce9-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt"
+            },
+            {
+              "reference_id": "4",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt"
+            },
+            {
+              "reference_id": "5",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt"
+            }
+          ],
+          "history_turns": 10,
+          "retrieval": {
+            "mode": "local",
+            "top_k": 8,
+            "chunk_top_k": 5,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 5,
+        "reference_count": 5,
+        "expected_term_hits": [
+          "LightRAG",
+          "MCP"
+        ],
+        "expected_term_recall": 1.0,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {
+          "mode": true,
+          "top_k": true,
+          "chunk_top_k": true
+        },
+        "retrieval_parameter_compliance": true,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "advanced-keyword-alias",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 4,
+        "completeness": 4,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          2,
+          3
+        ],
+        "verdict": "PASS",
+        "reason": "Returns LightRAG MCP entity evidence with minor unrelated matches."
+      }
+    },
+    {
+      "id": "advanced-generated-answer",
+      "use_case": "grounded_answer_generation",
+      "tool": "query_document",
+      "arguments": {
+        "query": "Project: LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: https://github.com/urm8/LightRAG\nQuestion: Where is the production MCP endpoint mounted?",
+        "mode": "mix",
+        "top_k": 16,
+        "chunk_top_k": 8,
+        "only_need_context": false,
+        "response_type": "Single Sentence",
+        "user_prompt": "Answer in one sentence and cite the supporting source."
+      },
+      "expected_terms": [
+        "/mcp"
+      ],
+      "status": "success",
+      "latency_ms": 610.28,
+      "result": {
+        "status": "success",
+        "response": {
+          "matches": [
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: urm8/LightRAG\nDate: 2026-08-14\nDeployment verification fact: LightRAG serves its FastMCP endpoint at /mcp by directly invoking the live in-process LightRAG runtime. It does not use the removed lightrag-mcp generated REST client or an MCP sidecar.\nRelations: LightRAG IMPLEMENTS direct FastMCP runtime adapter. LightRAG NO_LONGER_DEPENDS_ON generated MCP REST client.",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9-chunk-000",
+              "document_id": "doc-9d3a5099941e17f4aab75a3c4c0cfed9",
+              "tags": [],
+              "matched_terms": [
+                "endpoint"
+              ],
+              "is_excerpt": false
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nDate: 2026-08-15\nDeployment update: Production WebUI username/password login is enabled with AUTH_ACCOUNTS and an independent TOKEN_SECRET stored only in the lightrag-app Kubernetes Secret. The admin login password intentionally matches the existing LIGHTRAG_API_KEY, but AUTH_ACCOUNTS stores only its bcrypt hash; API-key authentication remains supported. Helm configuration now comes from ignored helm/values.private.yaml: image, direct database host, config.auth.enabled, and complete MCP settings. Local target `make helm-upgrade` performs val...",
+              "file_path": "mcp-987272869bb2469bb49440710b86c013-0.txt",
+              "reference_id": "2",
+              "chunk_id": "doc-cfb34f389c0f65837955af1541028cca-chunk-000",
+              "document_id": "doc-cfb34f389c0f65837955af1541028cca",
+              "tags": [],
+              "matched_terms": [
+                "production"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...memory_source, and save_memory. The administrative API-key MCP remains at /mcp.\n\nFiles: lightrag/api/mcp_server.py; lightrag/api/chatgpt_oauth.py; lightrag/api/lightrag_server.py; docs/ChatGPTApp.md; skills/lightrag-agentic-development/SKILL.md.\nRevision: 51dd393941f6f3692cdb79027e1a9e7c091ca108.\nValidation: 13 focused tests passed; Ruff, Helm lint/template passed; production rollout revision 23 healthy; live OAuth code exchange, compact search, and explicit source expansion succeeded.\n\nRelations: LightRAG IMPLEMENTS bounded MCP retrieval. LightRAG USES OAuth 2.1 PKCE for ChatGPT integration. LightRAG IMPROVES agent context efficiency. SUPERSEDES prior whole-chunk MCP query payload behavior.",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt",
+              "reference_id": "3",
+              "chunk_id": "doc-41397e031dce399133dc0ef3d0ab3801-chunk-000",
+              "document_id": "doc-41397e031dce399133dc0ef3d0ab3801",
+              "tags": [],
+              "matched_terms": [
+                "production"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "...6d4b31330f7fc3f413aed7b8add36640baff595 deployed successfully to the Hetzner k3s cluster as ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595. Pod is Ready 1/1 on worker-node-0 with zero restarts. Public health is healthy. The graph source-document endpoint resolved entity LightRAG to six documents, and GET /documents/doc-9d3a5099941e17f4aab75a3c4c0cfed9/content returned 486 characters, proving graph document clicks now resolve actual content rather than only an ID. The deployed WebUI bundle contains the source-documents integration.\nRelations: LightRAG IMPLEMENTS graph source document resolution. LightRAG IMPROVES graph node document inspection. LightRAG DEPLOYS_TO Hetzner k3s.",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt",
+              "reference_id": "4",
+              "chunk_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112-chunk-000",
+              "document_id": "doc-a37bc9cd67100e2b0e662e6ac44a6112",
+              "tags": [],
+              "matched_terms": [
+                "endpoint"
+              ],
+              "is_excerpt": true
+            },
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nDate: 2026-08-23\nScope: MCP agent retrieval\n\nObservation: Integrated MCP query_document now returns selected source chunks first in response.matches, each with content, file_path, reference_id, and chunk_id. For only_need_context=true it replaces the large internal graph/entity/relation prompt string with a compact retrieved-count message; generated-answer queries retain response while also returning matches. This fixes MCP/client truncation that previously exposed graph noise and opaque mcp file IDs before useful evidence. Implementation: l...",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt",
+              "reference_id": "5",
+              "chunk_id": "doc-4e80b6c15709f10b1f295538c5d3cce8-chunk-000",
+              "document_id": "doc-4e80b6c15709f10b1f295538c5d3cce8",
+              "tags": [],
+              "matched_terms": [],
+              "is_excerpt": true
+            },
+            {
+              "content": "...kill/workflow/agentic-development inventory retrieval. Graph provenance navigation now prefers authoritative entity_chunks tracking, falls back to graph source_id for legacy data, resolves chunk full_doc_id ownership through GET /graph/entity/source-documents, and fetches complete bodies on demand through GET /documents/{doc_id}/content. The WebUI node inspector lists source documents and opens full content in a scrollable dialog. Validation: 21 focused pytest cases passed, changed frontend ESLint passed, production WebUI build passed, temporary server health/OpenAPI/UI smoke passed. LightRAG IMPLEMENTS tagged agent-memory retrieval. LightRAG IMPROVES graph-to-document provenance navigation.",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt",
+              "reference_id": "6",
+              "chunk_id": "doc-da00f425c04f7ecce4a250dd9925a855-chunk-000",
+              "document_id": "doc-da00f425c04f7ecce4a250dd9925a855",
+              "tags": [],
+              "matched_terms": [
+                "production"
+              ],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Based on the provided context, the production MCP endpoint is mounted at `/mcp` on the LightRAG service, which directly invokes the live in-process LightRAG runtime and is hosted at the domain `rag.urm8.org` (with a dedicated OAuth 2.1 ChatGPT MCP at `/chatgpt/mcp`).\n\n### References\n\n- [1] mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt\n- [3] mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-dfa02ecc921b40bf9fa71b89b10368b2-0.txt"
+            },
+            {
+              "reference_id": "2",
+              "file_path": "mcp-987272869bb2469bb49440710b86c013-0.txt"
+            },
+            {
+              "reference_id": "3",
+              "file_path": "mcp-f5ea60f3d1f745c28764adea21b7c5cd-0.txt"
+            },
+            {
+              "reference_id": "4",
+              "file_path": "mcp-4998bd7d13404e1db4209f6bf0c75fc5-0.txt"
+            },
+            {
+              "reference_id": "5",
+              "file_path": "mcp-ddc9ac2a55374ba793c58e69239c5c9b-0.txt"
+            },
+            {
+              "reference_id": "6",
+              "file_path": "mcp-f6dbfca79278457da7b0bd30d2619ffc-0.txt"
+            }
+          ],
+          "history_turns": 10,
+          "retrieval": {
+            "mode": "mix",
+            "top_k": 16,
+            "chunk_top_k": 8,
+            "history_messages_used": 0,
+            "history_used_for_retrieval": false,
+            "required_tags": [],
+            "enable_rerank": true
+          }
+        }
+      },
+      "deterministic": {
+        "match_count": 6,
+        "reference_count": 6,
+        "expected_term_hits": [
+          "/mcp"
+        ],
+        "expected_term_recall": 1.0,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {},
+        "retrieval_parameter_compliance": null,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "advanced-generated-answer",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          2
+        ],
+        "verdict": "PASS",
+        "reason": "Generated answer is grounded in supplied excerpts and correctly identifies /mcp mounting."
+      }
+    },
+    {
+      "id": "reusable-skill-search",
+      "use_case": "reusable_workflow_lookup",
+      "tool": "search_skills",
+      "arguments": {
+        "query": "verify an MCP production deployment",
+        "project_name": "LightRAG",
+        "project_path": "/Users/max/projs/github.com/HKUDS/LightRAG",
+        "repository": "https://github.com/urm8/LightRAG",
+        "limit": 3
+      },
+      "expected_terms": [
+        "verification",
+        "MCP"
+      ],
+      "status": "success",
+      "latency_ms": 840.66,
+      "result": {
+        "status": "success",
+        "response": {
+          "skills": [
+            {
+              "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nReference topic: Agent skill distribution\n\nDefinition: skills/lightrag-agentic-development/SKILL.md is the single authored policy for LightRAG project-reference memory across Codex, Cursor, and OpenCode on this workstation.\n\nProcess: /Users/max/.codex/skills/lightrag-agentic-development/SKILL.md and /Users/max/.agents/skills/lightrag-agentic-development/SKILL.md are symbolic links to the repository skill. Platform-specific MCP connection metadata remains beside the installed skill. Global AGENTS files only activate the shared skill, require...",
+              "file_path": "mcp-1272313e1ba94582814da89b06504497-0.txt",
+              "reference_id": "1",
+              "chunk_id": "doc-6eacbf704aed9d6e70abe967aaf3c8b1-chunk-000",
+              "document_id": "doc-6eacbf704aed9d6e70abe967aaf3c8b1",
+              "tags": [
+                "agentic-development",
+                "project-reference",
+                "skill"
+              ],
+              "matched_terms": [
+                "agent",
+                "skill"
+              ],
+              "is_excerpt": true
+            }
+          ],
+          "response": "Found 1 related reusable skill(s).",
+          "references": [
+            {
+              "reference_id": "1",
+              "file_path": "mcp-1272313e1ba94582814da89b06504497-0.txt"
+            }
+          ]
+        }
+      },
+      "deterministic": {
+        "match_count": 1,
+        "reference_count": 1,
+        "expected_term_hits": [
+          "MCP"
+        ],
+        "expected_term_recall": 0.5,
+        "tag_compliance": null,
+        "retrieval_parameter_checks": {},
+        "retrieval_parameter_compliance": null,
+        "zero_match_check": null,
+        "response_nonempty": true
+      },
+      "aurora_rating": {
+        "case_id": "reusable-skill-search",
+        "tool_fit": 4,
+        "retrieval_relevance": 3,
+        "context_precision": 3,
+        "completeness": 2,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0
+        ],
+        "verdict": "PARTIAL",
+        "reason": "Finds the relevant skill reference but does not provide a complete MCP deployment verification procedure."
+      }
+    }
+  ],
+  "auxiliary_checks": [
+    {
+      "tool": "check_lightrag_health",
+      "arguments": {},
+      "status": "success",
+      "latency_ms": 131.19,
+      "result": {
+        "status": "success",
+        "response": {
+          "status": "healthy",
+          "workspace": "default",
+          "pipeline_busy": false,
+          "configuration": {
+            "kv_storage": "PGKVStorage",
+            "doc_status_storage": "PGDocStatusStorage",
+            "graph_storage": "PGGraphStorage",
+            "vector_storage": "PGVectorStorage",
+            "llm_model": "deepseek-v4-flash",
+            "embedding_model": "text-embedding-3-small"
+          }
+        }
+      }
+    },
+    {
+      "tool": "get_pipeline_status",
+      "arguments": {},
+      "status": "success",
+      "latency_ms": 125.46,
+      "result": {
+        "status": "success",
+        "response": {
+          "busy": false,
+          "destructive_busy": false,
+          "scanning": false,
+          "scanning_exclusive": false,
+          "pending_enqueues": 0,
+          "job_name": "mcp-b4aaaf60cfd14d7c...[1 files]",
+          "job_start": "2026-08-28T15:58:27.411230+00:00",
+          "docs": 1,
+          "batchs": 1,
+          "cur_batch": 1,
+          "latest_message": "Enqueued document processing pipeline stopped",
+          "history_messages": [
+            "Processing 1 document(s)",
+            "Parsing (native): doc-c5396f0ce02810a856f59f39c94418da",
+            "Extracting stage 1/1: mcp-b4aaaf60cfd14d7c96af829ffedefbb9-0.txt",
+            "Processing d-id: doc-c5396f0ce02810a856f59f39c94418da",
+            "Chunk 1 of 1 extracted 13 Ent + 14 Rel doc-c5396f0ce02810a856f59f39c94418da-chunk-000",
+            "Merging stage 1/1: mcp-b4aaaf60cfd14d7c96af829ffedefbb9-0.txt",
+            "Phase 0: Writing recovery indexes for doc-c5396f0ce02810a856f59f39c94418da: 13 candidate entities, 14 candidate relations",
+            "Phase 1: Processing 13 entities from doc-c5396f0ce02810a856f59f39c94418da (async: 8)",
+            "Merged: `uv run pytest -q` | 1+1",
+            "Merged: `pnpm check` | 3+1",
+            "LLMmrg: `ranks.urm8.org` | 7+1",
+            "Phase 2: Processing 14 relations from doc-c5396f0ce02810a856f59f39c94418da (async: 8)",
+            "Completed merging: 13 entities, 0 extra entities, 14 relations",
+            "Completed processing file 1/1: mcp-b4aaaf60cfd14d7c96af829ffedefbb9-0.txt",
+            "Enqueued document processing pipeline stopped"
+          ],
+          "cancellation_requested": false
+        }
+      }
+    },
+    {
+      "tool": "get_graph_labels",
+      "arguments": {},
+      "status": "success",
+      "latency_ms": 252.66,
+      "result": {
+        "status": "success",
+        "response": [
+          "10.0.1.0/24",
+          "141 dynamic entries",
+          "150 total URLs",
+          "159.69.126.90",
+          "2026-08-15 live snapshot",
+          "2026-08-25",
+          "21 focused pytest cases",
+          "24 Tests",
+          "3.14.6 release",
+          "3.14.7 release",
+          "3.15.0a7",
+          "49.13.113.22",
+          "78 Card Path Coverage",
+          "91.98.10.173",
+          "91.99.15.141",
+          "941x1672 RGB PNGs",
+          "accent #0f6b5c",
+          "access_tokens.txt",
+          "Access_Tokens.Txt",
+          "Account-Sharing Degradation",
+          "Ada",
+          "Administrative API-Key MCP",
+          "admin login password",
+          "aedfae0",
+          "Aerich",
+          "Agent",
+          "Agent Context Efficiency",
+          "agent memory",
+          "Agent project reference memory",
+          "AGENTS.md",
+          "agents/openai.yaml",
+          "Agents Skills Directory",
+          "All 234 Generated Prompt Variants",
+          "allow-control-plane affinity",
+          "anjela",
+          "anthropic/claude-4-sonnet",
+          "anthropic/claude-sonnet-4-20250514",
+          "Apache AGE",
+          "apache/age#2500",
+          "API",
+          "API-key authentication",
+          "/api/rankings",
+          "api/ranks_api/main.py",
+          "api/ranks_api/snapshot.py",
+          "ApiRequest.ConversationID",
+          "APIRequest.ConversationID",
+          "api.sosync.online",
+          "api/tests/test_snapshot.py",
+          "api.urm8.org",
+          "/api/v1/account/artist",
+          "/api/v1/admin/artist-claims",
+          "/api/v1/artists/{slug}",
+          "app.db.models.Artist",
+          "Apple Music Client",
+          "Apply Patch",
+          "ApplyPatch",
+          "Apply Patch Operation",
+          "app/main.py",
+          "app/migrations/models/33_20260823000000_artist_showcases.py",
+          "app/pyproject.toml",
+          "app/routers/sitemap.py",
+          "apps/chatgpt-coin-flip/",
+          "App.svelte",
+          "app tag 1.2.23",
+          "app/uv.lock",
+          "app/web/worker",
+          "ARM64 image",
+          "artifacts.go",
+          "Artist",
+          "Artist and release pages",
+          "Artist.catalog_locked",
+          "ArtistClaim",
+          "ArtistEvent",
+          "Artist.is_verified",
+          "Artist Provider Discovery Service",
+          "Artist.provider_links",
+          "ArtistRelease",
+          "ArtistRelease.is_locked",
+          "ArtistShowcaseArchitecture",
+          "Artist Showcase Observation",
+          "Artist Showcase Page",
+          "Artist Showcase Provider Discovery Addendum",
+          "ArtistShowcaseService",
+          "ArtistShowcaseService.attach_discovered_result",
+          "ArtistShowcaseService.get_track_location",
+          "/artists/[slug]",
+          "/artists/[slug]/releases/[releaseId]",
+          "AskUser",
+          "AssemblyAI",
+          "Attachment Limit",
+          "Augustus",
+          "Aurora",
+          "aurora-api",
+          "Aurora Api",
+          "Aurora-Api",
+          "Aurora API",
+          "aurora-api skill",
+          "Aurora-Api Skill",
+          "AURORA_BASE_URL",
+          "Aurora Chat",
+          "aurora_client",
+          "Aurora Client",
+          "aurora_client.py",
+          "Aurora Client Script",
+          "aurora container",
+          "Aurora Container",
+          "Aurora Control Footer",
+          "Aurora delete test",
+          "Aurora-Develop/Aurora",
+          "Aurora-Docs",
+          "Aurora-Exec-Verify Transcript",
+          "Aurora Go Test",
+          "aurora-image",
+          "Aurora-Image",
+          "AURORA_IMAGE",
+          "Aurora live validation",
+          "aurora:local-cite",
+          "aurora:local-convid",
+          "Aurora:Local-Convid",
+          "aurora:local-convid container",
+          "Aurora Loop QA Evidence",
+          "Aurora official APIRequest",
+          "Aurora OpenAI-compatible API",
+          "Aurora Project",
+          "Aurora Repository",
+          "Aurora-Reuse-Verify",
+          "aurora-review",
+          "Aurora-Review",
+          "Aurora Samples",
+          "Aurora Semantic QA",
+          "Aurora Session DB",
+          "Aurora Session File",
+          "Aurora Skill Family",
+          "Aurora Task",
+          "Aurora-Test",
+          "Aurora Thread",
+          "AURORA_TOOLS=1",
+          "Aurora /V1/Chat/Completions",
+          "aurorax-neo",
+          "AUTH_ACCOUNTS",
+          "/auth-status",
+          "AWS_STORAGE_BUCKET_NAME",
+          "Backend 1.2.19",
+          "backend 1.2.20",
+          "Backend 1.2.22",
+          "Backend Runtime Image",
+          "--background",
+          "base64url",
+          "bash",
+          "Bash",
+          "Bash/Shell Aliases",
+          "BatchSpanProcessor",
+          "bcrypt",
+          "benchmarks",
+          "BLAKE2b",
+          "Blanket Dwarfism Casting Rule",
+          "blog",
+          "bootstrap.Init",
+          "--border",
+          "browser PUT",
+          "build-push-frontend",
+          "build_share_key",
+          "build_share_key_candidates",
+          "bundled client",
+          "Cache-Control",
+          "Cache-Control+ETag",
+          "cache_models.py",
+          "cache package",
+          "cache_repository.py",
+          "Calling Agent",
+          "Canonical urm8/aurora/.agents/skills/aurora-api SKILL.md",
+          "caps-api",
+          "caps.urm8.org",
+          "--card",
+          "Card Image Catalog",
+          "Catalog search",
+          "categories",
+          "celery",
+          "Celery",
+          "cert-manager",
+          "cert-manager.io/cluster-issuer letsencrypt-prod",
+          "chat2api",
+          "ChatGPT",
+          "ChatGPTAgentToolRateLimitException",
+          "ChatGPT backend/session-style access flow",
+          "ChatGPT Integration",
+          "ChatGPT MCP",
+          "ChatGPT thread reuse",
+          "ChatGPT web access token",
+          "ChatGPT Web Access Token",
+          "ChatGPT Web backend",
+          "ChatGPT widget",
+          "chat_payload_from_messages",
+          "check_lightrag_health",
+          "Chrome 151 User-Agent",
+          "Chrome flow",
+          "Chrome-like User-Agent",
+          "CI",
+          "cilium",
+          "cilium CNI",
+          "Circus Set",
+          "citations",
+          "CitationState",
+          "cite-check",
+          "Claim Approval Response",
+          "Classic Set",
+          "Classic Set Directory",
+          "Claude Code",
+          "CLAUDE.md",
+          "ClickHouse",
+          "Client Tests",
+          "Cloudflare",
+          "Cloudflare Registrar",
+          "cluster@159.69.126.90",
+          "cluster-addons",
+          "cluster-addons HAProxy deployment",
+          "cluster/otel-env.snippet.yaml",
+          "Cluster Python/app Helm charts",
+          "cluster/ranks_chart/templates/api-deployment.yaml",
+          "cluster/signoz_chart/values_override.yaml",
+          "cluster/signoz_mcp_chart",
+          "Code changes",
+          "codex",
+          "Codex",
+          "Codex AGENTS.md",
+          "Codex Auth",
+          "Codex copy",
+          "Codex Copy",
+          "Codex Sandbox",
+          "Codex-Shaped Tools",
+          "Codex Skills Directory",
+          "Codex Skill Validator",
+          "Codex Tool Names",
+          "coin",
+          "coin tap",
+          "coin.urm8.org",
+          "Collector",
+          "--color-surface",
+          "--color-text-primary",
+          "--color-text-secondary",
+          "commit 681570b88b3a06529112d367b707e0be69d40622",
+          "Commit 75d4b0e2",
+          "Compaction Logic",
+          "compare_tokens.py",
+          "compileall",
+          "Complete-compile",
+          "CompositeRepository",
+          "Compressed Section",
+          "Connection failure",
+          "content_references",
+          "control-plane toleration",
+          "conversation_id",
+          "Conversation ID",
+          "Conversation ID 6a896b3a-7bc0-83eb-8529-86819369dd7c",
+          "conversation_id 6a89b649-1fcc-83eb-a1af-b454ceb36255",
+          "Conversation ID 6a89b649-1fcc-83eb-a1af-b454ceb36255",
+          "Conversion",
+          "Conversion and /shared/[id] routes",
+          "ConversionDbRepository",
+          "Conversion_Pydantic",
+          "ConversionService",
+          "ConvertAPIRequest",
+          "converter_service.py",
+          "Coordinator",
+          "Corrected Card Reference Images",
+          "CORS",
+          "Cron",
+          "CSV Cards",
+          "Curl Tool",
+          "curl User-Agent",
+          "cursor",
+          "Cursor",
+          "Cursor AGENTS.md",
+          "Cursor Copy",
+          "Cursor parent",
+          "Cursor Skills Directory",
+          "Dark Victorian Circus Series",
+          "Date",
+          "DEBUG_CITATIONS",
+          "Deck Engraving Style",
+          "Dedup key",
+          "Deezer Client",
+          "Default Permissions Error",
+          "deployment.environment=production",
+          "Descriptions With Archetypes CSV",
+          "Deterministic Checks",
+          "DietrichGebert",
+          "Diff",
+          "Dignified Adult Performers With Dwarfism",
+          "Django",
+          "DjangoInstrumentor",
+          "Django REST",
+          "Django REST Framework",
+          "django-todo",
+          "doc-9d3a5099941e17f4aab75a3c4c0cfed9",
+          "Docker",
+          "docker/build-push-action",
+          "Docker Compose",
+          "docker-compose.yml",
+          ".dockerignore",
+          "docker/setup-qemu-action",
+          "doc_status.metadata.tags",
+          "Document Pipeline",
+          "doktorestamije.com",
+          "DRF",
+          "Edit",
+          "Eight Of Pentacles",
+          "Elise",
+          "emerging_models",
+          "ensure_share_key",
+          ".env",
+          "esbuild",
+          "ETag",
+          "Exact Four-Color Circus Palette",
+          "--exec",
+          "Exec Command",
+          "Exec_Command Tool",
+          "Exec Context",
+          "Exec Tool",
+          "Execute Pending",
+          "exit 10",
+          "ExpandableRankList",
+          "extract_chat",
+          "F1ldmcRq",
+          "FastAPI",
+          "FastAPIInstrumentor",
+          "FastMCP HTTP",
+          "ffmpeg",
+          "ffmpeg.wasm",
+          "fieldRefs",
+          "Figtree",
+          "filelog",
+          "Finding",
+          "Fixtures",
+          "Flip / Flip again",
+          "flowbite-svelte-icons",
+          "Font Awesome",
+          "--foreground",
+          "Fraunces",
+          "free_tokens.txt",
+          "Frontend 1.2.4",
+          "Frontend 1.2.5",
+          "frontend 1.2.6",
+          "frontend ESLint",
+          "Frontend GHCR",
+          "Full-Bleed 9:16 No-Margin Art",
+          "Full Bleed No Border Framing",
+          "GAIA",
+          "Gallery",
+          "generate_prompts.py",
+          "Generate Prompts Script",
+          "GET /api/catalog?q=&limit=",
+          "GET /api/data",
+          "GET /api/pivot?models=id1,id2&benchmarks=b1,b2",
+          "GET /api/rankings",
+          "GET /api/v1/sitemap",
+          "get_document_content",
+          "GET /documents/{doc_id}/content",
+          "GET /graph/entity/source-documents",
+          "get_memory_source",
+          "GET /ping",
+          "get_pipeline_status",
+          "gevent",
+          "GHCR",
+          "ghcr.io/astral-sh/uv:0.11.21",
+          "ghcr.io/aurora-develop/aurora:latest",
+          "Ghcr.Io/Aurora-Develop/Aurora:Latest",
+          "ghcr.io/urm8",
+          "ghcr.io/urm8/*",
+          "ghcr.io/urm8/lightrag:c6d4b31330f7fc3f413aed7b8add36640baff595",
+          "ghcr.io/urm8/lulz-api",
+          "ghcr.io/urm8/lulz-web",
+          "ghcr.io/urm8/postgresql-age",
+          "ghcr.io/urm8/sosync-web",
+          "ghcr-secret",
+          "GIL",
+          "Git",
+          "git cu",
+          "git-cu",
+          "GitHub",
+          "GitHub Actions workflow build-and-test.yml",
+          "github.com/urm8/ht",
+          "github.com/urm8/jebanoe.it",
+          "github.com/urm8/lightrag",
+          "github.com/urm8/lulz",
+          "github.com/urm8/sosync",
+          "GitHub Repository",
+          "Git Tool",
+          "Glob",
+          "Global AGENTS.md",
+          "go build",
+          "go test",
+          "Go Test",
+          "GPT-4o",
+          "gpt-image-2",
+          "Graph provenance navigation",
+          "graph source-document endpoint",
+          "Graph/Vector Retrieval",
+          "Grep",
+          "Grep Files",
+          "gRPC",
+          "gunicorn",
+          "gymbuddy",
+          "gym.urm8.org",
+          "gym.urm8.org/helm/gymbuddy",
+          "GZipMiddleware",
+          "handler_response.go",
+          "haproxy",
+          "HAProxy",
+          "haproxy ingress",
+          "HAProxy LB",
+          "hcloud-cloud-controller-manager",
+          "hcloud-csi",
+          "hcloud CSI/CCM",
+          "HEAD /api/data",
+          "Heads",
+          "healthz",
+          "helm",
+          "Helm",
+          "Helm charts",
+          "Helm Deployment Template",
+          "Helm Migration Job",
+          "Helm-only OTEL env re-deploy",
+          "Helm release sosync",
+          "Helm Revision 113",
+          "Helm revision 114",
+          "helm-service-deployer",
+          "helm-service-deployer OTEL section",
+          "Helm values.otel",
+          "helm/values.private.yaml",
+          "Henry",
+          "Hetzner",
+          "Hetzner CAX",
+          "Hetzner DNS",
+          "Hetzner k3s",
+          "Hetzner k3s cluster",
+          "HKUDS",
+          "HKUDS/LightRAG",
+          "Homepage",
+          "Hooks",
+          "HOST_IP",
+          "Host UID/GID",
+          "ht",
+          "ht/cluster/otel-env.snippet.yaml",
+          "ht/.cursor/skills/helm-service-deployer/SKILL.md",
+          "HTTP 200",
+          "HTTP 403",
+          "https://github.com/aurorax-neo/chat2api",
+          "https://github.com/urm8/aurora.git",
+          "https://mcp.signoz.urm8.org",
+          "https://signoz.urm8.org",
+          "Hugging Face Open LLM Leaderboard",
+          "If-None-Match",
+          "Image",
+          "Image Edit Defect",
+          "Image Guided Prompt Mode",
+          "Image Guided Style",
+          "Image Guided Style Markdown",
+          "image_guided_style.md",
+          "Image Guided Style Prompt",
+          "Image Guided Style Prompts",
+          "Image-Limit Reset Durations",
+          "image-only values file",
+          "Image rebuild",
+          "image.tag",
+          "indexed_conversation_id",
+          "index.html",
+          "ink #14110f",
+          "Ink Web Scribe",
+          "Invalid response",
+          "ioEFep9KvDBdL6iJNWBISw",
+          "jebani-app",
+          "jebanoe",
+          "jebanoe.it",
+          "json.dumps",
+          "JSON envelope",
+          "Judgement",
+          "Justification",
+          "Justifications",
+          "JWT",
+          "k3s.yaml",
+          "k8s-infra",
+          "k8s-infra DaemonSet",
+          "k8s-infra DaemonSet otel-agent",
+          "k8s-infra-otel-agent",
+          "k8s-infra-otel-agent.signoz.svc.cluster.local:4317",
+          "K8S_POD_IP",
+          "K8S_POD_UID",
+          "keyset pagination",
+          "Knight Of Wands",
+          "kube",
+          "kubectl",
+          "Kubernetes",
+          "kubernetes-ingress",
+          "Kubernetes Secret",
+          "kube-system",
+          "Landing Page",
+          "launchd",
+          "LaunchDaemon",
+          "LAUNCHD.md",
+          "LegalPage.svelte",
+          "Let's Encrypt",
+          "lightrag",
+          "LightRAG",
+          "LightRAG Agentic Development Skill",
+          "LIGHTRAG_API_KEY",
+          "lightrag-app Kubernetes Secret",
+          "LightRAG MCP",
+          "LightRAGMCPRuntime.query",
+          "lightrag role",
+          "LightRAG skill-cluster-otel-signoz-telemetry",
+          "LIGHTRAG_VALUES_B64",
+          "LightRAG WebUI",
+          "LightRAG WebUI Accounts",
+          "Lime/Teal Palette",
+          "Live Editor",
+          "Live-Exec-Verify",
+          "Live probe 2026-08-23",
+          "localhost:5173",
+          "localStorage",
+          "Local Upload Endpoint",
+          "/login",
+          "LSP",
+          "@lucide/svelte",
+          "lucide-svelte",
+          "Lucky toss",
+          "lulz",
+          "Lulz",
+          "lulz/caps",
+          "lulz role",
+          "macOS arm64",
+          "make deploy",
+          "Makefile",
+          "make helm-upgrade",
+          "make helm-upgrade-build",
+          "Make Up",
+          "markdown links",
+          "Marker.Txt",
+          "Marks Accents Color",
+          "master-node",
+          "Max",
+          "MCP",
+          "MCP Adapters",
+          "MCP Agent Retrieval",
+          "MCP Client Truncation",
+          "MCP context query",
+          "MCP get_documents",
+          "MCP health check",
+          "MCP insert_document",
+          "MCP Retrieval",
+          "MCP Server",
+          "mcp.signoz.urm8.org",
+          "MCP timeout",
+          "MEDIA_ROOT/studio/",
+          "media.sosync.online",
+          "Megafukz",
+          "Memory",
+          "MEMORY.md",
+          "mentions",
+          "Metadata.Citations",
+          "MeterProvider",
+          "Migration",
+          "MIT",
+          "Mocks",
+          "Mode-600 Token Files",
+          "Model",
+          "Model Compare",
+          "models",
+          "mono 16k AAC",
+          "moviepy",
+          "MusicBrainz Client",
+          "--muted-foreground",
+          "Namecheap",
+          "namespace sosync",
+          "Needs Parent",
+          "next_cursor",
+          "Nginx",
+          "nginx ingress",
+          "Nine Of Cups",
+          "Nine Of Wands",
+          "node filelog DaemonSet",
+          "nodeSelector scheduling.urm8.org/pool=worker",
+          "--no-tools",
+          "OAuth 2.1 PKCE",
+          "Observation",
+          "ohmo",
+          "OpenAction",
+          "Openai/Codex Codex-Rs",
+          "OpenAI-compatible API",
+          "OpenAI-compatible HTTP endpoints",
+          "openai/gpt-4o",
+          "openai/gpt-4o-2024-08-06",
+          "OpenAI-shaped JSON",
+          "OpenAI tools",
+          "openai.yaml",
+          "opencode",
+          "OpenCode",
+          "Opencode AGENTS.md",
+          "Opencode Skills Directory",
+          "OpenHarness",
+          "Openharness Queryengine",
+          "Open LLM",
+          "Open LLM list",
+          "OpenTelemetry",
+          "OpenTelemetry GenAI Semantic Conventions",
+          "OpenTelemetry Helm wiring",
+          "OpenTelemetry Python Instrumentation",
+          "OpenTelemetry Python SDK",
+          "OpenTelemetry SDK",
+          "OrbStack",
+          "Ornate Theatrical Grotesque Character Rendering",
+          "Orpheus Conjoined Twin Aerialists",
+          "OTEL",
+          "OTEL env",
+          "otel-env.snippet.yaml",
+          "OTEL_* exporter env",
+          "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "OTEL_RESOURCE_ATTRIBUTES",
+          "OTEL_SDK_DISABLED",
+          "OTLPMetricExporter",
+          "OTLP receiver",
+          "OTLPSpanExporter",
+          "output/aurora-smoke-test.png",
+          "Owner Refresh Endpoint",
+          "Page Of Wands",
+          "Paper Background Color",
+          "paper #f7f3ec",
+          "Parent",
+          "parent_message_id",
+          "ParentMessageID",
+          "PeriodicExportingMetricReader",
+          "Permissions",
+          "Per-Model Price Table",
+          "persistence",
+          "persistence_chart",
+          "PgBouncer",
+          "pgbouncer Deployment",
+          "/ping",
+          "Ping",
+          "Pip",
+          "Pivot",
+          "Pivot scores",
+          "PivotTable.svelte",
+          "Plan",
+          "Playwright",
+          ".playwright-user-data",
+          "plutil -lint",
+          "pnpm",
+          "pnpm build",
+          "pnpm Build",
+          "pnpm check",
+          "pnpm Check",
+          "pod",
+          "Poetry",
+          "ponytail",
+          "Ponytail",
+          "Postgres",
+          "Postgres JSONB",
+          "PostgreSQL",
+          "postgresql.persistence.svc.cluster.local",
+          "postgresql StatefulSet",
+          "PostgreSQL wildcard graph regression tests",
+          "Pre-Fixed Image Edit Archive",
+          "Pre-Fixed QA Results",
+          "Previous English Section",
+          "--primary",
+          "print_chat_outcome",
+          "process SDK init",
+          "PROD",
+          "Production Rollout",
+          "Production Rollout Revision 23",
+          "Production WebUI",
+          "production WebUI build",
+          "ProgressiveThumbnail",
+          "--project",
+          "Project",
+          "Project|aurora",
+          "Project|aurora-api skill",
+          "Project|coin",
+          "Project entity",
+          "Project|ht",
+          "Project ID",
+          "Project|LightRAG",
+          "Project|lulz",
+          "Project path",
+          "Project|ranks.urm8.org",
+          "Project Reference Memory",
+          "Projects Table",
+          "Project|tarot",
+          "project/task transcript",
+          "Prompt Cap Increase",
+          "Prompt Generation Pipeline",
+          "Prompts",
+          "Prompts Directory",
+          "protobufjs",
+          "ProviderResultRow",
+          "proxies.txt",
+          "psycopg2-binary",
+          "public ingress",
+          "PublicShell",
+          "pygmy",
+          "pyproject",
+          "Python",
+          "python.org",
+          "QA",
+          "QA Gate",
+          "query_document",
+          "QueryEngine",
+          "rag.urm8.org",
+          "ranks",
+          "ranks-api",
+          "RANKS_CACHE_TTL",
+          "ranks_chart",
+          "ranks-k3s-kubeconfig-secrets.mdc",
+          "ranks.otel",
+          "ranks repository",
+          "ranks-scraper",
+          "ranks_snapshots",
+          "ranks.urm8.org",
+          "ranks.urm8.org API",
+          "ranks.urm8.org/chart",
+          "Read",
+          "read_file",
+          "Read File",
+          "Read_File Tool",
+          "Redis",
+          "redis-master StatefulSet",
+          "RedisOmRepository",
+          "redis_om_repository.py",
+          "reference.json",
+          "References Api",
+          "references/api.md",
+          "references/client-tools.json",
+          "References Client-Tools.Json",
+          "References Generation",
+          "References/Generation.Md",
+          "References Openharness.Md",
+          "References/Parallel.Md",
+          "references/tools.md",
+          "References Tools.Md",
+          "refresh_tokens.txt",
+          "Rejected Pre-Correction Renders",
+          "Relations",
+          "ReleaseTrack",
+          "Repository",
+          "Repository source",
+          "Request Permissions",
+          "Research category quality_ranked",
+          "reserve_share_key",
+          "REST text/texts insertion",
+          "Resumable Operator Script",
+          "Reusable Solution Pattern",
+          "Reuse-Check",
+          "Review",
+          "role:tool",
+          "Root +layout.svelte",
+          "ruff",
+          "Ruff",
+          "run.sh",
+          "Russian documentation",
+          "S3",
+          "S3 Presigned Uploads",
+          "S3 PUT",
+          "Sandbox",
+          "Sandbox Permissions",
+          "save_memory",
+          "Scene References",
+          "scheduling.urm8.org/pool=control-plane",
+          "scheduling.urm8.org/pool=worker",
+          "Scope",
+          "Scoped Release Page",
+          "scraperServiceName",
+          "scripts",
+          "scripts/aurora_client.py",
+          "scripts/test_tool_loop.py",
+          "scripts/tool_protocol.py",
+          "SDK insert/ainsert",
+          "search_memory",
+          "SearchService",
+          "secret-only OTEL config",
+          "secrets.GH_TOKEN",
+          "secrets.prod.yaml",
+          "Sentinel",
+          "ServiceResult",
+          "Session Cookie",
+          "Session File",
+          "Session Reuse",
+          "Session Store Script",
+          "session tests",
+          "Session Test Script",
+          "session_tokens.txt",
+          "sets/circus",
+          "Sets Circus",
+          "sets/classic",
+          "Sets Classic",
+          "setup_telemetry",
+          "setup_worker_telemetry",
+          "Seven Of Pentacles",
+          "SHA-256 State",
+          "SHA-256 Verification",
+          "Shared song /link/[id]",
+          "Show all",
+          "SignalContentReference",
+          "signoz",
+          "SigNoz",
+          "SigNoz Collector",
+          "signoz-frontend",
+          "SigNoz k8s-infra otel-agent",
+          "SigNoz LLM Observability",
+          "signoz-mcp",
+          "SigNoz MCP",
+          "signoz namespace",
+          "signoz-otel-collector",
+          "signoz-otel-collector.signoz.svc.cluster.local:4317",
+          "signoz-otel-collector.signoz.svc.cluster.local:4318",
+          "SigNoz OTLP",
+          "signoz overrides",
+          "signoz-stack",
+          "signoz StatefulSet",
+          "signoz.urm8.org",
+          "Sitemap",
+          "sitemap.xml",
+          "Skill",
+          "Skill Creator quick validator",
+          "SKILL.md",
+          "Skill Pytest",
+          "skills/lightrag-agentic-development/SKILL.md",
+          "skills.urm8.org",
+          "skill/workflow/agentic-development inventory retrieval",
+          "sloppy-mcp",
+          "slop.urm8.org",
+          "snapshot._alias_keys",
+          "snapshot.py",
+          "sosync",
+          "Sosync",
+          "sosync-api",
+          "SoSync Blue/Neutral Palette",
+          "sosync/helm/templates/app-deployment.yaml",
+          "sosync/helm/templates/worker-deployment.yaml",
+          "Sosync Media Router",
+          "sosync.online",
+          "Sosync Online",
+          "Sosync.Online",
+          "sosync-worker",
+          "source-documents integration",
+          "SPA",
+          "SPA-fallback",
+          "Spotify Client",
+          "SQLite",
+          "SQLite-indexed conversation_ids",
+          "src/main.ts",
+          "SSE",
+          "STAND!=PROD",
+          "Summaries",
+          "SUPERSEDES",
+          "Supervisor",
+          "SurfaceCard",
+          "Svelte 5",
+          "Svelte 5 Studio Editor",
+          "svelte-awesome",
+          "SvelteKit",
+          "svelte-sitemap",
+          "Symbolic Links",
+          "Tails",
+          "Tarot",
+          "Tarot Circus QA Loop",
+          "Tarot Project",
+          "Tarot Scene Elements",
+          "Task",
+          "Task Name",
+          "--task slug",
+          "Tasks Table",
+          "Task Subagents",
+          "Team",
+          "temporary server health/OpenAPI/UI smoke",
+          "test_snapshot.py",
+          "tests/routers/test_sitemap.py",
+          "tests/test_lightrag_mcp_integration.py",
+          "The Emperor",
+          "The Empress",
+          "The Fool",
+          "The Fool Sample",
+          "The High Priestess",
+          "The High Priestess Sample",
+          "The Lovers",
+          "The Magician",
+          "The Star",
+          "The World",
+          "Three.js",
+          "Three Of Cups Sample",
+          "#throw-again",
+          "tiktoken cl100k_base",
+          "tiktoken o200k_base",
+          "token-compare.json",
+          "token-offload benchmark",
+          "TOKEN_SECRET",
+          "Token Usage Metrics",
+          "tool_calls",
+          "Tool Loop Test",
+          "Tool Protocol Script",
+          "tool-result --file",
+          "--tools",
+          "--tools-file",
+          "Tortoise",
+          "TracerProvider",
+          "_track_and_service_result_repos",
+          "TrackIdentityCard",
+          "Track Router",
+          "Transcribe Endpoint",
+          "transcript",
+          "Transcript Path",
+          "Transcripts",
+          "Transport Failures",
+          "turn0searchN",
+          "Two Of Wands",
+          "U+E200",
+          "U+E200 cite widgets",
+          "U+E201",
+          "U+E202",
+          "UnifiedRelease",
+          "UnifiedTrack",
+          "Updated At",
+          "upgrade",
+          "Upstream Plus Image Generation Quota",
+          "urm8",
+          "Urm8",
+          "Urm8/Aurora",
+          "urm8/aurora .env",
+          "urm8 Hetzner k3s cluster",
+          "urm8/ht",
+          "urm8 k3s cluster",
+          "urm8.org",
+          "Urm8 Org Style",
+          "urm8/sosync",
+          "User",
+          "User-Authored Image Assets",
+          "User.is_verified",
+          "User Review Checkpoint",
+          "/Users/max/.codex/AGENTS.md",
+          "/Users/max/.config/opencode/AGENTS.md",
+          "/Users/max/.cursor/AGENTS.md",
+          "/Users/max/.local/bin/git-cu",
+          "/Users/max/projs/github.com/aurorax-neo/chat2api",
+          "/Users/max/projs/github.com/urm8/aurora",
+          "/Users/max/projs/github.com/urm8/lulz",
+          "UserVideo",
+          "UserVideo.transcript",
+          "UserVideoViewSet",
+          "/usr/local/libexec/aurora/aurora",
+          "/usr/local/var/aurora",
+          "/usr/local/var/log/aurora",
+          "util.py",
+          "utopia",
+          "uv",
+          "uv run pytest",
+          "uv run pytest -q",
+          "/v1/chat/completions",
+          "Validation",
+          "Validation Process",
+          "values.local.yaml",
+          "values.otel",
+          "values.private.yaml",
+          "Vanilla Editor",
+          "Victorian British Gentleman Reinterpretation",
+          "Victorian Circus Cast",
+          "Victorian Circus Reinterpretation",
+          "videos.0012_uservideo",
+          "videos.api",
+          "videos.service",
+          "videos.service.object_storage",
+          "videos.studio_tasks",
+          "videos.studio_tasks.transcribe_user_video",
+          "videos.user_video",
+          "waitSource",
+          "web",
+          "Web Conversion Card",
+          "WebFetch",
+          "WebGL stage",
+          "webImage.tag",
+          "web/nginx.conf",
+          "web/package.json",
+          "web/scripts/generate-sitemap.mjs",
+          "WebSearch",
+          "web/src/app.css",
+          "web/src/App.svelte",
+          "web/src/lib/ExpandableRankList.svelte",
+          "web/src/lib/PivotTable.svelte",
+          "web/src/lib/rankings.ts",
+          "web/src/lib/snapshotCache.ts",
+          "WebUI",
+          "WebUI graph XHR",
+          "WebUI node inspector",
+          "Whole-Chunk Query Payload",
+          "wildcard graph endpoint",
+          "words JSON",
+          "worker-node-0",
+          "worker-node-1",
+          "workerServiceName",
+          "Workflow|cluster-otel-signoz-telemetry",
+          "Workflow|hetzner-k3s-helm-service-deploy",
+          "WorkingDirectory",
+          "Working Revision d03dafc",
+          "Workspace-Write",
+          "Worktree",
+          "Write",
+          "write_file",
+          "Write File",
+          "Write File Operation",
+          "XML validation",
+          "YAGNI Ladder",
+          "Yandex Music Client",
+          "YES/NO/EDGE",
+          "Yield Writes Option",
+          "YouTube Client",
+          "YouTube Music Client",
+          "YouTubeMusicMetadataCache",
+          "YouTubeMusicMetadataCacheRepository",
+          "youtube_music_metadata_cache_repository.py",
+          "Zoho",
+          "ZooKeeper"
+        ]
+      }
+    },
+    {
+      "tool": "get_documents",
+      "arguments": {
+        "tags": [
+          "skill",
+          "agentic-development"
+        ]
+      },
+      "status": "success",
+      "latency_ms": 145.81,
+      "result": {
+        "status": "success",
+        "response": {
+          "statuses": {
+            "pending": [],
+            "parsing": [],
+            "analyzing": [],
+            "processing": [],
+            "preprocessed": [],
+            "processed": [
+              {
+                "id": "doc-1783fc785260154f0a689eb47ecbfdc6",
+                "content_summary": "Project: aurora-api skill\nProject entity: Project|aurora-api skill\nProject path: /Users/max/.cursor/skills/aurora-api\nRepository: local personal Cursor skill (mirrored at /Users/max/.codex/skills/aurora-api)\nDate: 2026-08-22\nScope: tool-call roundtri...",
+                "content_length": 1884,
+                "file_path": "mcp-3aa58f7634f94d1ebc3725968e1cb4f8-0.txt",
+                "status": "processed",
+                "created_at": "2026-08-22T08:47:07.950258+00:00",
+                "updated_at": "2026-08-22T08:47:25.093602+00:00",
+                "track_id": "mcp-3aa58f7634f94d1ebc3725968e1cb4f8",
+                "chunks_count": 1,
+                "chunks_list": [
+                  "doc-1783fc785260154f0a689eb47ecbfdc6-chunk-000"
+                ],
+                "metadata": {
+                  "tags": [
+                    "skill",
+                    "workflow",
+                    "agentic-development",
+                    "aurora-api"
+                  ],
+                  "chunk_opts": "size=1200, split_only=False, overlap=100",
+                  "chunk_method": "legacy_chunking_func",
+                  "parse_engine": "legacy",
+                  "parse_format": "raw",
+                  "kg_write_state": "graph_mutation_started",
+                  "parse_start_time": 1787388427,
+                  "process_end_time": 1787388445,
+                  "process_start_time": 1787388428,
+                  "parse_stage_skipped": true,
+                  "analyzing_start_time": 1787388428,
+                  "analyzing_stage_skipped": true
+                },
+                "content_hash": "be0090bf0d787a78b10feac2bb8faeb3"
+              },
+              {
+                "id": "doc-2c5bbd6fdeb57f7bac85ad6b76684251",
+                "content_summary": "Project: aurora-api skill\nProject entity: Project|aurora-api skill\nProject path: /Users/max/.cursor/skills/aurora-api\nRepository: local personal Cursor skill (mirrored at /Users/max/.codex/skills/aurora-api)\nDate: 2026-08-22\nScope: coding\n\nDecision S...",
+                "content_length": 1978,
+                "file_path": "mcp-0646806318a14e6b8b341374ac62aea4-0.txt",
+                "status": "processed",
+                "created_at": "2026-08-22T09:20:30.351592+00:00",
+                "updated_at": "2026-08-22T09:20:48.200251+00:00",
+                "track_id": "mcp-0646806318a14e6b8b341374ac62aea4",
+                "chunks_count": 1,
+                "chunks_list": [
+                  "doc-2c5bbd6fdeb57f7bac85ad6b76684251-chunk-000"
+                ],
+                "metadata": {
+                  "tags": [
+                    "skill",
+                    "aurora-api",
+                    "tools",
+                    "agentic-development"
+                  ],
+                  "chunk_opts": "size=1200, split_only=False, overlap=100",
+                  "chunk_method": "legacy_chunking_func",
+                  "parse_engine": "legacy",
+                  "parse_format": "raw",
+                  "kg_write_state": "graph_mutation_started",
+                  "parse_start_time": 1787390430,
+                  "process_end_time": 1787390448,
+                  "process_start_time": 1787390430,
+                  "parse_stage_skipped": true,
+                  "analyzing_start_time": 1787390430,
+                  "analyzing_stage_skipped": true
+                },
+                "content_hash": "8896a699914808645a05fe24c3834ca8"
+              },
+              {
+                "id": "doc-6eacbf704aed9d6e70abe967aaf3c8b1",
+                "content_summary": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nReference topic: Agent skill distribution\n\nDefinition: skills/lightrag-agentic-development/SKILL....",
+                "content_length": 1559,
+                "file_path": "mcp-1272313e1ba94582814da89b06504497-0.txt",
+                "status": "processed",
+                "created_at": "2026-08-24T11:01:12.711343+00:00",
+                "updated_at": "2026-08-24T11:01:20.687622+00:00",
+                "track_id": "mcp-1272313e1ba94582814da89b06504497",
+                "chunks_count": 1,
+                "chunks_list": [
+                  "doc-6eacbf704aed9d6e70abe967aaf3c8b1-chunk-000"
+                ],
+                "metadata": {
+                  "tags": [
+                    "agentic-development",
+                    "project-reference",
+                    "skill"
+                  ],
+                  "chunk_opts": "size=1200, split_only=False, overlap=100",
+                  "chunk_method": "legacy_chunking_func",
+                  "parse_engine": "legacy",
+                  "parse_format": "raw",
+                  "kg_write_state": "graph_mutation_started",
+                  "parse_start_time": 1787569272,
+                  "process_end_time": 1787569280,
+                  "process_start_time": 1787569272,
+                  "parse_stage_skipped": true,
+                  "analyzing_start_time": 1787569272,
+                  "analyzing_stage_skipped": true
+                },
+                "content_hash": "6e092674704b9e6812a05c123265d463"
+              },
+              {
+                "id": "doc-41cf041734461c1f345a1e86c83ab2c0",
+                "content_summary": "Project: ht\nProject entity: Project|ht\nProject path: /Users/max/projs/github.com/urm8/ht\nRepository: github.com/urm8/ht\nReference topic: Reusable agent skill cluster-otel-signoz-telemetry\nSkill: cluster-otel-signoz-telemetry\nSkill entity: Workflow|cl...",
+                "content_length": 3321,
+                "file_path": "mcp-cd86a218b6394c3abd992e4755a04ce9-0.txt",
+                "status": "processed",
+                "created_at": "2026-08-25T10:03:54.809502+00:00",
+                "updated_at": "2026-08-25T10:05:14.056804+00:00",
+                "track_id": "mcp-cd86a218b6394c3abd992e4755a04ce9",
+                "chunks_count": 1,
+                "chunks_list": [
+                  "doc-41cf041734461c1f345a1e86c83ab2c0-chunk-000"
+                ],
+                "metadata": {
+                  "tags": [
+                    "skill",
+                    "agentic-development",
+                    "reusable-solution",
+                    "skill-cluster-otel-signoz-telemetry",
+                    "project"
+                  ],
+                  "chunk_opts": "size=1200, split_only=False, overlap=100",
+                  "chunk_method": "legacy_chunking_func",
+                  "parse_engine": "legacy",
+                  "parse_format": "raw",
+                  "kg_write_state": "graph_mutation_started",
+                  "parse_start_time": 1787652234,
+                  "process_end_time": 1787652314,
+                  "process_start_time": 1787652285,
+                  "parse_stage_skipped": true,
+                  "analyzing_start_time": 1787652234,
+                  "analyzing_stage_skipped": true
+                },
+                "content_hash": "355e5cf5d8a6191f00046e8411c5b936"
+              },
+              {
+                "id": "doc-6a89f2319f85fd775c3bc0c575b217f8",
+                "content_summary": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nReference topic: Agent project reference memory\n\nDefinition: LightRAG is the shared project encyc...",
+                "content_length": 2392,
+                "file_path": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8-0.txt",
+                "status": "processed",
+                "created_at": "2026-08-24T10:52:16.548787+00:00",
+                "updated_at": "2026-08-24T10:52:31.361697+00:00",
+                "track_id": "mcp-7b0a50a5882d4345bfb80f1fdda6cee8",
+                "chunks_count": 1,
+                "chunks_list": [
+                  "doc-6a89f2319f85fd775c3bc0c575b217f8-chunk-000"
+                ],
+                "metadata": {
+                  "tags": [
+                    "agentic-development",
+                    "project-reference",
+                    "skill"
+                  ],
+                  "chunk_opts": "size=1200, split_only=False, overlap=100",
+                  "chunk_method": "legacy_chunking_func",
+                  "parse_engine": "legacy",
+                  "parse_format": "raw",
+                  "kg_write_state": "graph_mutation_started",
+                  "parse_start_time": 1787568736,
+                  "process_end_time": 1787568751,
+                  "process_start_time": 1787568736,
+                  "parse_stage_skipped": true,
+                  "analyzing_start_time": 1787568736,
+                  "analyzing_stage_skipped": true
+                },
+                "content_hash": "f6991589489b044cb1743721dc141ac3"
+              },
+              {
+                "id": "doc-6b1bfd74b0e6df0aab9b7cc59196eb08",
+                "content_summary": "Project: ht\nProject entity: Project|ht\nProject path: /Users/max/projs/github.com/urm8/ht\nRepository: github.com/urm8/ht\nReference topic: Reusable agent skill hetzner-k3s-helm-service-deploy\nSkill: hetzner-k3s-helm-service-deploy\nSkill entity: Workflo...",
+                "content_length": 3630,
+                "file_path": "mcp-81a7199b4dd5488d9526716cae6897c1-0.txt",
+                "status": "processed",
+                "created_at": "2026-08-25T10:03:46.119374+00:00",
+                "updated_at": "2026-08-25T10:04:45.746612+00:00",
+                "track_id": "mcp-81a7199b4dd5488d9526716cae6897c1",
+                "chunks_count": 1,
+                "chunks_list": [
+                  "doc-6b1bfd74b0e6df0aab9b7cc59196eb08-chunk-000"
+                ],
+                "metadata": {
+                  "tags": [
+                    "skill",
+                    "agentic-development",
+                    "reusable-solution",
+                    "skill-hetzner-k3s-helm-service-deploy",
+                    "project"
+                  ],
+                  "chunk_opts": "size=1200, split_only=False, overlap=100",
+                  "chunk_method": "legacy_chunking_func",
+                  "parse_engine": "legacy",
+                  "parse_format": "raw",
+                  "kg_write_state": "graph_mutation_started",
+                  "parse_start_time": 1787652226,
+                  "process_end_time": 1787652285,
+                  "process_start_time": 1787652248,
+                  "parse_stage_skipped": true,
+                  "analyzing_start_time": 1787652226,
+                  "analyzing_stage_skipped": true
+                },
+                "content_hash": "2b97cdf08cb717548af9a80f4065cfde"
+              }
+            ],
+            "failed": []
+          }
+        }
+      }
+    },
+    {
+      "tool": "check_memory_pressure",
+      "arguments": {
+        "top_process_limit": 3
+      },
+      "status": "success",
+      "latency_ms": 141.72,
+      "result": {
+        "status": "success",
+        "response": {
+          "platform": "Linux-6.8.0-71-generic-aarch64-with-glibc2.36",
+          "memory_pressure": {
+            "level": "normal",
+            "available_ratio": 0.3736,
+            "total_mb": 3806.69,
+            "available_mb": 1422.34,
+            "used_mb": 2384.34,
+            "percent": 62.6
+          },
+          "swap": {
+            "total_mb": 0.0,
+            "used_mb": 0.0,
+            "free_mb": 0.0,
+            "percent": 0.0
+          },
+          "current_process": {
+            "pid": 1,
+            "rss_mb": 329.4
+          },
+          "top_processes": [
+            {
+              "pid": 1,
+              "name": "python",
+              "rss_mb": 329.4,
+              "cmdline": "python -m lightrag.api.lightrag_server"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "tool": "get_document_content",
+      "arguments": {
+        "document_id": "doc-6eacbf704aed9d6e70abe967aaf3c8b1"
+      },
+      "status": "success",
+      "latency_ms": 191.23,
+      "result": {
+        "status": "success",
+        "response": {
+          "document_id": "doc-6eacbf704aed9d6e70abe967aaf3c8b1",
+          "file_path": "mcp-1272313e1ba94582814da89b06504497-0.txt",
+          "content": "Project: LightRAG\nProject entity: Project|LightRAG\nProject path: /Users/max/projs/github.com/HKUDS/LightRAG\nRepository: git@github.com:urm8/LightRAG.git\nReference topic: Agent skill distribution\n\nDefinition: skills/lightrag-agentic-development/SKILL.md is the single authored policy for LightRAG project-reference memory across Codex, Cursor, and OpenCode on this workstation.\n\nProcess: /Users/max/.codex/skills/lightrag-agentic-development/SKILL.md and /Users/max/.agents/skills/lightrag-agentic-development/SKILL.md are symbolic links to the repository skill. Platform-specific MCP connection metadata remains beside the installed skill. Global AGENTS files only activate the shared skill, require project identity and repository authority, and define the unavailable-service fallback.\n\nDesign rationale: One canonical skill prevents semantic drift while keeping always-loaded AGENTS instructions small. The skill contains one workflow, one memory contract, and one graph-curation rule set.\n\nInvariants and failure conditions: Installed skill bodies are not edited independently. The canonical skill remains valid under the Codex skill validator. Replacing the repository path requires recreating both symbolic links.\n\nSource anchors: skills/lightrag-agentic-development/SKILL.md; skills/lightrag-agentic-development/agents/openai.yaml; AGENTS.md.\n\nRelations: LightRAG Agentic Development Skill PART_OF LightRAG. Codex USES LightRAG Agentic Development Skill. Cursor USES LightRAG Agentic Development Skill. OpenCode USES LightRAG Agentic Development Skill.",
+          "metadata": {
+            "tags": [
+              "agentic-development",
+              "project-reference",
+              "skill"
+            ],
+            "chunk_opts": "size=1200, split_only=False, overlap=100",
+            "chunk_method": "legacy_chunking_func",
+            "parse_engine": "legacy",
+            "parse_format": "raw",
+            "kg_write_state": "graph_mutation_started",
+            "parse_start_time": 1787569272,
+            "process_end_time": 1787569280,
+            "process_start_time": 1787569272,
+            "parse_stage_skipped": true,
+            "analyzing_start_time": 1787569272,
+            "analyzing_stage_skipped": true
+          }
+        }
+      }
+    }
+  ],
+  "aurora": {
+    "status": "complete",
+    "rated_at": "2026-08-28T16:00:25.006403+00:00",
+    "verdict": "SATISFIED",
+    "summary": "All supplied LightRAG MCP cases are present and rated consistently. Most retrievals are relevant and grounded; partial scores are applied where returned matches only weakly support the requested topic.",
+    "ratings": [
+      {
+        "case_id": "text-code-symbol",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          1
+        ],
+        "verdict": "PASS",
+        "reason": "Returned excerpts directly identify LightRAGMCPRuntime, FastMCP usage, and query behavior."
+      },
+      {
+        "case_id": "text-error-symbol",
+        "tool_fit": 5,
+        "retrieval_relevance": 1,
+        "context_precision": 1,
+        "completeness": 1,
+        "groundedness": 3,
+        "relevant_match_indices": [],
+        "verdict": "FAIL",
+        "reason": "Results mention general project facts but do not contain RecoveryAnchorMissingError, purge, or the requested anchor invariant."
+      },
+      {
+        "case_id": "graph-local-entity",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          3
+        ],
+        "verdict": "PASS",
+        "reason": "Matches directly describe the MCP runtime, FastMCP endpoint, and mounted /mcp path."
+      },
+      {
+        "case_id": "graph-global-architecture",
+        "tool_fit": 5,
+        "retrieval_relevance": 4,
+        "context_precision": 4,
+        "completeness": 3,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          2,
+          4
+        ],
+        "verdict": "PARTIAL",
+        "reason": "Provides some architecture evidence but lacks a complete storage-role relationship explanation."
+      },
+      {
+        "case_id": "graph-hybrid-purge",
+        "tool_fit": 5,
+        "retrieval_relevance": 2,
+        "context_precision": 2,
+        "completeness": 2,
+        "groundedness": 3,
+        "relevant_match_indices": [
+          0
+        ],
+        "verdict": "PARTIAL",
+        "reason": "Contains graph and chunk provenance information but not the requested recovery anchors or kg_write_state purge interaction."
+      },
+      {
+        "case_id": "mixed-coding",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          1,
+          2,
+          5
+        ],
+        "verdict": "PASS",
+        "reason": "Evidence covers direct runtime invocation, query implementation, and source provenance behavior."
+      },
+      {
+        "case_id": "mixed-deployment-debug",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "verdict": "PASS",
+        "reason": "Matches cover Helm, PostgreSQL, MCP endpoint, and health validation details."
+      },
+      {
+        "case_id": "mixed-chat-history",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          5
+        ],
+        "verdict": "PASS",
+        "reason": "History-aware retrieval returns tag metadata and document filtering evidence matching the follow-up."
+      },
+      {
+        "case_id": "tagged-skill-memory",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 4,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          1
+        ],
+        "verdict": "PASS",
+        "reason": "Required tags are respected and results provide reusable skill memory related to MCP verification."
+      },
+      {
+        "case_id": "tagged-empty-scope",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [],
+        "verdict": "PASS",
+        "reason": "Correctly returns zero matches for an absent required tag scope."
+      },
+      {
+        "case_id": "advanced-independent-limits",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 4,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          1,
+          2
+        ],
+        "verdict": "PASS",
+        "reason": "Retrieval parameters pass and excerpts contain MCP deployment verification facts."
+      },
+      {
+        "case_id": "advanced-semantic-alias",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 4,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          2
+        ],
+        "verdict": "PASS",
+        "reason": "Finds document tag content and related document handling evidence."
+      },
+      {
+        "case_id": "advanced-keyword-alias",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 4,
+        "completeness": 4,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          2,
+          3
+        ],
+        "verdict": "PASS",
+        "reason": "Returns LightRAG MCP entity evidence with minor unrelated matches."
+      },
+      {
+        "case_id": "advanced-generated-answer",
+        "tool_fit": 5,
+        "retrieval_relevance": 5,
+        "context_precision": 5,
+        "completeness": 5,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0,
+          2
+        ],
+        "verdict": "PASS",
+        "reason": "Generated answer is grounded in supplied excerpts and correctly identifies /mcp mounting."
+      },
+      {
+        "case_id": "reusable-skill-search",
+        "tool_fit": 4,
+        "retrieval_relevance": 3,
+        "context_precision": 3,
+        "completeness": 2,
+        "groundedness": 5,
+        "relevant_match_indices": [
+          0
+        ],
+        "verdict": "PARTIAL",
+        "reason": "Finds the relevant skill reference but does not provide a complete MCP deployment verification procedure."
+      }
+    ]
+  }
+}
