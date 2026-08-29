@@ -9,13 +9,16 @@ Use the configured `lightrag` MCP server as shared project reference memory.
 
 ## Workflow
 
-1. Put the project name, absolute path, and repository remote in every query and write.
+1. Pass the project name in every query's `project` field. Include the absolute path
+   and repository remote in the query text when they help disambiguate projects; put
+   all three identity fields in every write.
 2. For a recurring workflow or hard problem, call `search_skills` before deriving a new procedure. Reuse a relevant result; fetch its full body with `get_document_content(document_id)` only when needed.
 3. Before broad source reads, select the narrowest query tool using the routing rules below; do not preflight health.
 4. Verify retrieved claims against the repository, which remains authoritative.
 5. Use `insert_document` only when verified current project knowledge is missing or stale. Use `get_pipeline_status` only before relying on a new insertion.
 6. Use `save_skill` only for a repeatable procedure with a passing check, named failure pattern, and at least one ruled-out approach. Include applicability, constraints, and applicable source URLs, documentation, standards, or libraries; never include secrets.
-7. After an MCP timeout, connection failure, or invalid response, call `check_lightrag_health`; if unavailable, continue from repository evidence and report the failed query or write.
+7. After a hard-won task, recognize whether the verified procedure will recur. Search for an existing skill, capture a missing golden path with `save_skill`, and report what was stored. Do not wait for the user to say "remember this."
+8. After an MCP timeout, connection failure, or invalid response, call `check_lightrag_health`; if unavailable, continue from repository evidence and report the failed query or write.
 
 ## Query Tool Routing
 

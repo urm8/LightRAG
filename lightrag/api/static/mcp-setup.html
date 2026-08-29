@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Connect coding agents to LightRAG MCP and install the shared-memory skills.">
+  <link rel="icon" href="data:,">
+  <title>LightRAG MCP — connect your coding agent</title>
+  <style>
+    :root { color-scheme: light; --ink:#132238; --muted:#607086; --line:#dce5ef; --paper:#fff; --wash:#f4f8fc; --blue:#2563eb; --cyan:#0e7490; --green:#15803d; }
+    * { box-sizing: border-box; }
+    body { margin:0; color:var(--ink); background:linear-gradient(180deg,#eef6ff 0,#f8fafc 320px); font:15px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,sans-serif; }
+    main { width:min(920px,calc(100% - 28px)); margin:0 auto; padding:38px 0 56px; }
+    .hero,.card { background:rgba(255,255,255,.94); border:1px solid var(--line); border-radius:18px; box-shadow:0 18px 50px rgba(33,63,96,.08); }
+    .hero { position:relative; overflow:hidden; padding:38px; }
+    .hero:after { content:""; position:absolute; width:260px; height:260px; right:-90px; top:-120px; border-radius:50%; background:radial-gradient(circle,#93c5fd 0,#dbeafe 45%,transparent 70%); opacity:.75; }
+    .eyebrow { color:var(--blue); font-size:12px; font-weight:750; letter-spacing:.12em; text-transform:uppercase; }
+    h1 { max-width:680px; margin:10px 0 12px; font-size:clamp(30px,6vw,52px); line-height:1.04; letter-spacing:-.035em; }
+    h2 { margin:0; font-size:22px; }
+    h3 { margin:0 0 8px; font-size:16px; }
+    p { margin:8px 0; color:var(--muted); }
+    .hero p { max-width:650px; font-size:17px; }
+    .endpoint { display:flex; align-items:center; gap:8px; max-width:690px; margin-top:24px; padding:8px 8px 8px 14px; border:1px solid #bfd2ea; border-radius:12px; background:#f8fbff; }
+    code,pre { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+    .endpoint code { flex:1; overflow-wrap:anywhere; color:#274363; }
+    button,.button { border:0; border-radius:9px; padding:9px 13px; color:#fff; background:var(--blue); font:inherit; font-weight:650; cursor:pointer; text-decoration:none; }
+    button:hover,.button:hover { filter:brightness(.94); }
+    .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:16px; }
+    .loop { padding:16px; border:1px solid var(--line); border-radius:13px; background:var(--wash); }
+    .loop strong { display:block; margin-bottom:5px; color:var(--cyan); }
+    .card { margin-top:18px; padding:28px; }
+    .section-head { margin-bottom:20px; }
+    .tabs { display:flex; gap:6px; overflow-x:auto; padding:4px; border-radius:11px; background:#edf3f9; }
+    .tab { min-width:max-content; color:var(--muted); background:transparent; }
+    .tab[aria-selected="true"] { color:var(--ink); background:#fff; box-shadow:0 1px 4px rgba(30,55,80,.12); }
+    .panel { padding-top:22px; }
+    .panel[hidden] { display:none; }
+    .step { display:grid; grid-template-columns:28px 1fr; gap:10px; margin:15px 0; }
+    .step-num { display:grid; place-items:center; width:26px; height:26px; border-radius:50%; color:#fff; background:var(--blue); font-weight:750; font-size:12px; }
+    .code { position:relative; margin:10px 0; border:1px solid #cad8e7; border-radius:11px; background:#0e1a2a; overflow:auto; }
+    pre { margin:0; padding:16px 52px 16px 16px; color:#dbeafe; font-size:13px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .code button { position:absolute; right:8px; top:8px; padding:6px 9px; color:#bfd7ff; background:#243b58; font-size:12px; }
+    .note { padding:12px 14px; border-left:3px solid var(--green); border-radius:7px; background:#f0fdf4; color:#315b3d; }
+    .skills { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:16px; }
+    .skill { padding:16px; border:1px solid var(--line); border-radius:12px; }
+    .skill code { color:var(--blue); font-weight:700; }
+    footer { padding:24px 6px 0; text-align:center; color:var(--muted); font-size:13px; }
+    footer a { color:var(--blue); }
+    @media (max-width:700px) { .hero,.card { padding:22px; border-radius:14px; } .grid,.skills { grid-template-columns:1fr; } .endpoint { align-items:stretch; flex-direction:column; } }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="eyebrow">LightRAG · Streamable HTTP MCP</div>
+    <h1>Give every coding agent the same project memory.</h1>
+    <p>Retrieve source-grounded project knowledge and keep hard-won workflows through a shared recognize → capture → reuse loop.</p>
+    <div class="endpoint"><code>{{MCP_URL}}</code><button type="button" data-copy="{{MCP_URL}}">Copy URL</button></div>
+    <div class="grid" aria-label="Self-learning loop">
+      <div class="loop"><strong>1 · Recognize</strong>Notice a recurring workflow, non-obvious constraint, or multi-attempt fix.</div>
+      <div class="loop"><strong>2 · Capture</strong>Promote only verified golden paths; store no secrets or task logs.</div>
+      <div class="loop"><strong>3 · Reuse</strong>Search shared skills before deriving the same procedure again.</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="section-head">
+      <h2>Let your coding agent install it</h2>
+      <p>Copy this prompt into Codex, Cursor, OpenCode, Claude Code, or OpenClaw. The agent will detect its client, preserve existing configuration, install both skills, and verify the connection.</p>
+    </div>
+    <div class="code"><pre>Set up LightRAG MCP and its Agent Skills in this coding-agent environment.
+
+MCP endpoint: {{MCP_URL}}
+Credential: LIGHTRAG_API_KEY from the environment. Never print its value, include it in a response, or save it in a project file.
+
+Follow these steps:
+1. Detect whether this environment is Codex, Cursor, OpenCode, Claude Code, or OpenClaw, and locate its user-level MCP configuration. Preserve every unrelated setting and server.
+2. Check that LIGHTRAG_API_KEY is available without displaying it. If it is missing, stop and tell me how to set it for this client.
+3. Add or update one streamable-HTTP MCP server named "lightrag" at {{MCP_URL}} with an X-API-Key header resolved from LIGHTRAG_API_KEY at runtime. Use the client's native environment-variable syntax; do not write the secret itself.
+   - Codex: ~/.codex/config.toml with [mcp_servers.lightrag] and [mcp_servers.lightrag.env_http_headers], where X-API-Key = "LIGHTRAG_API_KEY".
+   - Cursor: ~/.cursor/mcp.json with ${env:LIGHTRAG_API_KEY}.
+   - OpenCode: ~/.config/opencode/opencode.json with type "remote", oauth false, and {env:LIGHTRAG_API_KEY}.
+   - Claude Code: the user-level MCP configuration supported by the installed version, with type "http" and ${LIGHTRAG_API_KEY}.
+   - OpenClaw: run openclaw mcp set lightrag with url {{MCP_URL}}, transport "streamable-http", and header X-API-Key set to ${LIGHTRAG_API_KEY}; ensure the OpenClaw Gateway/daemon receives that environment variable.
+4. Install both skills globally for the detected client without changing this repository:
+   npx skills add urm8/LightRAG -g --skill lightrag-agentic-development lightrag-self-learning --agent &lt;detected-agent&gt; -y
+   Use agent id codex, cursor, opencode, claude-code, or openclaw.
+5. Reload or restart the client if required. For OpenClaw, run openclaw mcp doctor --probe.
+6. Verify that the LightRAG server connects and that query_mixed, search_skills, and save_skill are available. If verification fails, diagnose it without exposing the key.
+7. Report the exact configuration and skill paths changed, commands run, and verification result. Do not claim success unless the tools were discovered.</pre><button type="button">Copy setup prompt</button></div>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><h2>Connect MCP</h2><p>Set <code>LIGHTRAG_API_KEY</code> in the environment that launches your agent, then choose its configuration.</p></div>
+    <div class="tabs" role="tablist" aria-label="MCP clients">
+      <button class="tab" role="tab" aria-selected="true" aria-controls="codex" data-tab="codex">Codex</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="cursor" data-tab="cursor">Cursor</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="opencode" data-tab="opencode">OpenCode</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="claude" data-tab="claude">Claude Code</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="openclaw" data-tab="openclaw">OpenClaw</button>
+    </div>
+
+    <div class="panel" id="codex" role="tabpanel">
+      <h3>Codex</h3>
+      <p>Add this to <code>~/.codex/config.toml</code>. <code>env_http_headers</code> reads the key at runtime instead of saving it in the file.</p>
+      <div class="code"><pre>[mcp_servers.lightrag]
+url = "{{MCP_URL}}"
+startup_timeout_sec = 30
+tool_timeout_sec = 300
+
+[mcp_servers.lightrag.env_http_headers]
+X-API-Key = "LIGHTRAG_API_KEY"</pre><button type="button">Copy</button></div>
+    </div>
+
+    <div class="panel" id="cursor" role="tabpanel" hidden>
+      <h3>Cursor</h3>
+      <p>Add this to <code>~/.cursor/mcp.json</code> (global) or <code>.cursor/mcp.json</code> (project). Launch Cursor where the environment variable is available.</p>
+      <div class="code"><pre>{
+  "mcpServers": {
+    "lightrag": {
+      "url": "{{MCP_URL}}",
+      "headers": { "X-API-Key": "${env:LIGHTRAG_API_KEY}" }
+    }
+  }
+}</pre><button type="button">Copy</button></div>
+    </div>
+
+    <div class="panel" id="opencode" role="tabpanel" hidden>
+      <h3>OpenCode</h3>
+      <p>Add this to <code>~/.config/opencode/opencode.json</code> or the project <code>opencode.json</code>.</p>
+      <div class="code"><pre>{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "lightrag": {
+      "type": "remote",
+      "url": "{{MCP_URL}}",
+      "oauth": false,
+      "headers": { "X-API-Key": "{env:LIGHTRAG_API_KEY}" }
+    }
+  }
+}</pre><button type="button">Copy</button></div>
+    </div>
+
+    <div class="panel" id="claude" role="tabpanel" hidden>
+      <h3>Claude Code</h3>
+      <p>Add this server to a project <code>.mcp.json</code>. Claude expands the environment variable when it loads the file.</p>
+      <div class="code"><pre>{
+  "mcpServers": {
+    "lightrag": {
+      "type": "http",
+      "url": "{{MCP_URL}}",
+      "headers": { "X-API-Key": "${LIGHTRAG_API_KEY}" }
+    }
+  }
+}</pre><button type="button">Copy</button></div>
+    </div>
+
+    <div class="panel" id="openclaw" role="tabpanel" hidden>
+      <h3>OpenClaw</h3>
+      <p>If needed, install OpenClaw and its daemon first using the <a href="https://docs.openclaw.ai/start/getting-started">official quick start</a>.</p>
+      <div class="code"><pre>npm install -g openclaw@latest --allow-scripts=openclaw
+openclaw onboard --install-daemon</pre><button type="button">Copy</button></div>
+      <p>Register the remote server in OpenClaw's outbound MCP registry, then probe it. Make sure <code>LIGHTRAG_API_KEY</code> is available to the Gateway or daemon, not only your interactive shell.</p>
+      <div class="code"><pre>openclaw mcp set lightrag '{"url":"{{MCP_URL}}","transport":"streamable-http","headers":{"X-API-Key":"${LIGHTRAG_API_KEY}"}}'
+openclaw mcp doctor --probe</pre><button type="button">Copy</button></div>
+    </div>
+
+    <p class="note">Keep the API key out of Git. After restarting the client, verify that the <code>query_mixed</code>, <code>search_skills</code>, and <code>save_skill</code> tools are visible.</p>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><h2>Install the agent skills</h2><p>The community <code>skills</code> CLI detects Codex, Cursor, OpenCode, Claude Code, OpenClaw, and other Agent Skills clients.</p></div>
+    <div class="code"><pre>npx skills add urm8/LightRAG -g</pre><button type="button">Copy</button></div>
+    <div class="skills">
+      <div class="skill"><code>lightrag-agentic-development</code><p>Routes text, graph, mixed, and tagged retrieval and keeps repository evidence authoritative.</p></div>
+      <div class="skill"><code>lightrag-self-learning</code><p>Recognizes hard-won golden paths, captures verified procedures in LightRAG, and reuses them later.</p></div>
+    </div>
+    <p>For project-local installation, omit <code>-g</code>. To target one client explicitly, append <code>--agent codex</code>, <code>--agent cursor</code>, <code>--agent opencode</code>, <code>--agent claude-code</code>, or <code>--agent openclaw</code>.</p>
+  </section>
+
+  <footer>LightRAG MCP · <a href="https://github.com/urm8/LightRAG">source and skill package</a></footer>
+</main>
+<script>
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  tabs.forEach((tab) => tab.addEventListener('click', () => {
+    tabs.forEach((item) => item.setAttribute('aria-selected', String(item === tab)));
+    document.querySelectorAll('[role="tabpanel"]').forEach((panel) => { panel.hidden = panel.id !== tab.dataset.tab; });
+  }));
+  document.querySelectorAll('.code button,[data-copy]').forEach((button) => button.addEventListener('click', async () => {
+    const text = button.dataset.copy || button.parentElement.querySelector('pre').textContent;
+    await navigator.clipboard.writeText(text);
+    const previous = button.textContent;
+    button.textContent = 'Copied';
+    setTimeout(() => { button.textContent = previous; }, 1200);
+  }));
+</script>
+</body>
+</html>

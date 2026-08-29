@@ -77,6 +77,47 @@ async def test_integrated_lightrag_mcp_exposes_expected_tool_names():
 
 
 @pytest.mark.asyncio
+async def test_query_tools_accept_and_apply_project_scope():
+    class CapturingRag:
+        received_query = ""
+
+        async def aquery_llm(self, query, *, param):
+            self.received_query = query
+            return {"llm_response": {}, "data": {"chunks": [], "references": []}}
+
+    rag = CapturingRag()
+    mcp = create_lightrag_mcp(
+        rag_provider=lambda: rag,
+        doc_manager=SimpleNamespace(),
+        args=_args(),
+    )
+    tools = await mcp.get_tools()
+
+    for name in (
+        "query_document",
+        "query_text",
+        "query_graph",
+        "query_mixed",
+        "query_tagged",
+    ):
+        assert "project" in tools[name].parameters["properties"]
+
+    result = await tools["query_mixed"].run(
+        {
+            "query": "lulz gitignore static collected files hidden folders .cursor .git what should be ignored",
+            "project": "lulz",
+            "only_need_context": True,
+        }
+    )
+
+    assert result.structured_content["status"] == "success"
+    assert rag.received_query == (
+        "Project: lulz\n"
+        "lulz gitignore static collected files hidden folders .cursor .git what should be ignored"
+    )
+
+
+@pytest.mark.asyncio
 async def test_integrated_lightrag_mcp_tool_descriptions_are_agentic():
     mcp = _mcp()
 
@@ -91,7 +132,8 @@ async def test_integrated_lightrag_mcp_tool_descriptions_are_agentic():
     assert "deployment" in tools["query_document"].description
     assert "factual project reference" in tools["insert_document"].description
     assert "passing check" in tools["save_skill"].description
-    assert "only reusable agent skills" in tools["search_skills"].description
+    assert "Reuse verified agent workflows" in tools["search_skills"].description
+    assert "search_skills first" in tools["save_skill"].description
     assert "memory pressure" in tools["check_memory_pressure"].description
     assert tools["query_text"].description == AGENTIC_TOOL_DESCRIPTIONS["query_text"]
     assert "scope=local" in tools["query_graph"].description
@@ -125,6 +167,51 @@ def test_lightrag_mcp_mount_accepts_path_without_redirect():
 
     assert client.post("/mcp").status_code == 200
     assert client.post("/mcp/").status_code == 200
+
+
+def test_lightrag_mcp_mount_serves_public_browser_setup_page():
+    async def child_endpoint(request):
+        return PlainTextResponse("protocol")
+
+    host_app = Starlette()
+    mcp_app = Starlette(
+        routes=[Route("/", child_endpoint, methods=["GET", "POST", "DELETE"])]
+    )
+    mount_lightrag_mcp_http_app(host_app, mcp_app, "/mcp", api_key="test-key")
+    client = TestClient(host_app, base_url="https://rag.example.com")
+
+    for path in ("/mcp", "/mcp/"):
+        response = client.get(path, headers={"Accept": "text/html"})
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert "https://rag.example.com/mcp" in response.text
+        assert "lightrag-self-learning" in response.text
+        assert "npx skills add urm8/LightRAG -g" in response.text
+        assert "LIGHTRAG_API_KEY" in response.text
+        assert "Copy setup prompt" in response.text
+        assert "npm install -g openclaw@latest --allow-scripts=openclaw" in response.text
+        assert "openclaw mcp set lightrag" in response.text
+        assert "--agent openclaw" in response.text
+        assert "query_mixed" in response.text
+        assert "test-key" not in response.text
+
+
+def test_lightrag_mcp_mount_keeps_protocol_get_authenticated():
+    async def child_endpoint(request):
+        return PlainTextResponse("protocol")
+
+    host_app = Starlette()
+    mcp_app = Starlette(
+        routes=[Route("/", child_endpoint, methods=["GET", "POST", "DELETE"])]
+    )
+    mount_lightrag_mcp_http_app(host_app, mcp_app, "/mcp", api_key="test-key")
+    client = TestClient(host_app)
+    protocol_headers = {"Accept": "text/event-stream"}
+
+    assert client.get("/mcp", headers=protocol_headers).status_code == 403
+    response = client.get("/mcp", headers={**protocol_headers, "X-API-Key": "test-key"})
+    assert response.status_code == 200
+    assert response.text == "protocol"
 
 
 def test_lightrag_mcp_mount_requires_configured_api_key():

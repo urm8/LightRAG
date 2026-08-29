@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>LightRAG MCP QA</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #f4f6f8; --surface: #fff; --text: #17202a; --muted: #64748b; --line: #dbe2ea; --accent: #2563eb; --good: #15803d; --warn: #b45309; --bad: #b91c1c; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #0c1117; --surface: #151c24; --text: #e6edf3; --muted: #94a3b8; --line: #2b3642; --accent: #60a5fa; --good: #4ade80; --warn: #fbbf24; --bad: #f87171; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; }
+    main { max-width: 1280px; margin: 0 auto; padding: 28px 20px 48px; }
+    header { display: flex; gap: 20px; align-items: end; justify-content: space-between; flex-wrap: wrap; margin-bottom: 22px; }
+    h1 { margin: 0; font-size: clamp(24px, 4vw, 36px); font-weight: 650; }
+    h2 { margin: 28px 0 12px; font-size: 18px; }
+    p { margin: 5px 0 0; color: var(--muted); }
+    .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+    label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+    select, input[type=file] { max-width: 260px; min-height: 36px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+    .metric { padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+    .metric span { display: block; color: var(--muted); font-size: 12px; }
+    .metric strong { display: block; margin-top: 5px; font-size: 24px; font-variant-numeric: tabular-nums; }
+    .bars { display: grid; gap: 9px; }
+    .bar-row { display: grid; grid-template-columns: minmax(150px, 220px) 1fr 52px; gap: 10px; align-items: center; }
+    .bar-track { height: 12px; background: color-mix(in srgb, var(--muted) 20%, transparent); border-radius: 6px; overflow: hidden; }
+    .bar-fill { height: 100%; background: var(--accent); }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+    table { width: 100%; border-collapse: collapse; min-width: 940px; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr:last-child td { border-bottom: 0; }
+    .pass { color: var(--good); } .partial { color: var(--warn); } .fail { color: var(--bad); }
+    .reason { max-width: 360px; color: var(--muted); }
+    #error { display: none; margin: 16px 0; padding: 12px; border: 1px solid var(--bad); color: var(--bad); border-radius: 6px; }
+    .notes { color: var(--muted); font-size: 12px; }
+    @media (max-width: 640px) { main { padding: 18px 12px 36px; } .bar-row { grid-template-columns: 120px 1fr 44px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>LightRAG MCP QA</h1><p id="subtitle">Loading report.json…</p></div>
+    <div class="controls">
+      <label>Tool<select id="tool-filter"><option value="">All tools</option></select></label>
+      <label>Use case<select id="case-filter"><option value="">All use cases</option></select></label>
+      <label>Open report<input id="file-input" type="file" accept="application/json,.json"></label>
+    </div>
+  </header>
+  <div id="error" role="alert"></div>
+  <section class="metrics" id="metrics" aria-live="polite"></section>
+  <h2>Relevance by tool</h2>
+  <section class="bars" id="tool-bars"></section>
+  <h2>Cases</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Case</th><th>Tool / use case</th><th>Status</th><th>Latency</th><th>Term recall</th><th>Aurora relevance</th><th>Precision@k</th><th>MRR</th><th>nDCG@k</th><th>Judge note</th></tr></thead>
+    <tbody id="case-rows"></tbody>
+  </table></div>
+  <h2>Method coverage</h2>
+  <section class="metrics" id="coverage"></section>
+  <p class="notes">Precision@k, MRR, and nDCG@k use Aurora's zero-based relevant_match_indices. Recall proxy is Aurora completeness ÷ 5; term recall is deterministic expected-term coverage. Mutating production tools are schema-validated but intentionally not executed.</p>
+</main>
+<script>
+  const $ = id => document.getElementById(id);
+  let report;
+  const mean = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+  const pct = value => `${(100 * value).toFixed(1)}%`;
+  const esc = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const groupBy = (items, key) => items.reduce((groups, item) => ((groups[item[key]] ||= []).push(item), groups), {});
+  const metric = (label, value) => `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`;
+  function caseMetrics(item) {
+    const rating = item.aurora_rating || {};
+    const matches = item.deterministic?.match_count || 0;
+    const relevant = [...new Set(rating.relevant_match_indices || [])].filter(i => i >= 0 && i < matches).sort((a, b) => a - b);
+    const precision = matches ? relevant.length / matches : (item.deterministic?.zero_match_check ? 1 : 0);
+    const mrr = relevant.length ? 1 / (relevant[0] + 1) : (item.deterministic?.zero_match_check ? 1 : 0);
+    const dcg = relevant.reduce((sum, i) => sum + 1 / Math.log2(i + 2), 0);
+    const ideal = Array.from({length: relevant.length}, (_, i) => 1 / Math.log2(i + 2)).reduce((a, b) => a + b, 0);
+    return { ...item, rating, precision, mrr, ndcg: ideal ? dcg / ideal : (item.deterministic?.zero_match_check ? 1 : 0), relevance: (rating.retrieval_relevance || 0) / 5, recallProxy: (rating.completeness || 0) / 5 };
+  }
+  function render() {
+    const tool = $('tool-filter').value, useCase = $('case-filter').value;
+    const all = report.cases.map(caseMetrics);
+    const rows = all.filter(c => (!tool || c.tool === tool) && (!useCase || c.use_case === useCase));
+    const latencies = rows.map(c => c.latency_ms).filter(Number.isFinite).sort((a, b) => a - b);
+    const p95 = latencies.length ? latencies[Math.ceil(latencies.length * .95) - 1] : 0;
+    $('metrics').innerHTML = [
+      metric('Cases', rows.length),
+      metric('Success rate', pct(mean(rows.map(c => c.status === 'success' ? 1 : 0)))),
+      metric('Aurora relevance', pct(mean(rows.map(c => c.relevance)))),
+      metric('Context precision@k', pct(mean(rows.map(c => c.precision)))),
+      metric('Recall proxy', pct(mean(rows.map(c => c.recallProxy)))),
+      metric('P95 latency', `${p95.toFixed(0)} ms`)
+    ].join('');
+    const byTool = groupBy(rows, 'tool');
+    $('tool-bars').innerHTML = Object.entries(byTool).map(([name, cases]) => {
+      const score = mean(cases.map(c => c.relevance));
+      return `<div class="bar-row"><span>${esc(name)}</span><div class="bar-track"><div class="bar-fill" style="width:${100 * score}%"></div></div><strong>${pct(score)}</strong></div>`;
+    }).join('') || '<p>No matching cases.</p>';
+    $('case-rows').innerHTML = rows.map(c => {
+      const verdict = (c.rating.verdict || 'UNRATED').toLowerCase();
+      return `<tr><td><strong>${esc(c.id)}</strong></td><td>${esc(c.tool)}<br><span class="notes">${esc(c.use_case)}</span></td><td class="${verdict}">${esc(c.status)} / ${esc(c.rating.verdict || 'UNRATED')}</td><td class="num">${Number(c.latency_ms || 0).toFixed(0)} ms</td><td class="num">${c.deterministic?.expected_term_recall == null ? '—' : pct(c.deterministic.expected_term_recall)}</td><td class="num">${pct(c.relevance)}</td><td class="num">${pct(c.precision)}</td><td class="num">${c.mrr.toFixed(2)}</td><td class="num">${c.ndcg.toFixed(2)}</td><td class="reason">${esc(c.rating.reason || c.error || '')}</td></tr>`;
+    }).join('');
+    const coverage = groupBy(report.method_coverage, 'execution');
+    $('coverage').innerHTML = Object.entries(coverage).map(([name, items]) => metric(name.replaceAll('_', ' '), items.length)).join('');
+  }
+  function load(data) {
+    report = data;
+    $('subtitle').textContent = `${data.endpoint} · ${data.generated_at} · Aurora ${data.aurora?.verdict || data.aurora?.status}`;
+    for (const [id, values] of [['tool-filter', report.cases.map(c => c.tool)], ['case-filter', report.cases.map(c => c.use_case)]]) {
+      const select = $(id); [...new Set(values)].sort().forEach(value => select.add(new Option(value, value)));
+      select.onchange = render;
+    }
+    render();
+  }
+  $('file-input').addEventListener('change', async event => {
+    try { load(JSON.parse(await event.target.files[0].text())); $('error').style.display = 'none'; }
+    catch (error) { $('error').textContent = error.message; $('error').style.display = 'block'; }
+  });
+  fetch('./report.json', {cache: 'no-store'}).then(response => {
+    if (!response.ok) throw new Error(`report.json: HTTP ${response.status}`);
+    return response.json();
+  }).then(load).catch(error => {
+    $('subtitle').textContent = 'Choose report.json to load results.';
+    $('error').textContent = `Automatic load failed: ${error.message}`;
+    $('error').style.display = 'block';
+  });
+</script>
+</body>
+</html>

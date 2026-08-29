@@ -7,6 +7,10 @@ APFEL_LAUNCHD_LABEL ?= homebrew.mxcl.apfel
 APFEL_LAUNCHD_PLIST ?= /Users/max/Library/LaunchAgents/homebrew.mxcl.apfel.plist
 PROMPTFOO ?= npx --yes promptfoo@latest
 PROMPTFOO_RESULTS ?= evals/promptfoo-results.json
+QA_DIR ?= evals/live_mcp_query_eval
+QA_CASES ?= $(QA_DIR)/qa.jsonl
+QA_REPORT ?= $(QA_DIR)/report.json
+AURORA_CLIENT ?= $(HOME)/.cursor/skills/aurora-api/scripts/aurora_client.py
 
 LIGHTRAG_LAUNCHD_LABEL ?= com.local.lightrag
 LIGHTRAG_LAUNCHD_PLIST ?= $(HOME)/Library/LaunchAgents/$(LIGHTRAG_LAUNCHD_LABEL).plist
@@ -54,11 +58,12 @@ COLOR_GREEN :=
 COLOR_YELLOW :=
 endif
 
-.PHONY: help dev test-prompt test-prompt-results promptfoo-apfel promptfoo-capture-logs extract-prompt-issues improve-prompts rl-enhance-prompts prompt-enhancement-report lightrag-start lightrag-restart lightrag-stop lightrag-unregister lightrag-uninstall lightrag-status lightrag-logs lightrag-clear-db clear-db lightrag-reindex reindex lightrag-rebuild-vdb vscode-bridge-health copilot-api-health bridge-health copilot-api-start copilot-api-restart copilot-api-stop copilot-api-status copilot-api-logs mlx-openai-health mlx-openai-logs mlx-model-install mlx-model-start mlx-model-restart mlx-model-stop mlx-model-status mlx-model-logs mlx-model-health mlx-embeddings-install mlx-embeddings-start mlx-embeddings-restart mlx-embeddings-stop mlx-embeddings-status mlx-embeddings-logs mlx-embeddings-health swiftlm-install mlx-agentcpm-install mlx-agentcpm-convert mlx-agentcpm-start mlx-agentcpm-restart mlx-agentcpm-stop mlx-agentcpm-status mlx-agentcpm-logs mlx-chat mlx-chat-native mlx-chat-test hn-front-page-load embedding-candidates-bench modernbert-embed-bench use-deepseek use-mlx configure env-base env-storage env-server env-validate env-backup env-security-check env-base-rewrite env-storage-rewrite env base storage server validate backup security security-check base-rewrite storage-rewrite apple-up apple-down apple-status apple-logs apple-restart apple-pull
+.PHONY: help dev qa test-prompt test-prompt-results promptfoo-apfel promptfoo-capture-logs extract-prompt-issues improve-prompts rl-enhance-prompts prompt-enhancement-report lightrag-start lightrag-restart lightrag-stop lightrag-unregister lightrag-uninstall lightrag-status lightrag-logs lightrag-clear-db clear-db lightrag-reindex reindex lightrag-rebuild-vdb vscode-bridge-health copilot-api-health bridge-health copilot-api-start copilot-api-restart copilot-api-stop copilot-api-status copilot-api-logs mlx-openai-health mlx-openai-logs mlx-model-install mlx-model-start mlx-model-restart mlx-model-stop mlx-model-status mlx-model-logs mlx-model-health mlx-embeddings-install mlx-embeddings-start mlx-embeddings-restart mlx-embeddings-stop mlx-embeddings-status mlx-embeddings-logs mlx-embeddings-health swiftlm-install mlx-agentcpm-install mlx-agentcpm-convert mlx-agentcpm-start mlx-agentcpm-restart mlx-agentcpm-stop mlx-agentcpm-status mlx-agentcpm-logs mlx-chat mlx-chat-native mlx-chat-test hn-front-page-load embedding-candidates-bench modernbert-embed-bench use-deepseek use-mlx configure env-base env-storage env-server env-validate env-backup env-security-check env-base-rewrite env-storage-rewrite env base storage server validate backup security security-check base-rewrite storage-rewrite apple-up apple-down apple-status apple-logs apple-restart apple-pull
 
 help:
 	@printf "$(COLOR_BOLD)Interactive setup targets$(COLOR_RESET)\n"
 	@printf "  $(COLOR_GREEN)make dev$(COLOR_RESET)                    Bootstrap local dev+test+offline env with uv + bun\n"
+	@printf "  $(COLOR_GREEN)make qa$(COLOR_RESET)                     Run live MCP use-case eval and Aurora judging\n"
 	@printf "  $(COLOR_GREEN)make test-prompt$(COLOR_RESET)            Evaluate extraction prompts against local apfel\n"
 	@printf "  $(COLOR_GREEN)make test-prompt-results$(COLOR_RESET)    Show saved promptfoo test results\n"
 	@printf "  $(COLOR_GREEN)make promptfoo-capture-logs$(COLOR_RESET) Import recent extraction chunks from logs into promptfoo cases\n"
@@ -135,6 +140,19 @@ help:
 	@printf "  $(COLOR_GREEN)make apple-status$(COLOR_RESET)            Show stack containers, volumes, and networks\n"
 	@printf "  $(COLOR_GREEN)make apple-logs SVC=lightrag$(COLOR_RESET) Tail a service's logs\n"
 	@printf "  See docs/AppleContainerSetup.md for details.\n"
+
+qa:
+	@test -n "$${LIGHTRAG_API_KEY:-}" || (echo "LIGHTRAG_API_KEY is required"; exit 1)
+	@test -f "$(AURORA_CLIENT)" || (echo "Aurora client not found: $(AURORA_CLIENT)"; exit 1)
+	@set -euo pipefail; ratings_file="$$(mktemp)"; trap 'rm -f "$$ratings_file"' EXIT; \
+		uv run python "$(QA_DIR)/run_eval.py" run "$(QA_REPORT)" --cases "$(QA_CASES)"; \
+		judge_prompt="$$(uv run python "$(QA_DIR)/run_eval.py" judge-prompt "$(QA_REPORT)")"; \
+		python3 "$(AURORA_CLIENT)" chat --no-tools \
+			--project "$(CURDIR)" --task test "$$judge_prompt" \
+			>"$$ratings_file"; \
+		uv run python "$(QA_DIR)/run_eval.py" merge-aurora "$(QA_REPORT)" "$$ratings_file"; \
+		jq -e '.aurora.verdict == "SATISFIED" and ([.cases[].status] | all(. == "success"))' "$(QA_REPORT)" >/dev/null; \
+		printf 'QA report: %s\n' "$(QA_REPORT)"
 
 dev:
 	@if ! command -v uv >/dev/null 2>&1; then \
