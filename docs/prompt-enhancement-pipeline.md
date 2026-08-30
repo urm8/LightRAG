@@ -13,6 +13,20 @@ The `promptfooconfig.yaml` + captured JSONL data provides *detection* but not *c
 
 ## Current State
 
+PostgreSQL-backed runs now capture the live source data in four tables:
+
+- `LIGHTRAG_QUERY_PROMPT` and `LIGHTRAG_EXTRACTION_PROMPT` store the exact
+  system/user prompt bundle once per workspace. The SHA-256 digest of the full
+  text is the prompt ID.
+- `LIGHTRAG_QUERY_ATTEMPT` and `LIGHTRAG_EXTRACTION_ATTEMPT` store every LLM
+  action, its input/output, warning classes, and phase metadata. Each attempt
+  has a foreign key to the prompt version used.
+- Capture is best-effort: a telemetry write failure is logged but never fails
+  ingestion or query execution. Non-PostgreSQL deployments remain unchanged.
+
+The JSONL files below remain portable evaluation exports. They are no longer
+the only possible capture source.
+
 ```
 captured/extraction_attempts.jsonl  ─┐
 captured/lightrag_prompt_warnings.jsonl ─┤

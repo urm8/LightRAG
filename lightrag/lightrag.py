@@ -1203,6 +1203,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
             for spec in ROLES
         }
+        for storage_name in ("llm_response_cache", "text_chunks", "doc_status"):
+            storage = getattr(self, storage_name, None)
+            db = getattr(storage, "db", None)
+            if callable(getattr(db, "record_prompt_attempt", None)):
+                global_config["_prompt_capture_db"] = db
+                break
         return global_config
 
     def _build_role_llm_cache_identity(

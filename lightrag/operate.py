@@ -75,6 +75,10 @@ from lightrag.chunk_schema import (
     strip_internal_multimodal_markup_for_extraction,
 )
 from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
+from lightrag.prompt_capture import (
+    extraction_prompt_warnings,
+    record_prompt_attempt,
+)
 from lightrag.observability import traced_async
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
@@ -3964,6 +3968,10 @@ async def extract_entities(
 
         if use_json_extraction:
             # JSON mode: use JSON prompts and pass entity_extraction flag to LLM provider
+            extraction_prompt_key = (
+                "entity_extraction_json_system_prompt+"
+                "entity_extraction_json_user_prompt"
+            )
             entity_extraction_system_prompt = PROMPTS[
                 "entity_extraction_json_system_prompt"
             ].format(**context_base)
@@ -3981,6 +3989,9 @@ async def extract_entities(
             ].format(**context_base)
         else:
             # Text mode: use traditional delimiter-based prompts
+            extraction_prompt_key = (
+                "entity_extraction_system_prompt+entity_extraction_user_prompt"
+            )
             entity_extraction_system_prompt = PROMPTS[
                 "entity_extraction_system_prompt"
             ].format(**context_base)
@@ -3997,17 +4008,37 @@ async def extract_entities(
                 "entity_continue_extraction_user_prompt"
             ].format(**{**context_base, "input_text": content})
 
-        final_result, timestamp = await use_llm_func_with_cache(
-            entity_extraction_user_prompt,
-            use_llm_func,
-            system_prompt=entity_extraction_system_prompt,
-            llm_response_cache=llm_response_cache,
-            cache_type="extract",
-            chunk_id=chunk_key,
-            cache_keys_collector=cache_keys_collector,
-            response_format=({"type": "json_object"} if use_json_extraction else None),
-            llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
-        )
+        try:
+            final_result, timestamp = await use_llm_func_with_cache(
+                entity_extraction_user_prompt,
+                use_llm_func,
+                system_prompt=entity_extraction_system_prompt,
+                llm_response_cache=llm_response_cache,
+                cache_type="extract",
+                chunk_id=chunk_key,
+                cache_keys_collector=cache_keys_collector,
+                response_format=(
+                    {"type": "json_object"} if use_json_extraction else None
+                ),
+                llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
+            )
+        except Exception as exc:
+            await record_prompt_attempt(
+                global_config,
+                kind="extraction",
+                prompt_key=extraction_prompt_key,
+                system_prompt=entity_extraction_system_prompt,
+                user_prompt=entity_extraction_user_prompt,
+                input_text=content,
+                warnings=["llm_error"],
+                metadata={
+                    "phase": "initial",
+                    "chunk_key": chunk_key,
+                    "file_path": file_path,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
 
         _report_truncation(final_result, "initial")
 
@@ -4032,6 +4063,38 @@ async def extract_entities(
                 tuple_delimiter=context_base["tuple_delimiter"],
                 completion_delimiter=context_base["completion_delimiter"],
             )
+
+        initial_warnings = extraction_prompt_warnings(
+            final_result,
+            use_json=use_json_extraction,
+            entity_count=len(maybe_nodes),
+            relation_count=len(maybe_edges),
+            tuple_delimiter=context_base.get(
+                "tuple_delimiter", PROMPTS["DEFAULT_TUPLE_DELIMITER"]
+            ),
+            completion_delimiter=context_base.get(
+                "completion_delimiter", PROMPTS["DEFAULT_COMPLETION_DELIMITER"]
+            ),
+            truncated=is_truncated_response(final_result),
+        )
+        await record_prompt_attempt(
+            global_config,
+            kind="extraction",
+            prompt_key=extraction_prompt_key,
+            system_prompt=entity_extraction_system_prompt,
+            user_prompt=entity_extraction_user_prompt,
+            input_text=content,
+            output=final_result,
+            warnings=initial_warnings,
+            metadata={
+                "phase": "initial",
+                "chunk_key": chunk_key,
+                "file_path": file_path,
+                "entity_count": len(maybe_nodes),
+                "relation_count": len(maybe_edges),
+                "json_mode": use_json_extraction,
+            },
+        )
 
         # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
         run_gleaning = entity_extract_max_gleaning > 0
@@ -4064,20 +4127,48 @@ async def extract_entities(
                 run_gleaning = False
 
         if run_gleaning:
-            glean_result, timestamp = await use_llm_func_with_cache(
-                entity_continue_extraction_user_prompt,
-                use_llm_func,
-                system_prompt=entity_extraction_system_prompt,
-                llm_response_cache=llm_response_cache,
-                history_messages=history,
-                cache_type="extract",
-                chunk_id=chunk_key,
-                cache_keys_collector=cache_keys_collector,
-                response_format=(
-                    {"type": "json_object"} if use_json_extraction else None
-                ),
-                llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
+            glean_prompt_key = (
+                "entity_extraction_json_system_prompt+"
+                "entity_continue_extraction_json_user_prompt"
+                if use_json_extraction
+                else "entity_extraction_system_prompt+"
+                "entity_continue_extraction_user_prompt"
             )
+            try:
+                glean_result, timestamp = await use_llm_func_with_cache(
+                    entity_continue_extraction_user_prompt,
+                    use_llm_func,
+                    system_prompt=entity_extraction_system_prompt,
+                    llm_response_cache=llm_response_cache,
+                    history_messages=history,
+                    cache_type="extract",
+                    chunk_id=chunk_key,
+                    cache_keys_collector=cache_keys_collector,
+                    response_format=(
+                        {"type": "json_object"} if use_json_extraction else None
+                    ),
+                    llm_cache_identity=get_llm_cache_identity(
+                        global_config, "extract"
+                    ),
+                )
+            except Exception as exc:
+                await record_prompt_attempt(
+                    global_config,
+                    kind="extraction",
+                    prompt_key=glean_prompt_key,
+                    system_prompt=entity_extraction_system_prompt,
+                    user_prompt=entity_continue_extraction_user_prompt,
+                    input_text=content,
+                    warnings=["llm_error"],
+                    metadata={
+                        "phase": "gleaning",
+                        "chunk_key": chunk_key,
+                        "file_path": file_path,
+                        "error_type": type(exc).__name__,
+                    },
+                    history_messages=history,
+                )
+                raise
 
             _report_truncation(glean_result, "gleaning")
 
@@ -4098,6 +4189,39 @@ async def extract_entities(
                     tuple_delimiter=context_base["tuple_delimiter"],
                     completion_delimiter=context_base["completion_delimiter"],
                 )
+
+            glean_warnings = extraction_prompt_warnings(
+                glean_result,
+                use_json=use_json_extraction,
+                entity_count=len(glean_nodes),
+                relation_count=len(glean_edges),
+                tuple_delimiter=context_base.get(
+                    "tuple_delimiter", PROMPTS["DEFAULT_TUPLE_DELIMITER"]
+                ),
+                completion_delimiter=context_base.get(
+                    "completion_delimiter", PROMPTS["DEFAULT_COMPLETION_DELIMITER"]
+                ),
+                truncated=is_truncated_response(glean_result),
+            )
+            await record_prompt_attempt(
+                global_config,
+                kind="extraction",
+                prompt_key=glean_prompt_key,
+                system_prompt=entity_extraction_system_prompt,
+                user_prompt=entity_continue_extraction_user_prompt,
+                input_text=content,
+                output=glean_result,
+                warnings=glean_warnings,
+                metadata={
+                    "phase": "gleaning",
+                    "chunk_key": chunk_key,
+                    "file_path": file_path,
+                    "entity_count": len(glean_nodes),
+                    "relation_count": len(glean_edges),
+                    "json_mode": use_json_extraction,
+                },
+                history_messages=history,
+            )
 
             # Merge results - compare description lengths to choose better version
             for i, (entity_name, glean_entities) in enumerate(
@@ -4556,6 +4680,7 @@ async def kg_query(
     cached_result = await handle_cache(
         answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
     )
+    cache_hit = cached_result is not None
 
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
@@ -4566,13 +4691,31 @@ async def kg_query(
     else:
         if progress_callback:
             await progress_callback(QueryProgress.GENERATING_RESPONSE)
-        response = await use_model_func(
-            user_query,
-            system_prompt=sys_prompt,
-            history_messages=query_param.conversation_history,
-            enable_cot=True,
-            stream=query_param.stream,
-        )
+        try:
+            response = await use_model_func(
+                user_query,
+                system_prompt=sys_prompt,
+                history_messages=query_param.conversation_history,
+                enable_cot=True,
+                stream=query_param.stream,
+            )
+        except Exception as exc:
+            await record_prompt_attempt(
+                global_config,
+                kind="query",
+                prompt_key="custom" if system_prompt else "rag_response",
+                system_prompt=sys_prompt,
+                user_prompt=user_query,
+                input_text=query,
+                warnings=["llm_error"],
+                metadata={
+                    "phase": "answer",
+                    "mode": query_param.mode,
+                    "error_type": type(exc).__name__,
+                },
+                history_messages=query_param.conversation_history,
+            )
+            raise
 
         if (
             answer_cache_kv
@@ -4607,6 +4750,32 @@ async def kg_query(
                     queryparam=queryparam_dict,
                 ),
             )
+
+    response_warnings = []
+    if isinstance(response, str):
+        if is_truncated_response(response):
+            response_warnings.append("token_limit_truncation")
+        if not response.strip():
+            response_warnings.append("empty_response")
+    await record_prompt_attempt(
+        global_config,
+        kind="query",
+        prompt_key="custom" if system_prompt else "rag_response",
+        system_prompt=sys_prompt,
+        user_prompt=user_query,
+        input_text=query,
+        output=response if isinstance(response, str) else None,
+        warnings=response_warnings,
+        metadata={
+            "phase": "answer",
+            "mode": query_param.mode,
+            "cache_hit": cache_hit,
+            "streaming": not isinstance(response, str),
+            "high_level_keywords": hl_keywords,
+            "low_level_keywords": ll_keywords,
+        },
+        history_messages=query_param.conversation_history,
+    )
 
     # Return unified result based on actual response type
     if isinstance(response, str):
@@ -4835,10 +5004,52 @@ async def extract_keywords_only(
         global_config["role_llm_funcs"]["keyword"], _priority=DEFAULT_QUERY_PRIORITY
     )
 
-    result = await use_model_func(kw_prompt, response_format={"type": "json_object"})
+    try:
+        result = await use_model_func(
+            kw_prompt, response_format={"type": "json_object"}
+        )
+    except Exception as exc:
+        await record_prompt_attempt(
+            global_config,
+            kind="query",
+            prompt_key="keywords_extraction",
+            user_prompt=kw_prompt,
+            input_text=text,
+            warnings=["llm_error"],
+            metadata={
+                "phase": "keywords",
+                "mode": param.mode,
+                "error_type": type(exc).__name__,
+            },
+        )
+        raise
 
     # 5. Parse out JSON from the LLM response with tolerant provider normalization
-    _, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+    valid_payload, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+    keyword_warnings = []
+    if not valid_payload:
+        keyword_warnings.append("invalid_keyword_payload")
+    if is_truncated_response(result):
+        keyword_warnings.append("token_limit_truncation")
+    if not hl_keywords and param.mode in {"global", "hybrid", "mix"}:
+        keyword_warnings.append("empty_high_level_keywords")
+    if not ll_keywords and param.mode in {"local", "hybrid", "mix"}:
+        keyword_warnings.append("empty_low_level_keywords")
+    await record_prompt_attempt(
+        global_config,
+        kind="query",
+        prompt_key="keywords_extraction",
+        user_prompt=kw_prompt,
+        input_text=text,
+        output=result,
+        warnings=keyword_warnings,
+        metadata={
+            "phase": "keywords",
+            "mode": param.mode,
+            "high_level_keywords": hl_keywords,
+            "low_level_keywords": ll_keywords,
+        },
+    )
 
     # 6. Cache only the processed keywords with cache type
     #    Skip caching when the LLM response was truncated by the token limit:
@@ -6564,6 +6775,7 @@ async def naive_query(
     cached_result = await handle_cache(
         answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
     )
+    cache_hit = cached_result is not None
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
         logger.info(
@@ -6571,13 +6783,31 @@ async def naive_query(
         )
         response = cached_response
     else:
-        response = await use_model_func(
-            user_query,
-            system_prompt=sys_prompt,
-            history_messages=query_param.conversation_history,
-            enable_cot=True,
-            stream=query_param.stream,
-        )
+        try:
+            response = await use_model_func(
+                user_query,
+                system_prompt=sys_prompt,
+                history_messages=query_param.conversation_history,
+                enable_cot=True,
+                stream=query_param.stream,
+            )
+        except Exception as exc:
+            await record_prompt_attempt(
+                global_config,
+                kind="query",
+                prompt_key="custom" if system_prompt else "naive_rag_response",
+                system_prompt=sys_prompt,
+                user_prompt=user_query,
+                input_text=query,
+                warnings=["llm_error"],
+                metadata={
+                    "phase": "answer",
+                    "mode": query_param.mode,
+                    "error_type": type(exc).__name__,
+                },
+                history_messages=query_param.conversation_history,
+            )
+            raise
 
         if (
             answer_cache_kv
@@ -6610,6 +6840,30 @@ async def naive_query(
                     queryparam=queryparam_dict,
                 ),
             )
+
+    response_warnings = []
+    if isinstance(response, str):
+        if is_truncated_response(response):
+            response_warnings.append("token_limit_truncation")
+        if not response.strip():
+            response_warnings.append("empty_response")
+    await record_prompt_attempt(
+        global_config,
+        kind="query",
+        prompt_key="custom" if system_prompt else "naive_rag_response",
+        system_prompt=sys_prompt,
+        user_prompt=user_query,
+        input_text=query,
+        output=response if isinstance(response, str) else None,
+        warnings=response_warnings,
+        metadata={
+            "phase": "answer",
+            "mode": query_param.mode,
+            "cache_hit": cache_hit,
+            "streaming": not isinstance(response, str),
+        },
+        history_messages=query_param.conversation_history,
+    )
 
     # Return unified result based on actual response type
     if isinstance(response, str):

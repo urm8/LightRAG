@@ -8,6 +8,7 @@ import datetime
 from datetime import timezone
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, ClassVar, Sequence, TypeVar, Union, final
+from uuid import uuid4
 import numpy as np
 import configparser
 import ssl
@@ -2412,6 +2413,65 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(f"PostgreSQL database,\nsql:{sql},\ndata:{data},\nerror:{e}")
             raise
+
+    async def record_prompt_attempt(
+        self,
+        *,
+        kind: str,
+        workspace: str,
+        prompt_key: str,
+        prompt_text: str,
+        input_text: str,
+        output_text: str | None,
+        warnings: list[str],
+        metadata: dict[str, Any],
+    ) -> None:
+        """Atomically deduplicate a prompt and persist its query/extraction attempt."""
+
+        table_names = {
+            "query": ("LIGHTRAG_QUERY_PROMPT", "LIGHTRAG_QUERY_ATTEMPT"),
+            "extraction": (
+                "LIGHTRAG_EXTRACTION_PROMPT",
+                "LIGHTRAG_EXTRACTION_ATTEMPT",
+            ),
+        }
+        if kind not in table_names:
+            raise ValueError(f"Unsupported prompt attempt kind: {kind}")
+        prompt_table, attempt_table = table_names[kind]
+        prompt_id = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
+        attempt_id = uuid4().hex
+
+        async def _operation(connection: asyncpg.Connection) -> None:
+            async with connection.transaction():
+                await connection.execute(
+                    f"""
+                    INSERT INTO {prompt_table}
+                        (workspace, id, prompt_key, prompt_text)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (workspace, id) DO NOTHING
+                    """,
+                    workspace,
+                    prompt_id,
+                    prompt_key,
+                    prompt_text,
+                )
+                await connection.execute(
+                    f"""
+                    INSERT INTO {attempt_table}
+                        (workspace, id, prompt_id, input_text, output_text,
+                         warnings, metadata)
+                    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
+                    """,
+                    workspace,
+                    attempt_id,
+                    prompt_id,
+                    input_text,
+                    output_text,
+                    json.dumps(warnings, ensure_ascii=False),
+                    json.dumps(metadata, ensure_ascii=False, default=str),
+                )
+
+        await self._run_with_retry(_operation)
 
 
 class ClientManager:
@@ -9112,6 +9172,58 @@ TABLES = {
                     chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
+                    )"""
+    },
+    "LIGHTRAG_QUERY_PROMPT": {
+        "ddl": """CREATE TABLE LIGHTRAG_QUERY_PROMPT (
+                    workspace VARCHAR(255) NOT NULL,
+                    id CHAR(64) NOT NULL,
+                    prompt_key VARCHAR(255) NOT NULL,
+                    prompt_text TEXT NOT NULL,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT LIGHTRAG_QUERY_PROMPT_PK PRIMARY KEY (workspace, id)
+                    )"""
+    },
+    "LIGHTRAG_EXTRACTION_PROMPT": {
+        "ddl": """CREATE TABLE LIGHTRAG_EXTRACTION_PROMPT (
+                    workspace VARCHAR(255) NOT NULL,
+                    id CHAR(64) NOT NULL,
+                    prompt_key VARCHAR(255) NOT NULL,
+                    prompt_text TEXT NOT NULL,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT LIGHTRAG_EXTRACTION_PROMPT_PK PRIMARY KEY (workspace, id)
+                    )"""
+    },
+    "LIGHTRAG_QUERY_ATTEMPT": {
+        "ddl": """CREATE TABLE LIGHTRAG_QUERY_ATTEMPT (
+                    workspace VARCHAR(255) NOT NULL,
+                    id VARCHAR(32) NOT NULL,
+                    prompt_id CHAR(64) NOT NULL,
+                    input_text TEXT NOT NULL,
+                    output_text TEXT NULL,
+                    warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT LIGHTRAG_QUERY_ATTEMPT_PK PRIMARY KEY (workspace, id),
+                    CONSTRAINT LIGHTRAG_QUERY_ATTEMPT_PROMPT_FK
+                        FOREIGN KEY (workspace, prompt_id)
+                        REFERENCES LIGHTRAG_QUERY_PROMPT(workspace, id)
+                    )"""
+    },
+    "LIGHTRAG_EXTRACTION_ATTEMPT": {
+        "ddl": """CREATE TABLE LIGHTRAG_EXTRACTION_ATTEMPT (
+                    workspace VARCHAR(255) NOT NULL,
+                    id VARCHAR(32) NOT NULL,
+                    prompt_id CHAR(64) NOT NULL,
+                    input_text TEXT NOT NULL,
+                    output_text TEXT NULL,
+                    warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT LIGHTRAG_EXTRACTION_ATTEMPT_PK PRIMARY KEY (workspace, id),
+                    CONSTRAINT LIGHTRAG_EXTRACTION_ATTEMPT_PROMPT_FK
+                        FOREIGN KEY (workspace, prompt_id)
+                        REFERENCES LIGHTRAG_EXTRACTION_PROMPT(workspace, id)
                     )"""
     },
     "LIGHTRAG_LLM_CACHE": {

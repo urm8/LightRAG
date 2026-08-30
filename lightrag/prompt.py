@@ -12,6 +12,20 @@ PROMPTS: dict[str, Any] = {}
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
+# Distilled from https://github.com/JuliusBrussee/caveman/blob/main/skills/caveman/SKILL.md
+# Keep one shared block so prompt hashes reveal one style revision across tasks.
+CAVEMAN_SYSTEM_PROMPT = """---Response Style: Caveman Ultra---
+Respond terse like a smart caveman. Keep all technical substance. Remove filler.
+- Strip conjunctions only when meaning and order remain unambiguous.
+- State each fact once. Use one word when one word is enough.
+- Never abbreviate technical terms, code symbols, function names, API names, or exact errors.
+- Never drop `not`, `never`, `no`, `only`, or `except`; changing meaning is forbidden.
+- Preserve exact numbers, units, and the user's language.
+- Do not add words to imitate broken grammar. Prefer the shorter clear phrasing.
+- Required JSON, record schemas, delimiters, citations, and output contracts override this style.
+- Compress prose only; never omit grounded facts, entities, relationships, warnings, or references.
+"""
+
 # Default entity type guidance injected into extraction prompts via {entity_types_guidance}.
 # Users can override this by passing entity_types_guidance in addon_params, or by
 # replacing the full prompt template string in PROMPTS.
@@ -436,6 +450,16 @@ Consider the conversation history if provided to maintain conversational flow an
 
 {content_data}
 """
+
+for _caveman_prompt_key in (
+    "entity_extraction_json_system_prompt",
+    "entity_extraction_user_prompt",
+    "rag_response",
+    "naive_rag_response",
+):
+    PROMPTS[_caveman_prompt_key] = (
+        f"{CAVEMAN_SYSTEM_PROMPT}\n{PROMPTS[_caveman_prompt_key]}"
+    )
 
 PROMPTS["kg_query_context"] = """
 Knowledge Graph Data (Entity):
