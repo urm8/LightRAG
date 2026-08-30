@@ -1858,6 +1858,37 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(f"Failed to batch check field lengths: {e}")
 
+    async def _create_table_in_writable_schema(self, ddl: str) -> None:
+        """Create a table in the first writable schema on the active search path."""
+
+        async def _operation(connection: asyncpg.Connection) -> None:
+            async with connection.transaction():
+                schema_name = await connection.fetchval(
+                    """
+                    SELECT schema_name
+                    FROM unnest(current_schemas(false)) WITH ORDINALITY
+                        AS schemas(schema_name, position)
+                    WHERE has_schema_privilege(
+                        current_user, schema_name, 'CREATE'
+                    )
+                    ORDER BY position
+                    LIMIT 1
+                    """
+                )
+                if not schema_name:
+                    raise PermissionError(
+                        "PostgreSQL search_path contains no schema where the "
+                        "current user has CREATE privilege"
+                    )
+                await connection.execute(
+                    "SELECT set_config("
+                    "'search_path', quote_ident($1) || ', pg_catalog', true)",
+                    schema_name,
+                )
+                await connection.execute(ddl)
+
+        await self._run_with_retry(_operation)
+
     async def check_tables(self):
         # Vector tables that should be skipped - they are created by PGVectorStorage.setup_table()
         # with proper embedding model and dimension suffix for data isolation
@@ -1878,7 +1909,7 @@ class PostgreSQLDB:
             except Exception:
                 try:
                     logger.info(f"PostgreSQL, Try Creating table {k} in database")
-                    await self.execute(v["ddl"])
+                    await self._create_table_in_writable_schema(v["ddl"])
                     logger.info(
                         f"PostgreSQL, Creation success table {k} in PostgreSQL database"
                     )

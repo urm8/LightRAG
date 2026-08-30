@@ -7,6 +7,16 @@ import pytest
 from lightrag.kg.postgres_impl import TABLES, PostgreSQLDB
 
 
+def _db_with_connection(connection: MagicMock) -> PostgreSQLDB:
+    db = PostgreSQLDB.__new__(PostgreSQLDB)
+
+    async def run_with_retry(operation, **_kwargs):
+        await operation(connection)
+
+    db._run_with_retry = run_with_retry
+    return db
+
+
 def test_prompt_attempt_tables_have_prompt_foreign_keys() -> None:
     query_ddl = TABLES["LIGHTRAG_QUERY_ATTEMPT"]["ddl"]
     extraction_ddl = TABLES["LIGHTRAG_EXTRACTION_ATTEMPT"]["ddl"]
@@ -26,16 +36,11 @@ def test_prompt_attempt_tables_have_prompt_foreign_keys() -> None:
 
 @pytest.mark.asyncio
 async def test_record_prompt_attempt_deduplicates_prompt_by_sha256() -> None:
-    db = PostgreSQLDB.__new__(PostgreSQLDB)
     connection = MagicMock()
     connection.execute = AsyncMock()
     transaction = AsyncMock()
     connection.transaction.return_value = transaction
-
-    async def run_with_retry(operation, **_kwargs):
-        await operation(connection)
-
-    db._run_with_retry = run_with_retry
+    db = _db_with_connection(connection)
 
     await db.record_prompt_attempt(
         kind="query",
@@ -57,3 +62,40 @@ async def test_record_prompt_attempt_deduplicates_prompt_by_sha256() -> None:
     assert json.loads(attempt_call.args[7]) == {"mode": "mix"}
     transaction.__aenter__.assert_awaited_once()
     transaction.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_table_creation_skips_read_only_age_schema() -> None:
+    connection = MagicMock()
+    connection.fetchval = AsyncMock(return_value="public")
+    connection.execute = AsyncMock()
+    transaction = AsyncMock()
+    connection.transaction.return_value = transaction
+    db = _db_with_connection(connection)
+    ddl = "CREATE TABLE LIGHTRAG_QUERY_PROMPT (id TEXT)"
+
+    await db._create_table_in_writable_schema(ddl)
+
+    connection.fetchval.assert_awaited_once()
+    assert "has_schema_privilege" in connection.fetchval.await_args.args[0]
+    assert connection.execute.await_args_list[0].args == (
+        "SELECT set_config('search_path', quote_ident($1) || ', pg_catalog', true)",
+        "public",
+    )
+    assert connection.execute.await_args_list[1].args == (ddl,)
+    transaction.__aenter__.assert_awaited_once()
+    transaction.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_table_creation_reports_missing_writable_schema() -> None:
+    connection = MagicMock()
+    connection.fetchval = AsyncMock(return_value=None)
+    connection.execute = AsyncMock()
+    connection.transaction.return_value = AsyncMock()
+    db = _db_with_connection(connection)
+
+    with pytest.raises(PermissionError, match="no schema"):
+        await db._create_table_in_writable_schema("CREATE TABLE broken (id TEXT)")
+
+    connection.execute.assert_not_awaited()
